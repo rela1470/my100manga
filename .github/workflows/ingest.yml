@@ -6,13 +6,20 @@ name: MADB ingest
 on:
   workflow_dispatch:
     inputs:
+      environment:
+        description: "target D1 environment"
+        type: choice
+        options:
+          - prod
+          - dev
+        default: prod
       tag:
         description: "MADB release tag (blank = latest)"
         required: false
         default: ""
 
 concurrency:
-  group: madb-ingest
+  group: madb-ingest-${{ inputs.environment }}
   cancel-in-progress: false
 
 jobs:
@@ -29,12 +36,39 @@ jobs:
 
       - run: npm ci
 
+      # wrangler.jsonc は .gitignore 済み（DB ID 等の個人値を公開リポに載せない方針）。
+      # ingest.mjs は `wrangler d1 execute DB` で binding→database_id を解決するため、
+      # sample から実ファイルを復元し、prod/dev の database_id を secret で埋める。
+      # 選択した環境の ID が未設定なら明示的に失敗させる。
+      - name: Materialize wrangler.jsonc
+        env:
+          PROD_DB_ID: ${{ secrets.CLOUDFLARE_D1_DATABASE_ID }}
+          DEV_DB_ID: ${{ secrets.CLOUDFLARE_D1_DATABASE_ID_DEV }}
+          TARGET_ENV: ${{ inputs.environment }}
+        run: |
+          cp wrangler.jsonc.sample wrangler.jsonc
+          [ -n "$PROD_DB_ID" ] && sed -i "s/REPLACE_WITH_PROD_DATABASE_ID/${PROD_DB_ID}/" wrangler.jsonc
+          [ -n "$DEV_DB_ID" ] && sed -i "s/REPLACE_WITH_DEV_DATABASE_ID/${DEV_DB_ID}/" wrangler.jsonc
+          if [ "$TARGET_ENV" = "dev" ]; then
+            test -n "$DEV_DB_ID" || { echo "::error::secret CLOUDFLARE_D1_DATABASE_ID_DEV is empty"; exit 1; }
+          else
+            test -n "$PROD_DB_ID" || { echo "::error::secret CLOUDFLARE_D1_DATABASE_ID is empty"; exit 1; }
+          fi
+
       - name: Ingest MADB → remote D1
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }} # raises the GitHub API rate limit for release download
+          TARGET_ENV: ${{ inputs.environment }}
           # inputs.tag はユーザ入力。run: に直接展開するとシェルインジェクションになるため、
           # 必ず env 経由で受け取り、値があるときだけ --tag "$INPUT_TAG" を付ける。
           INPUT_TAG: ${{ inputs.tag }}
-        run: node scripts/ingest.mjs --remote ${INPUT_TAG:+--tag "$INPUT_TAG"}
+        run: |
+          ENV_ARGS=""
+          [ "$TARGET_ENV" = "dev" ] && ENV_ARGS="--env dev"
+          if [ -n "$INPUT_TAG" ]; then
+            node scripts/ingest.mjs --remote $ENV_ARGS --tag "$INPUT_TAG"
+          else
+            node scripts/ingest.mjs --remote $ENV_ARGS
+          fi

@@ -1,0 +1,166 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>my100manga - 私を構成する100の漫画</title>
+  <meta name="description" content="あなたのおすすめ漫画100作品を選んでカードにし、URLで共有できるサイトです。">
+  <link rel="stylesheet" href="/styles.css">
+</head>
+<body>
+  <header class="site">
+    <h1>my<span class="accent">100</span>manga</h1>
+    <p class="tagline">私を構成する100の漫画を選んで、URLで共有しよう</p>
+  </header>
+
+  <div class="wrap">
+    <div class="toolbar">
+      <div class="name-field">
+        <input type="text" id="topSearch" placeholder="漫画のタイトルで検索して追加（2文字以上）">
+        <button id="topSearchBtn">検索</button>
+      </div>
+    </div>
+
+    <div class="action-bar" id="actionBar" style="display:none">
+      <button id="fetchCovers" class="primary" style="display:none">表紙を取得</button>
+      <button id="fixMissing" style="display:none">表紙がない本を指定</button>
+      <p class="cover-status" id="coverStatus" style="display:none"></p>
+    </div>
+
+    <div class="grid" id="grid" aria-label="100作品グリッド"></div>
+
+    <div class="diff-bar" id="diffBar" style="display:none">
+      <span class="diff-count" id="diffCount"></span>
+      <button id="revertPublished" class="ghost">公開状態にもどす</button>
+    </div>
+
+    <div class="publish-bar">
+      <button class="primary" id="publish">あと100作品（0 / 100）</button>
+    </div>
+
+    <div class="clear-bar">
+      <button id="reorderToggle" style="display:none">並べ替え</button>
+      <button id="clearAll" class="danger" style="display:none">編集中の漫画を全削除</button>
+    </div>
+
+    <section id="myLists" class="mylists" style="display:none"></section>
+  </div>
+
+  <!-- reorder controls: fixed bottom bar shown only while in reorder mode -->
+  <div class="reorder-controls" id="reorderControls" style="display:none">
+    <span class="reorder-count" id="reorderCount"></span>
+    <span class="reorder-spacer"></span>
+    <button id="sortName">名前順 ↓</button>
+    <button id="moveStart" disabled>先頭へ</button>
+    <button id="moveEnd" disabled>末尾へ</button>
+    <button id="reorderClear" disabled>選択解除</button>
+    <button class="primary" id="reorderDone">完了</button>
+  </div>
+
+  <footer class="site">
+    <p>データ提供: メディア芸術データベース（文化庁）／ 書影: 楽天ブックス・Google Books ｜ my100manga</p>
+    <p class="foot-links"><a href="/ranking">人気ランキング</a> ｜ <a href="/about">利用ソース・アフィリエイトについて</a></p>
+  </footer>
+
+  <!-- edit slot modal -->
+  <div class="modal-backdrop" id="editModal">
+    <div class="modal">
+      <h2 id="editTitle">作品を選ぶ</h2>
+      <div class="row">
+        <input type="text" id="searchInput" placeholder="漫画のタイトルで検索（2文字以上）">
+        <button id="searchBtn">検索</button>
+      </div>
+      <div class="spinner" id="searchSpinner" style="display:none">検索中...</div>
+      <div class="results" id="results"></div>
+
+      <div id="selectedBox" style="display:none">
+        <div class="hint" id="selectedLabel"></div>
+        <div class="sel-cover">
+          <div class="sel-cover-thumb" id="selCoverThumb"></div>
+          <button type="button" class="linkbtn" id="changeCoverBtn">表紙を変更</button>
+        </div>
+        <textarea id="comment" placeholder="ひとことコメント（任意・200文字まで／URLは入力できません）" maxlength="200"></textarea>
+        <label class="check"><input type="checkbox" id="spoiler"> ネタバレを含む（閲覧時に伏せる）</label>
+      </div>
+
+      <div class="modal-actions">
+        <button id="removeSlot" style="display:none">この作品を削除</button>
+        <div style="flex:1"></div>
+        <button id="cancelEdit">キャンセル</button>
+        <button class="primary" id="saveSlot" disabled>追加する</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- publish modal: ask for display name at publish time -->
+  <div class="modal-backdrop" id="publishModal">
+    <div class="modal">
+      <h2>公開する</h2>
+      <p class="hint">表示名（任意・40文字まで）。リストの作者名として表示されます。URLは入力できません。</p>
+      <input type="text" id="ownerInput" placeholder="例: じゅん" maxlength="40">
+      <div id="slugField">
+        <p class="hint">お好みのURL（任意・15文字まで）。空欄ならランダムに決まります。英数字・ハイフン・アンダースコアのみ。</p>
+        <div class="share-url">
+          <span class="hint" id="slugPrefix" style="white-space:nowrap"></span>
+          <input type="text" id="slugInput" placeholder="my-best-100" maxlength="15" pattern="[a-zA-Z0-9_-]+" autocapitalize="off" autocorrect="off" spellcheck="false">
+        </div>
+      </div>
+      <div class="modal-actions">
+        <div style="flex:1"></div>
+        <button id="cancelPublish">キャンセル</button>
+        <button class="primary" id="confirmPublish">公開する</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- share modal -->
+  <div class="modal-backdrop" id="shareModal">
+    <div class="modal">
+      <h2>公開しました！</h2>
+      <p class="hint">共有用URL（このリストを見てもらう）</p>
+      <div class="share-url">
+        <input type="text" id="shareUrl" readonly>
+        <button id="copyShare">コピー</button>
+      </div>
+      <p class="hint">編集用URL（あなただけが編集できます。ブックマーク推奨）</p>
+      <div class="share-url">
+        <input type="text" id="editUrl" readonly>
+        <button id="copyEdit">コピー</button>
+      </div>
+      <div class="modal-actions">
+        <div style="flex:1"></div>
+        <a id="openShare" href="#" target="_blank"><button class="primary">開いて確認</button></a>
+        <button id="closeShare">閉じる</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- cover picker modal (used from the edit modal, pre-publish) -->
+  <div class="modal-backdrop" id="pickModal">
+    <div class="modal">
+      <h2>表紙を選ぶ</h2>
+      <p class="hint" id="pickTitle"></p>
+      <div class="share-url">
+        <input type="text" id="coverSearch" placeholder="キーワードで表紙を検索（例: 作品名 巻数）">
+        <button type="button" id="coverSearchBtn">検索</button>
+      </div>
+      <div class="spinner" id="pickSpinner" style="display:none">候補を検索中...</div>
+      <div class="cand-grid" id="candGrid"></div>
+      <p class="hint">見つからない場合は画像URLを直接指定できます。</p>
+      <div class="share-url">
+        <input type="text" id="urlInput" placeholder="https://... の画像URL">
+        <button type="button" id="useUrl">このURLにする</button>
+      </div>
+      <div class="modal-actions">
+        <button type="button" id="clearCover">表紙をクリア</button>
+        <button type="button" id="skipFix" style="display:none">スキップ</button>
+        <div style="flex:1"></div>
+        <button type="button" id="cancelPick">閉じる</button>
+      </div>
+    </div>
+  </div>
+
+  <script src="/mylists.js"></script>
+  <script src="/app.js"></script>
+</body>
+</html>

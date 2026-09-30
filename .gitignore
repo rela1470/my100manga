@@ -1,0 +1,9 @@
+node_modules/
+.wrangler/
+.dev.vars
+# 実設定は各自 `cp wrangler.jsonc.sample wrangler.jsonc` して作る（ドメイン/DB ID 等の個人値）
+wrangler.jsonc
+worker-configuration.d.ts
+.DS_Store
+*.log
+.idea/

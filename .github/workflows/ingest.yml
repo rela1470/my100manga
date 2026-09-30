@@ -1,0 +1,40 @@
+name: MADB ingest
+
+# Manual import of the メディア芸術データベース (MADB) LOD dump into the remote D1.
+# MADB publishes a new release roughly monthly; we pull the latest tag and rebuild
+# the series/volumes master. Run on demand via the Actions "Run workflow" button.
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "MADB release tag (blank = latest)"
+        required: false
+        default: ""
+
+concurrency:
+  group: madb-ingest
+  cancel-in-progress: false
+
+jobs:
+  ingest:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - run: npm ci
+
+      - name: Ingest MADB → remote D1
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }} # raises the GitHub API rate limit for release download
+          # inputs.tag はユーザ入力。run: に直接展開するとシェルインジェクションになるため、
+          # 必ず env 経由で受け取り、値があるときだけ --tag "$INPUT_TAG" を付ける。
+          INPUT_TAG: ${{ inputs.tag }}
+        run: node scripts/ingest.mjs --remote ${INPUT_TAG:+--tag "$INPUT_TAG"}

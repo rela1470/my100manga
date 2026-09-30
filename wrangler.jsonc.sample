@@ -1,0 +1,113 @@
+{
+  // ── テンプレート ─────────────────────────────────────────────────────────
+  // これは公開用サンプル。実ファイル `wrangler.jsonc` は .gitignore 済みで追跡しない。
+  // セットアップ: `cp wrangler.jsonc.sample wrangler.jsonc` してから下記を自分の値へ:
+  //   - "name" / "database_name" … 任意のプロジェクト名
+  //   - "database_id" … `wrangler d1 create` で発行された ID（REPLACE_WITH_...）
+  //   - "RAKUTEN_REFERER" と "routes" の "pattern" … 自分のドメイン（example.com を置換）
+  // 個人設定（アフィリ ID / ACCESS_* / ADMIN_EMAILS / 楽天 API キー）は vars ではなく
+  // `wrangler secret put <NAME>`（dev は --env dev）で注入する。未設定でも起動はする。
+  "$schema": "./node_modules/wrangler/config-schema.json",
+  "name": "my100manga",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-09-01",
+  // workers.dev の *.workers.dev URL を無効化。admin は独自ドメイン上の Cloudflare
+  // Access で守るため、Access を通らない workers.dev 経路を残すとバイパスになる。
+  "workers_dev": false,
+  "assets": {
+    "directory": "./public",
+    "binding": "ASSETS",
+    // admin の HTML（/admin, /admin.html）は Static Assets が Worker より先に配信
+    // してしまい src/adminAuth.ts のガードを素通りする。該当パスだけ Worker を先に
+    // 走らせて認証を効かせる（/api/admin/* は資産に無いので保険）。
+    "run_worker_first": ["/admin", "/admin.html", "/api/admin/*"]
+  },
+  "observability": {
+    "enabled": true
+  },
+  // ── production (deployed by `wrangler deploy`, no --env) ──────────────────
+  // デプロイ先ごとの個人設定は公開リポに載せず、すべて
+  // `wrangler secret put <NAME>` で注入する（未設定でも起動はする）:
+  //   AMAZON_ASSOCIATE_TAG / RAKUTEN_AFFILIATE_ID / MERCARI_AFID
+  //     … アフィリンクの紹介タグ。未設定ならタグ無しのリンク（購入は可能）。
+  //   RAKUTEN_APP_ID / RAKUTEN_ACCESS_KEY … 楽天 API（表紙フォールバック）。
+  //   ACCESS_TEAM_DOMAIN / ACCESS_AUD … 自分の Cloudflare Access アプリの値。
+  //   ADMIN_EMAILS … 許可メール（カンマ区切り）。未設定だと admin は fail-closed で 403。
+  // RAKUTEN_REFERER と routes のドメインは公開値なので vars に残す。自分のドメインに変更する。
+  "vars": {
+    "RAKUTEN_REFERER": "https://example.com/",
+    // Google Books cover source: off by default. Set to "true" to re-enable.
+    "GOOGLE_ENABLED": "false"
+  },
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "my100manga",
+      "database_id": "REPLACE_WITH_PROD_DATABASE_ID"
+    }
+  ],
+  // 人気傾向の計測（src/popularity.ts）。ノンブロッキング書き込み・自動サンプリング。
+  // 集計は Cloudflare の Analytics Engine SQL API 経由（Account API トークンが別途必要）。
+  "analytics_engine_datasets": [
+    { "binding": "POPULARITY", "dataset": "my100manga_popularity" }
+  ],
+  // Global 1 req/s coordinator for Rakuten API calls (src/ratelimiter.ts).
+  // Bindings are non-inheritable, so this block is repeated under env.dev.
+  "durable_objects": {
+    "bindings": [
+      { "name": "RAKUTEN_LIMITER", "class_name": "RakutenRateLimiter" }
+    ]
+  },
+  "migrations": [
+    { "tag": "v1", "new_sqlite_classes": ["RakutenRateLimiter"] }
+  ],
+  // 公開書き込み系の濫用よけ（src/ratelimit.ts）。IP 単位・per-colo のカウント。
+  // RL_WRITE はリスト作成/更新・通報・修正などの書き込み全般、RL_COVERS は外部 API を
+  // 叩く表紙解決（/api/covers）用。period は 10 か 60 のみ。namespace_id は任意の一意値。
+  "ratelimits": [
+    { "name": "RL_WRITE", "namespace_id": "1001", "simple": { "limit": 30, "period": 60 } },
+    { "name": "RL_COVERS", "namespace_id": "1002", "simple": { "limit": 120, "period": 60 } }
+  ],
+  "routes": [
+    { "pattern": "example.com", "custom_domain": true }
+  ],
+  // ── dev (deployed by `wrangler deploy --env dev`) ────────────────────────
+  // Non-inheritable keys (vars / d1_databases / routes) must be repeated here;
+  // inheritable ones (main / assets / compatibility_date / observability) are
+  // taken from the top level. Worker name becomes `my100manga-dev`.
+  "env": {
+    "dev": {
+      // 個人設定（アフィリ ID / ACCESS_* / ADMIN_EMAILS）は dev でも secret で注入する
+      // （`wrangler secret put <NAME> --env dev`）。トップレベル vars のコメント参照。
+      "vars": {
+        "RAKUTEN_REFERER": "https://dev.example.com/",
+        "GOOGLE_ENABLED": "false"
+      },
+      "d1_databases": [
+        {
+          "binding": "DB",
+          "database_name": "my100manga-dev",
+          "database_id": "REPLACE_WITH_DEV_DATABASE_ID"
+        }
+      ],
+      "analytics_engine_datasets": [
+        { "binding": "POPULARITY", "dataset": "my100manga_popularity_dev" }
+      ],
+      "durable_objects": {
+        "bindings": [
+          { "name": "RAKUTEN_LIMITER", "class_name": "RakutenRateLimiter" }
+        ]
+      },
+      "migrations": [
+        { "tag": "v1", "new_sqlite_classes": ["RakutenRateLimiter"] }
+      ],
+      "ratelimits": [
+        { "name": "RL_WRITE", "namespace_id": "1001", "simple": { "limit": 30, "period": 60 } },
+        { "name": "RL_COVERS", "namespace_id": "1002", "simple": { "limit": 120, "period": 60 } }
+      ],
+      "routes": [
+        { "pattern": "dev.example.com", "custom_domain": true }
+      ]
+    }
+  }
+}

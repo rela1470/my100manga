@@ -1,0 +1,38 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>人気ランキング | my100manga</title>
+  <meta name="description" content="my100manga で「私を構成する100の漫画」に多く選ばれている漫画の巻ランキング。累計・過去30日・過去7日・過去24時間で集計しています。">
+  <link rel="stylesheet" href="/styles.css">
+</head>
+<body>
+  <header class="site">
+    <h1><a href="/" style="text-decoration:none;color:inherit">my<span class="accent">100</span>manga</a></h1>
+    <p class="tagline">人気ランキング ― みんなが選んだ漫画</p>
+  </header>
+
+  <div class="wrap">
+    <p class="lead">
+      「私を構成する100の漫画」に選ばれている巻を、選んだ人数で集計したランキングです。
+    </p>
+
+    <div class="rank-tabs" id="tabs"></div>
+    <p class="rank-note" id="note"></p>
+    <ol class="rank-list" id="list"></ol>
+    <p class="rank-empty" id="empty" hidden>この期間に選ばれた漫画はまだありません。</p>
+
+    <div class="publish-bar">
+      <a href="/"><button class="primary">自分の100を作る</button></a>
+    </div>
+  </div>
+
+  <footer class="site">
+    <p>データ提供: メディア芸術データベース（文化庁）／ 書影: 楽天ブックス・Google Books ｜ my100manga</p>
+    <p class="foot-links"><a href="/about">利用ソース・アフィリエイトについて</a></p>
+  </footer>
+
+  <script src="/ranking.js"></script>
+</body>
+</html>

@@ -1,0 +1,325 @@
+import { Env } from "./types";
+import { json, notFound } from "./util";
+import { readCachedCovers, firstCover } from "./covers";
+import {
+  getSupplementVolumes,
+  readCachedSupplement,
+  markSupplementProbed,
+  seriesFormat,
+  NumFmt,
+  SupplementVolume,
+} from "./madbLive";
+import { getCorrectionVolumes } from "./corrections";
+
+interface VolumeRow {
+  isbn: string;
+  volume_number: string | null;
+  vol_sort: number | null;
+  title: string;
+  creator: string | null;
+  publisher: string | null;
+  label: string | null;
+  pubdate: string | null;
+}
+
+interface OutVolume {
+  isbn: string;
+  isbns: string[];
+  volume_number: string;
+  vol_sort: number;
+  title: string;
+  author: string;
+  publisher: string;
+  label: string;
+  pubdate: string;
+  cover_url: string;
+  correction: boolean; // true = user-submitted correction (gets the "間違っています" flag)
+}
+
+// All volumes of a series, in reading order. Powers the "add all volumes" button.
+// `probe` controls the live-MADB supplement (see src/madbLive.ts). The default
+// read (GET /volumes) is cache-only so it returns instantly and never blocks on
+// SPARQL; the newest unlinked tankobon are fetched only when the user presses the
+// 取得 button (POST /supplement, probe=true).
+export async function getSeriesVolumes(
+  env: Env,
+  seriesId: string,
+  probe = false
+): Promise<Response> {
+  const meta = await env.DB.prepare(
+    `SELECT s.id, s.name, s.creator, s.publisher, o.name AS override_name
+       FROM series s LEFT JOIN series_name_override o ON o.series_id = s.id
+      WHERE s.id = ?`
+  )
+    .bind(seriesId)
+    .first<{
+      id: string;
+      name: string;
+      creator: string | null;
+      publisher: string | null;
+      override_name: string | null;
+    }>();
+  if (!meta) return notFound("シリーズが見つかりません");
+
+  // Display title honors an admin correction (series_name_override); all internal
+  // matching below (unlinked-volume merge, live supplement) keeps using the master
+  // meta.name, since the volumes' schema:name still carries the original title.
+  const displayName = meta.override_name || meta.name;
+
+  const res = await env.DB.prepare(
+    `SELECT isbn, volume_number, vol_sort, title, creator, publisher, label, pubdate
+     FROM volumes WHERE series_id = ? ORDER BY vol_sort, pubdate, isbn`
+  )
+    .bind(seriesId)
+    .all<VolumeRow>();
+
+  // MADB lists the same volume under several ISBNs (通常版/重版/特装版). Group them
+  // by volume_number (volumes with no number key on their isbn so single-volume
+  // works are never collapsed) so each volume appears once. Keep every sibling
+  // ISBN so we can pick whichever one has a cover.
+  const groups = new Map<string, { rep: VolumeRow; isbns: string[] }>();
+  for (const v of res.results ?? []) {
+    const key = v.volume_number ? `n:${v.volume_number}` : `i:${v.isbn}`;
+    const g = groups.get(key);
+    if (g) g.isbns.push(v.isbn);
+    else groups.set(key, { rep: v, isbns: [v.isbn] });
+  }
+
+  // Fold in volumes that belong to this work but lost their schema:isPartOf in the dump
+  // (series_id NULL). They carry the identical schema:name, so match on exact title —
+  // only when this name maps to a single series, or same-titled works/editions would
+  // steal each other's loose volumes (same guard as the SPARQL supplement below).
+  // Unlike that supplement we do NOT filter by creator: 原作/作画 split works list a
+  // different creator per volume (e.g. リュート vs 鍋島テツヒロ), and gating on the
+  // master creator would drop one half. Duplicate volume_numbers just collapse into
+  // sibling ISBNs of the volume already present, so no volume is double-counted.
+  if (await isSoleSeriesForName(env, meta.id, meta.name)) {
+    const unlinked = await env.DB.prepare(
+      `SELECT isbn, volume_number, vol_sort, title, creator, publisher, label, pubdate
+       FROM volumes WHERE series_id IS NULL AND title = ? ORDER BY vol_sort, pubdate, isbn`
+    )
+      .bind(meta.name)
+      .all<VolumeRow>();
+    for (const v of unlinked.results ?? []) {
+      const key = v.volume_number ? `n:${v.volume_number}` : `i:${v.isbn}`;
+      const g = groups.get(key);
+      if (g) g.isbns.push(v.isbn);
+      else groups.set(key, { rep: v, isbns: [v.isbn] });
+    }
+  }
+
+  interface Entry {
+    isbn: string;
+    isbns: string[];
+    volume_number: string;
+    vol_sort: number;
+    title: string;
+    author: string;
+    publisher: string;
+    label: string;
+    pubdate: string;
+    correction: boolean;
+  }
+
+  const entries: Entry[] = [...groups.values()].map(({ rep, isbns }) => ({
+    isbn: rep.isbn,
+    isbns,
+    volume_number: rep.volume_number ?? "",
+    vol_sort: rep.vol_sort ?? 0,
+    title: rep.title,
+    author: rep.creator ?? meta.creator ?? "",
+    publisher: rep.publisher ?? "",
+    label: rep.label ?? "",
+    pubdate: rep.pubdate ?? "",
+    correction: false,
+  }));
+
+  // Supplement with newer tankobon that exist in live MADB but are unlinked in the
+  // dump (see src/madbLive.ts). Cached per series (monthly), so only the first open
+  // of a stale series pays one SPARQL round-trip. Only supplement a series that uses
+  // a single standard numbering format (巻N / N) AND is the only same-name+creator
+  // series using it — otherwise same-titled editions (新装版・総集編・アーク別) would
+  // steal each other's loose volumes.
+  const existingNumbers = new Set(entries.map((e) => e.volume_number).filter(Boolean));
+  const maxSort = entries.reduce((m, e) => Math.max(m, e.vol_sort), 0);
+  const fmt = seriesFormat([...existingNumbers]);
+  const eligible =
+    !!fmt &&
+    !!meta.creator &&
+    (await isUnambiguousForSupplement(env, meta.id, meta.name, meta.creator, fmt));
+
+  // probe=false: merge only what a prior probe already cached (no network). null ⇒
+  // never probed, which the search card surfaces as an "未確認" marker.
+  // probe=true (button): hit live MADB for eligible series; for ineligible ones just
+  // record that we looked, so the marker still clears.
+  let supplement: SupplementVolume[] = [];
+  let probed: boolean;
+  let checkedAt = 0;
+  if (probe) {
+    if (eligible) {
+      supplement = await getSupplementVolumes(
+        env,
+        meta.id,
+        meta.name,
+        meta.creator!,
+        existingNumbers,
+        maxSort,
+        fmt!,
+        true
+      );
+    } else {
+      await markSupplementProbed(env, meta.id);
+    }
+    probed = true;
+    checkedAt = Date.now();
+  } else {
+    const cached = await readCachedSupplement(env, meta.id);
+    supplement = cached?.volumes ?? [];
+    probed = cached !== null;
+    checkedAt = cached?.checkedAt ?? 0;
+  }
+  for (const s of supplement) {
+    entries.push({
+      isbn: s.isbn,
+      isbns: s.isbns,
+      volume_number: s.volume_number,
+      vol_sort: s.vol_sort,
+      title: s.title,
+      author: s.author,
+      publisher: s.publisher,
+      label: "",
+      pubdate: s.pubdate,
+      correction: false,
+    });
+  }
+
+  // Merge user-submitted corrections (volumes absent from both the dump and live
+  // MADB, e.g. ONE PIECE 巻110). Keyed on this exact series C-id, so unlike the
+  // SPARQL supplement there's no same-name/different-series ambiguity. Title/author
+  // come from the series row; cover was resolved server-side at submit time.
+  const knownNumbers = new Set(entries.map((e) => e.volume_number).filter(Boolean));
+  const knownIsbns = new Set<string>();
+  for (const e of entries) for (const i of e.isbns) knownIsbns.add(i);
+  for (const c of await getCorrectionVolumes(env, meta.id)) {
+    if (knownIsbns.has(c.isbn)) continue;
+    if (c.volume_number && knownNumbers.has(c.volume_number)) continue;
+    entries.push({
+      isbn: c.isbn,
+      isbns: [c.isbn],
+      volume_number: c.volume_number,
+      vol_sort: c.vol_sort,
+      title: displayName,
+      author: meta.creator ?? "",
+      publisher: "",
+      label: "",
+      pubdate: "",
+      correction: true,
+    });
+  }
+
+  // 管理者が「確定」した巻は volume_hidden に載る。source を問わず全閲覧者から除外する
+  // （マスター/補完は元データを消せないので、ここでのフィルタが唯一の全体非表示手段）。
+  const hiddenRows = await env.DB.prepare(
+    `SELECT isbn FROM volume_hidden WHERE series_id = ?`
+  )
+    .bind(seriesId)
+    .all<{ isbn: string }>();
+  const hiddenIsbns = new Set((hiddenRows.results ?? []).map((r) => r.isbn));
+  const shown = hiddenIsbns.size
+    ? entries.filter((e) => !e.isbns.some((i) => hiddenIsbns.has(i)))
+    : entries;
+
+  shown.sort(
+    (a, b) => a.vol_sort - b.vol_sort || a.pubdate.localeCompare(b.pubdate) || a.isbn.localeCompare(b.isbn)
+  );
+
+  const allIsbns: string[] = [];
+  for (const e of shown) allIsbns.push(...e.isbns);
+  // Cache-only read: this endpoint must return instantly. Uncached covers come
+  // back blank here; the client fills them lazily via POST /api/covers (which
+  // does the rate-limited Rakuten/Google probing in the background).
+  const covers = await readCachedCovers(env, allIsbns);
+
+  const volumes: OutVolume[] = shown.map((e) => ({
+    isbn: e.isbn,
+    isbns: e.isbns,
+    volume_number: e.volume_number,
+    vol_sort: e.vol_sort,
+    title: e.title,
+    author: e.author,
+    publisher: e.publisher,
+    label: e.label,
+    pubdate: e.pubdate,
+    cover_url: firstCover(e.isbns, covers),
+    correction: e.correction,
+  }));
+
+  // Covers are resolved strictly by ISBN (Rakuten ISBN-exact, then Google). We
+  // deliberately do NOT title-search to fill remaining gaps: several distinct
+  // series can share a base title (e.g. 「冴えない彼女の育てかた」 has 4), so
+  // volume-number matching would assign the wrong series' cover. Uncovered
+  // volumes are left blank for the owner to fix via the cover picker.
+  return json(
+    {
+      series_id: meta.id,
+      title: displayName,
+      creator: meta.creator ?? "",
+      supplement_probed: probed,
+      supplement_checked_at: checkedAt,
+      master_updated_at: await getMasterUpdatedAt(env),
+      volumes,
+    },
+    200,
+    { "cache-control": "no-store" }
+  );
+}
+
+/** Epoch-ms the MADB master was last refreshed: the dump's release date if the
+ *  ingest recorded one, else the import time. 0 when never ingested / no meta table. */
+async function getMasterUpdatedAt(env: Env): Promise<number> {
+  try {
+    const res = await env.DB.prepare(
+      `SELECT key, value FROM meta WHERE key IN ('madb_released_at', 'imported_at')`
+    ).all<{ key: string; value: string }>();
+    const m = new Map((res.results ?? []).map((r) => [r.key, r.value]));
+    return Number(m.get("madb_released_at") || m.get("imported_at") || 0);
+  } catch {
+    return 0; // meta table absent (pre-migration DB)
+  }
+}
+
+/** True when no OTHER series shares this exact name — so unlinked volumes carrying the
+ *  same schema:name can be safely attributed to this one series (see the local merge in
+ *  getSeriesVolumes). If a sibling series shares the name (新装版/総集編/別作品), a loose
+ *  volume can't be attributed, so we skip the merge. */
+async function isSoleSeriesForName(env: Env, seriesId: string, name: string): Promise<boolean> {
+  const row = await env.DB.prepare(`SELECT COUNT(*) AS n FROM series WHERE name = ? AND id != ?`)
+    .bind(name, seriesId)
+    .first<{ n: number }>();
+  return (row?.n ?? 0) === 0;
+}
+
+/** True when no OTHER series with the same exact name and creator also uses `fmt`.
+ *  If a sibling shares the numbering style (e.g. two 「One piece」 by 尾田栄一郎), a
+ *  loose live volume can't be attributed to one of them, so we skip supplementing. */
+async function isUnambiguousForSupplement(
+  env: Env,
+  seriesId: string,
+  name: string,
+  creator: string,
+  fmt: NumFmt
+): Promise<boolean> {
+  const cond =
+    fmt === "KAN"
+      ? "v.volume_number GLOB '巻[0-9]*'"
+      : "(v.volume_number GLOB '[0-9]*' AND NOT v.volume_number GLOB '*[^0-9]*')";
+  const row = await env.DB.prepare(
+    `SELECT COUNT(*) AS n FROM series s2
+       WHERE s2.name = ? AND COALESCE(s2.creator, '') = ? AND s2.id != ?
+         AND EXISTS (SELECT 1 FROM volumes v WHERE v.series_id = s2.id AND ${cond})`
+  )
+    .bind(name, creator, seriesId)
+    .first<{ n: number }>();
+  return (row?.n ?? 0) === 0;
+}
+

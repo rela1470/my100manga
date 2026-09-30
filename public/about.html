@@ -1,0 +1,102 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>利用ソース・アフィリエイトについて | my100manga</title>
+  <meta name="description" content="my100manga が利用しているデータソース（メディア芸術データベース・楽天ブックスAPI 等）と、アフィリエイトプログラムについての説明ページです。">
+  <link rel="stylesheet" href="/styles.css">
+</head>
+<body>
+  <header class="site">
+    <h1><a href="/" style="text-decoration:none;color:inherit">my<span class="accent">100</span>manga</a></h1>
+    <p class="tagline">利用ソース・アフィリエイトについて</p>
+  </header>
+
+  <div class="wrap">
+    <article class="prose">
+      <p class="lead">
+        my100manga は「私を構成する100の漫画」を選んでカードにし、URLで共有できるサイトです。
+        作品データや表紙画像は外部の公開データベース・APIから取得しています。また、購入リンクにアフィリエイトを利用しています。
+        このページではその利用ソースとアフィリエイトについて説明します。
+      </p>
+
+      <h2>利用しているデータソース</h2>
+
+      <h3>作品データ（検索・シリーズ・巻・ISBN）</h3>
+      <p>
+        <span class="src-name">メディア芸術データベース（MADB）</span> のマンガ単行本 LOD を取り込んで、
+        作品の検索、シリーズ→巻→ISBN の一覧に利用しています。
+      </p>
+      <ul>
+        <li>提供: 文化庁「メディア芸術データベース」</li>
+        <li>サイト: <a href="https://mediaarts-db.artmuseums.go.jp/" target="_blank" rel="noopener">https://mediaarts-db.artmuseums.go.jp/</a></li>
+        <li>データセット: <a href="https://github.com/mediaarts-db/dataset" target="_blank" rel="noopener">mediaarts-db/dataset</a>（マンガ単行本・シリーズの JSON-LD）</li>
+      </ul>
+      <p>
+        また、月次ダンプに未収録の新しい巻は、MADB のライブ SPARQL エンドポイント
+        （<a href="https://mediaarts-db.artmuseums.go.jp/sparql" target="_blank" rel="noopener">https://mediaarts-db.artmuseums.go.jp/sparql</a>）
+        へ問い合わせて補完しています。
+      </p>
+
+      <h3>表紙画像（書影）</h3>
+      <p>ISBN で以下の順に書影を解決し、どちらにも無い場合はグレーの「No Image」プレースホルダを表示します。</p>
+      <ul>
+        <li>
+          <span class="src-name">楽天ブックス書籍検索API（楽天ウェブサービス）</span> ― ISBN 完全一致で書影を取得（第一候補）。
+          <br>提供: <a href="https://webservice.rakuten.co.jp/" target="_blank" rel="noopener">楽天ウェブサービス（Rakuten Developers）</a>
+        </li>
+        <li>
+          <span class="src-name">Google ブックス（Google Books）</span> ― 楽天で取得できなかった ISBN を補助的に補完。
+        </li>
+      </ul>
+
+      <p class="note">
+        各データ・画像の権利は、それぞれの提供元に帰属します。my100manga はこれらを検索・表示の目的で参照しており、
+        内容の正確性・完全性を保証するものではありません。データの誤りや表紙の不一致は、サイト内の修正機能や提供元の情報に基づいて随時見直しています。
+      </p>
+
+      <h2>アフィリエイトについて</h2>
+      <p>
+        閲覧ページの作品詳細に表示される「購入する」ボタン（Amazon・楽天ブックス・楽天Kobo・メルカリ等）には、
+        以下のアフィリエイトプログラムのリンクを使用しています。これらのリンクを経由して商品が購入された場合、
+        当サイトが紹介料（収益）を得ることがあります。購入者に追加の負担は一切ありません。
+      </p>
+      <ul>
+        <li>
+          <span class="src-name">Amazonアソシエイト・プログラム</span><br>
+          当サイトは、Amazon.co.jp を宣伝しリンクすることによってサイトが紹介料を獲得できる手段を提供することを目的に設定された
+          アフィリエイトプログラムである、Amazonアソシエイト・プログラムの参加者です。
+        </li>
+        <li><span class="src-name">楽天アフィリエイト</span>（楽天ブックス・楽天Kobo の商品リンク）</li>
+        <li><span class="src-name">メルカリ アフィリエイト</span>（中古の商品検索リンク）</li>
+      </ul>
+      <p class="note">
+        景品表示法（ステルスマーケティング規制）に基づき、当サイトが広告（アフィリエイト）を含むことを明示しています。
+        外部ストアへのリンクには <code>rel="sponsored nofollow noopener"</code> を付与しています。
+      </p>
+      <p class="note">
+        なお、当サイトはアフィリエイトプログラム（Amazonアソシエイト・楽天アフィリエイト・メルカリ アフィリエイト等）の
+        規約に準拠して運営しているため、アダルト（成人向け）作品の登録・掲載は <strong>こちら側のサイトでは</strong> できません。
+      </p>
+
+      <h2>お問い合わせ</h2>
+      <p>
+        データの誤りは各ページにある修正ボタンよりお願いいたします。
+      </p>
+      <p>ご意見・ご要望などは当サイトの運営者までご連絡ください。
+      </p>
+    </article>
+
+    <div class="publish-bar">
+      <a href="/"><button class="primary">トップにもどる</button></a>
+    </div>
+  </div>
+
+  <footer class="site">
+    <p>データ提供: メディア芸術データベース（文化庁）／ 書影: 楽天ブックス・Google Books ｜ my100manga</p>
+    <p class="aff-disclosure">当サイトは Amazon アソシエイト・楽天アフィリエイト等を利用しており、リンク経由の購入で収益を得ることがあります。</p>
+    <p class="foot-links"><a href="/ranking">人気ランキング</a> ｜ <a href="/about">利用ソース・アフィリエイトについて</a></p>
+  </footer>
+</body>
+</html>

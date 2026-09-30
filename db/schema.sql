@@ -1,0 +1,238 @@
+-- my100manga schema
+
+CREATE TABLE IF NOT EXISTS lists (
+  slug        TEXT PRIMARY KEY,
+  edit_token  TEXT NOT NULL,
+  owner_name  TEXT,
+  items_json  TEXT NOT NULL,
+  created_at  INTEGER NOT NULL,
+  updated_at  INTEGER NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_lists_created_at ON lists (created_at);
+
+-- ── 巻の「追加」イベントログ (本が追加された回数ランキングの元データ) ──────────
+-- lists.items_json は現在のスナップショットしか持たず「どの巻をいつ追加したか」の履歴が
+-- 無いため、時間窓 (過去24h/7d/30d) ランキングを出せない。そこで公開時にリストへ新規に
+-- 加わった巻を 1 行ずつ append する。作成公開では全 item、更新公開では旧→新の差分で新しく
+-- 現れた isbn のみ記録する (added_at = その時刻)。ランキングは COUNT(DISTINCT slug) で
+-- 「選んだ人数」を数え、added_at の絞り込みで窓を出す。累計も同じテーブルから (窓なし) 出す
+-- ので 4 窓が一貫する。リスト削除時 (adminDeleteList) は幻レコードを残さないよう slug 単位で
+-- まとめて削除する。既存リストの seed は db/backfill-events.sql を一度だけ実行する。
+-- isbn 未確定 (作品単位追加) の item は集計対象外なので記録もしない。See src/ranking.ts。
+CREATE TABLE IF NOT EXISTS list_item_events (
+  id         INTEGER PRIMARY KEY AUTOINCREMENT,
+  slug       TEXT NOT NULL,            -- 追加元リストの slug (リスト削除時にこの単位で掃除)
+  isbn       TEXT NOT NULL,            -- 追加された巻の ISBN13 (集計キー)
+  title      TEXT NOT NULL,            -- 追加時点の表示名スナップショット (「シリーズ名 巻番号」)
+  author     TEXT,                     -- 追加時点の著者スナップショット
+  cover_url  TEXT,                     -- 追加時点の表紙 URL スナップショット
+  added_at   INTEGER NOT NULL          -- 追加時刻 (epoch ms)。窓の絞り込みに使う
+);
+CREATE INDEX IF NOT EXISTS idx_lie_added_at ON list_item_events (added_at);
+CREATE INDEX IF NOT EXISTS idx_lie_isbn ON list_item_events (isbn);
+CREATE INDEX IF NOT EXISTS idx_lie_slug ON list_item_events (slug);
+
+-- Cache of resolved cover URLs per ISBN: a real Google Books cover if one exists,
+-- else the Rakuten Books cover, else "" (no cover anywhere). See src/covers.ts.
+CREATE TABLE IF NOT EXISTS covers (
+  isbn       TEXT PRIMARY KEY,
+  cover_url  TEXT NOT NULL,     -- resolved best cover URL ("" = none found)
+  checked_at INTEGER NOT NULL
+);
+
+-- Key/value metadata. Currently holds the MADB dump provenance written by each
+-- ingest: madb_release_tag (release tag), madb_released_at / imported_at (epoch ms).
+-- Surfaced in the volume view as "マスター更新". See scripts/ingest.mjs.
+CREATE TABLE IF NOT EXISTS meta (
+  key   TEXT PRIMARY KEY,
+  value TEXT NOT NULL
+);
+
+-- ── MADB master (メディア芸術データベース単行本LOD) ──────────────────────────
+-- Imported monthly from https://github.com/mediaarts-db/dataset releases.
+-- Source of truth for series→volume→ISBN correlation. See scripts/ingest.mjs.
+
+CREATE TABLE IF NOT EXISTS series (
+  id         TEXT PRIMARY KEY,   -- MADB collection C-id (e.g. C268475)
+  name           TEXT NOT NULL,  -- schema:name (series title)
+  name_norm      TEXT NOT NULL,  -- normalized title for search (no spaces, lower)
+  name_kana      TEXT,           -- kana reading (schema:name ja-hrkt)
+  name_kana_norm TEXT,           -- normalized kana (lets カナ queries hit roman-titled series)
+  creator        TEXT,
+  publisher      TEXT,
+  label          TEXT,           -- schema:brand (レーベル)
+  num_items      INTEGER         -- schema:numberOfItems
+);
+CREATE INDEX IF NOT EXISTS idx_series_name_norm ON series (name_norm);
+CREATE INDEX IF NOT EXISTS idx_series_kana_norm ON series (name_kana_norm);
+
+CREATE TABLE IF NOT EXISTS volumes (
+  isbn          TEXT PRIMARY KEY,  -- normalized ISBN13
+  series_id     TEXT,              -- MADB isPartOf C-id (nullable; ~20% unlinked)
+  volume_number TEXT,              -- schema:volumeNumber (kept as text: "1","上",...)
+  vol_sort      INTEGER,           -- numeric sort key derived from volume_number
+  title         TEXT NOT NULL,     -- schema:name (series title on the volume)
+  creator       TEXT,
+  publisher     TEXT,
+  label         TEXT,
+  pubdate       TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_volumes_series ON volumes (series_id, vol_sort);
+
+-- Cache of extra volumes recovered from the live MADB SPARQL endpoint for a series
+-- (newer tankobon that exist in MADB but lack schema:isPartOf, so the monthly dump
+-- leaves them unlinked — e.g. ONE PIECE vol 101+). See src/madbLive.ts.
+CREATE TABLE IF NOT EXISTS series_supplement (
+  series_id    TEXT PRIMARY KEY,   -- MADB collection C-id this supplement extends
+  volumes_json TEXT NOT NULL,      -- JSON array of extra volumes ("[]" = none found)
+  checked_at   INTEGER NOT NULL
+);
+
+-- User-submitted corrections: volumes missing from BOTH the dump and live MADB
+-- (e.g. ONE PIECE 巻110, absent upstream entirely) that a visitor filled in by
+-- picking a real book from the assisted search. Keyed per series C-id, merged into
+-- the volume list on read so the fix is cached for everyone. Only isbn/volume are
+-- accepted from the client; title/author come from the series row and the cover is
+-- re-resolved server-side, so no client-controlled strings are trusted. See
+-- src/corrections.ts.
+CREATE TABLE IF NOT EXISTS series_correction (
+  series_id         TEXT NOT NULL,     -- MADB collection C-id this correction extends
+  isbn              TEXT NOT NULL,     -- normalized ISBN13 of the picked edition
+  volume_number     TEXT NOT NULL,     -- standard label only ("巻110" / "110")
+  vol_sort          INTEGER NOT NULL,  -- numeric sort key derived from volume_number
+  cover_url         TEXT NOT NULL DEFAULT '',
+  created_at        INTEGER NOT NULL,
+  reviewed_at       INTEGER NOT NULL DEFAULT 0,  -- 管理者が「確定(承認)」した時刻。0=レビュー待ち
+  PRIMARY KEY (series_id, isbn)
+);
+CREATE INDEX IF NOT EXISTS idx_series_correction_series ON series_correction (series_id);
+
+-- Visitor "間違っています" reports against ANY volume in a series view — not just
+-- user corrections but master (dump) and live-supplement volumes too, since the
+-- master itself can be wrong. A report does NOT hide the row globally: it only bumps
+-- report_count here and the reporter's own browser hides it locally (localStorage).
+-- The volume stays public for everyone else until an admin reviews and finalizes:
+-- for a user correction that means purging (deleting) the series_correction row; for
+-- a master/supplement volume it's an upstream data issue to note. Keyed per
+-- (series_id, isbn); repeated flags bump the count. See src/corrections.ts
+-- (reportVolume) and src/admin.ts (list + dismiss).
+CREATE TABLE IF NOT EXISTS volume_report (
+  series_id         TEXT NOT NULL,     -- MADB collection C-id the volume was reported under
+  isbn              TEXT NOT NULL,     -- normalized ISBN13 of the reported volume
+  volume_number     TEXT NOT NULL DEFAULT '',  -- label snapshot for the admin view
+  report_count      INTEGER NOT NULL DEFAULT 0,
+  first_reported_at INTEGER NOT NULL,
+  last_reported_at  INTEGER NOT NULL,
+  PRIMARY KEY (series_id, isbn)
+);
+CREATE INDEX IF NOT EXISTS idx_volume_report_last ON volume_report (last_reported_at);
+
+-- Admin-confirmed globally-hidden volumes. A report only hides the volume on the
+-- reporter's own device; when an admin presses 確定 the volume is recorded here so
+-- getSeriesVolumes filters it out for EVERYONE (master / supplement / correction
+-- alike, since even master data can be wrong and otherwise can't be removed).
+-- See src/admin.ts (adminConfirmVolumeReport) and src/series.ts (getSeriesVolumes).
+CREATE TABLE IF NOT EXISTS volume_hidden (
+  series_id  TEXT NOT NULL,
+  isbn       TEXT NOT NULL,
+  created_at INTEGER NOT NULL,
+  PRIMARY KEY (series_id, isbn)
+);
+CREATE INDEX IF NOT EXISTS idx_volume_hidden_series ON volume_hidden (series_id);
+
+-- ── Visitor reports that a series NAME is wrong (シリーズ名の通報) ────────────
+-- Upstream MADB data can carry a corrupt series title (e.g. C312117 「ハレグゥ」
+-- imported as schema:name "ｖ"). A visitor on the 巻一覧 view can flag the name as
+-- wrong. Like volume_report this does NOT rewrite the name globally: it only bumps
+-- report_count here (+timestamps) for the admin audit, and the reporter's own browser
+-- suppresses nothing (the name is not per-row hidden). The admin reviews and either
+-- 却下 (delete this row) or 名前修正 (write series_name_override, applied at read time).
+-- reported_name is a best-effort snapshot of the wrong name at report time. Keyed per
+-- series_id; repeated flags bump the count. See src/corrections.ts (reportSeriesName)
+-- and src/admin.ts (list / dismiss / override).
+CREATE TABLE IF NOT EXISTS series_report (
+  series_id         TEXT PRIMARY KEY,          -- MADB collection C-id reported
+  reported_name     TEXT NOT NULL DEFAULT '',  -- name snapshot at report time
+  report_count      INTEGER NOT NULL DEFAULT 0,
+  first_reported_at INTEGER NOT NULL,
+  last_reported_at  INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_series_report_last ON series_report (last_reported_at);
+
+-- Admin-confirmed series name overrides. When an admin fixes a reported name, the
+-- corrected title is stored here and applied at READ time (COALESCE over series.name
+-- in search + series detail), so it survives the monthly MADB re-ingest that would
+-- otherwise restore the corrupt master name. Display-only: search matching still runs
+-- against the original name_norm / name_kana_norm columns (the kana reading already
+-- carries the real title, so corrupt-named series remain findable). One row per series.
+-- See src/admin.ts (adminOverrideSeriesName), src/search.ts and src/series.ts.
+CREATE TABLE IF NOT EXISTS series_name_override (
+  series_id  TEXT PRIMARY KEY,   -- MADB collection C-id whose display name is overridden
+  name       TEXT NOT NULL,      -- corrected series title shown to everyone
+  created_at INTEGER NOT NULL
+);
+
+-- ── User-submitted reports of free-text content (通報) ───────────────────────
+-- Visitors can flag a list's owner_name or an item's comment as inappropriate.
+-- One row per (slug, target_type, position); repeated reports bump report_count
+-- instead of piling up rows (light anti-spam). reported_text is a snapshot of the
+-- offending text at report time so the admin sees what was flagged even if it later
+-- changes. Position is the 1-based item position for comments, 0 for owner_name.
+-- See src/reports.ts (public write) and src/admin.ts (audit + redaction).
+CREATE TABLE IF NOT EXISTS reports (
+  id            INTEGER PRIMARY KEY AUTOINCREMENT,
+  slug          TEXT NOT NULL,
+  target_type   TEXT NOT NULL,              -- 'owner_name' | 'comment' | 'cover'
+  position      INTEGER NOT NULL DEFAULT 0, -- comment/cover: item position (1-based); owner_name: 0
+  reported_text TEXT NOT NULL,              -- snapshot at report time (comment text / cover_url)
+  report_count  INTEGER NOT NULL DEFAULT 1,
+  first_at      INTEGER NOT NULL,
+  last_at       INTEGER NOT NULL,
+  resolved_at   INTEGER NOT NULL DEFAULT 0, -- 管理者が処理した時刻。0 = 未処理（ソフトデリート）
+  resolution    TEXT NOT NULL DEFAULT '',   -- '' | 'dismissed'(誤報却下) | 'redacted'(伏字対応)
+  UNIQUE (slug, target_type, position)
+);
+CREATE INDEX IF NOT EXISTS idx_reports_last_at ON reports (last_at);
+CREATE INDEX IF NOT EXISTS idx_reports_resolved ON reports (resolved_at);
+
+-- ── User-submitted cover corrections (表紙の修正) ────────────────────────────
+-- リスト編集の「表紙を変更」で、ユーザがキャッシュと違う表紙を選んだときに 1 件収集する。
+-- リスト保存ではその表紙はそのリストの items_json にしか入らない＝本人のリストにしか反映
+-- されないため、正しい表紙をグローバルな covers キャッシュへ波及させる承認キューとして使う。
+-- 巻の通報と同じく「収集するだけ・自動では全体反映しない」: 管理者が承認して初めて covers を
+-- 上書きし、全リスト/シリーズ閲覧に反映される。1 ISBN に複数の候補があり得るので PK は
+-- (isbn, cover_url)。同じ提案の再送は suggest_count を増やすだけ。old_cover_url は提案時点の
+-- キャッシュ値のスナップショット（管理者が新旧を並べて目視するため。'' = 当時キャッシュ無し）。
+-- See src/corrections.ts (suggestCover) と src/admin.ts (list / approve / dismiss)。
+CREATE TABLE IF NOT EXISTS cover_suggestion (
+  isbn          TEXT NOT NULL,              -- 対象書籍の正規化 ISBN13
+  cover_url     TEXT NOT NULL,              -- ユーザが選んだ提案表紙 URL
+  old_cover_url TEXT NOT NULL DEFAULT '',   -- 提案時点の covers キャッシュ値（'' = 当時無し）
+  suggest_count INTEGER NOT NULL DEFAULT 0, -- 同一 (isbn, cover_url) が提案された回数
+  first_at      INTEGER NOT NULL,
+  last_at       INTEGER NOT NULL,
+  resolved_at   INTEGER NOT NULL DEFAULT 0, -- 管理者が処理した時刻。0 = 未処理（ソフトデリート）
+  resolution    TEXT NOT NULL DEFAULT '',   -- '' | 'approved'(採用) | 'superseded'(別候補採用) | 'dismissed'(却下)
+  PRIMARY KEY (isbn, cover_url)
+);
+CREATE INDEX IF NOT EXISTS idx_cover_suggestion_last ON cover_suggestion (last_at);
+CREATE INDEX IF NOT EXISTS idx_cover_suggestion_resolved ON cover_suggestion (resolved_at);
+
+-- ── 公開の監査ログ (audit trail) ─────────────────────────────────────────────
+-- リストの新規公開 (POST /api/lists) と更新公開 (PUT /api/lists/:slug) のたびに 1 行
+-- 追記する append-only の証跡。アカウントの無い匿名公開サイトなので「誰が」は特定でき
+-- る範囲 = 接続元 IP (CF-Connecting-IP) / User-Agent / CF 由来の国を残す。追記のみで
+-- 更新・削除しない。See src/lists.ts (recordPublishAudit) と src/admin.ts。
+CREATE TABLE IF NOT EXISTS publish_audit (
+  id         INTEGER PRIMARY KEY AUTOINCREMENT,
+  slug       TEXT NOT NULL,               -- 対象リストの slug
+  action     TEXT NOT NULL,               -- 'create' (新規公開) | 'update' (更新公開)
+  owner_name TEXT,                        -- 公開時点の owner_name スナップショット
+  ip         TEXT,                        -- 接続元 IP (CF-Connecting-IP)
+  user_agent TEXT,                        -- User-Agent ヘッダ (最大 512 文字)
+  country    TEXT,                        -- request.cf.country (取得できた場合)
+  created_at INTEGER NOT NULL             -- 公開時刻 (epoch ms)
+);
+CREATE INDEX IF NOT EXISTS idx_publish_audit_slug ON publish_audit (slug);
+CREATE INDEX IF NOT EXISTS idx_publish_audit_created ON publish_audit (created_at);

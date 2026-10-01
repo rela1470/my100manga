@@ -102,9 +102,9 @@ function coverNode(e) {
     const img = document.createElement("img");
     img.className = "cover";
     img.loading = "lazy";
-    img.src = e.cover_url;
     img.alt = e.title;
     img.onerror = () => img.replaceWith(placeholder(e.title));
+    applyCover(img, e.cover_url);
     return img;
   }
   return placeholder(e.title);
@@ -148,9 +148,9 @@ async function fillMissingCovers() {
       const img = document.createElement("img");
       img.className = "cover";
       img.loading = "lazy";
-      img.src = covers[isbn];
       img.alt = li.querySelector(".rank-title")?.textContent || "";
       img.onerror = () => img.replaceWith(placeholder(img.alt));
+      applyCover(img, covers[isbn]);
       box.appendChild(img);
     }
   }

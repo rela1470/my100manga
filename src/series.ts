@@ -1,5 +1,5 @@
 import { Env } from "./types";
-import { json, notFound, normTitle, baseTitle, escapeLike } from "./util";
+import { json, notFound, normTitle, baseTitle, escapeLikeClamped, LIKE_MAX_BYTES } from "./util";
 import { readCachedCovers, firstCover } from "./covers";
 import {
   getSupplementVolumes,
@@ -130,7 +130,7 @@ export async function getSeriesVolumes(
          AND REPLACE(REPLACE(LOWER(title), ' ', ''), '　', '') LIKE ? ESCAPE '\\'
        ORDER BY vol_sort, pubdate, isbn`
     )
-      .bind(escapeLike(base) + "%")
+      .bind(escapeLikeClamped(base, LIKE_MAX_BYTES - 1) + "%")
       .all<VolumeRow>();
     foldUnlinked((variants.results ?? []).filter((v) => baseTitle(v.title) === base));
   }
@@ -266,13 +266,46 @@ export async function getSeriesVolumes(
   // back blank here; the client fills them lazily via POST /api/covers (which
   // does the rate-limited Rakuten/Google probing in the background).
   const covers = await readCachedCovers(env, allIsbns);
+  const titleOverrides = await readVolumeTitleOverrides(env, allIsbns);
+
+  // 本のタイトルをシリーズで揃える: 巻の schema:name はシリーズ名の繰り返しなので、
+  // 表記ゆれ分割などで一部だけ変なタイトルを背負う。管理者がシリーズ名を直していれば
+  // それ(displayName)を、無ければマスタ巻タイトルの最多(canonical)を全巻の表示タイトルに
+  // する。個別 ISBN に管理者修正(volume_title_override)があれば最優先。巻番号は volLabel 側
+  // で付くので、ここで title をシリーズ共通に揃えても巻は区別される。
+  const titleCounts = new Map<string, number>();
+  for (const v of res.results ?? []) {
+    const t = (v.title ?? "").trim();
+    if (t) titleCounts.set(t, (titleCounts.get(t) ?? 0) + 1);
+  }
+  let canonicalTitle = "";
+  let bestN = 0;
+  for (const [t, n] of titleCounts) {
+    const better =
+      n > bestN ||
+      (n === bestN &&
+        (t.length > canonicalTitle.length ||
+          (t.length === canonicalTitle.length && t < canonicalTitle)));
+    if (better) {
+      canonicalTitle = t;
+      bestN = n;
+    }
+  }
+  const seriesTitle = meta.override_name ? displayName : canonicalTitle;
+  const titleFor = (e: Entry): string => {
+    for (const i of e.isbns) {
+      const ov = titleOverrides.get(i);
+      if (ov) return ov;
+    }
+    return seriesTitle || e.title;
+  };
 
   const volumes: OutVolume[] = shown.map((e) => ({
     isbn: e.isbn,
     isbns: e.isbns,
     volume_number: e.volume_number,
     vol_sort: e.vol_sort,
-    title: e.title,
+    title: titleFor(e),
     author: e.author,
     publisher: e.publisher,
     label: e.label,
@@ -301,6 +334,30 @@ export async function getSeriesVolumes(
   );
 }
 
+/** GET /api/master-info — public provenance of the MADB master for the about page:
+ *  the dump release tag/date and when this site last imported it. */
+export async function handleMasterInfo(env: Env): Promise<Response> {
+  let tag: string | null = null;
+  let releasedAt = 0;
+  let importedAt = 0;
+  try {
+    const res = await env.DB.prepare(
+      `SELECT key, value FROM meta WHERE key IN ('madb_release_tag', 'madb_released_at', 'imported_at')`
+    ).all<{ key: string; value: string }>();
+    const m = new Map((res.results ?? []).map((r) => [r.key, r.value]));
+    tag = m.get("madb_release_tag") ?? null;
+    releasedAt = Number(m.get("madb_released_at") || 0);
+    importedAt = Number(m.get("imported_at") || 0);
+  } catch {
+    // meta table absent (pre-migration DB) → all defaults.
+  }
+  return json(
+    { tag, released_at: releasedAt || null, imported_at: importedAt || null },
+    200,
+    { "cache-control": "public, max-age=3600" }
+  );
+}
+
 /** Epoch-ms the MADB master was last refreshed: the dump's release date if the
  *  ingest recorded one, else the import time. 0 when never ingested / no meta table. */
 async function getMasterUpdatedAt(env: Env): Promise<number> {
@@ -313,6 +370,52 @@ async function getMasterUpdatedAt(env: Env): Promise<number> {
   } catch {
     return 0; // meta table absent (pre-migration DB)
   }
+}
+
+/** 収録巻の schema:name のうち最も多いタイトル（最頻値）を返す。MADB は同一作品を複数の
+ *  title 文字列で登録することがあり（英題別名・サブタイトル付き等）、series.name がその中の
+ *  少数派バリアントになっていることがある。巻側の多数派タイトルが実質的な正しい表示名なので、
+ *  シリーズ名の修正候補として使う。空タイトルは除外。同数なら長い（情報量が多い）方を優先。
+ *  収録巻が無ければ null。 */
+export async function getMostCommonVolumeTitle(
+  env: Env,
+  seriesId: string
+): Promise<{ title: string; count: number; total: number } | null> {
+  const res = await env.DB.prepare(
+    `SELECT title, COUNT(*) AS n FROM volumes
+       WHERE series_id = ? AND title <> ''
+       GROUP BY title
+       ORDER BY n DESC, LENGTH(title) DESC, title`
+  )
+    .bind(seriesId)
+    .all<{ title: string; n: number }>();
+  const list = res.results ?? [];
+  if (!list.length) return null;
+  const total = list.reduce((sum, r) => sum + r.n, 0);
+  return { title: list[0].title, count: list[0].n, total };
+}
+
+// Admin-confirmed per-ISBN title overrides (volume_title_override) for a set of
+// ISBNs. Chunked like readCachedCovers because D1 caps bound params per statement.
+export async function readVolumeTitleOverrides(
+  env: Env,
+  isbns: string[]
+): Promise<Map<string, string>> {
+  const out = new Map<string, string>();
+  const uniq = [...new Set(isbns.filter(Boolean))];
+  if (uniq.length === 0) return out;
+  const CHUNK = 90;
+  for (let i = 0; i < uniq.length; i += CHUNK) {
+    const chunk = uniq.slice(i, i + CHUNK);
+    const placeholders = chunk.map(() => "?").join(",");
+    const rows = await env.DB.prepare(
+      `SELECT isbn, title FROM volume_title_override WHERE isbn IN (${placeholders})`
+    )
+      .bind(...chunk)
+      .all<{ isbn: string; title: string }>();
+    for (const r of rows.results ?? []) out.set(r.isbn, r.title);
+  }
+  return out;
 }
 
 /** True when no OTHER series shares this exact name — so unlinked volumes carrying the
@@ -335,7 +438,7 @@ async function isSoleSeriesForBase(env: Env, seriesId: string, base: string): Pr
   const res = await env.DB.prepare(
     `SELECT id, name FROM series WHERE name_norm LIKE ? ESCAPE '\\' AND id != ?`
   )
-    .bind(escapeLike(base) + "%", seriesId)
+    .bind(escapeLikeClamped(base, LIKE_MAX_BYTES - 1) + "%", seriesId)
     .all<{ id: string; name: string }>();
   return !(res.results ?? []).some((r) => baseTitle(r.name) === base);
 }

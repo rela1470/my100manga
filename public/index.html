@@ -3,13 +3,15 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>my100manga - 私を構成する100の漫画</title>
+  <title>My 100 Manga - 私を構成する100の漫画</title>
   <meta name="description" content="あなたのおすすめ漫画100作品を選んでカードにし、URLで共有できるサイトです。">
+  <!--ANALYTICS-->
   <link rel="stylesheet" href="/styles.css">
 </head>
 <body>
+  <!--GTM_BODY-->
   <header class="site">
-    <h1>my<span class="accent">100</span>manga</h1>
+    <h1>My <span class="accent">100</span> Manga</h1>
     <p class="tagline">私を構成する100の漫画を選んで、URLで共有しよう</p>
   </header>
 
@@ -57,37 +59,65 @@
     <button class="primary" id="reorderDone">完了</button>
   </div>
 
-  <footer class="site">
-    <p>データ提供: メディア芸術データベース（文化庁）／ 書影: 楽天ブックス・Google Books ｜ my100manga</p>
-    <p class="foot-links"><a href="/ranking">人気ランキング</a> ｜ <a href="/about">利用ソース・アフィリエイトについて</a></p>
-  </footer>
+  <!--FOOTER_AFF-->
 
-  <!-- edit slot modal -->
-  <div class="modal-backdrop" id="editModal">
+  <!-- add / search modal -->
+  <div class="modal-backdrop" id="searchModal">
     <div class="modal">
-      <h2 id="editTitle">作品を選ぶ</h2>
+      <h2 id="searchTitle">作品を追加</h2>
       <div class="row">
         <input type="text" id="searchInput" placeholder="漫画のタイトルで検索（2文字以上）">
         <button id="searchBtn">検索</button>
       </div>
       <div class="spinner" id="searchSpinner" style="display:none">検索中...</div>
       <div class="results" id="results"></div>
-
-      <div id="selectedBox" style="display:none">
-        <div class="hint" id="selectedLabel"></div>
-        <div class="sel-cover">
-          <div class="sel-cover-thumb" id="selCoverThumb"></div>
-          <button type="button" class="linkbtn" id="changeCoverBtn">表紙を変更</button>
-        </div>
-        <textarea id="comment" placeholder="ひとことコメント（任意・200文字まで／URLは入力できません）" maxlength="200"></textarea>
-        <label class="check"><input type="checkbox" id="spoiler"> ネタバレを含む（閲覧時に伏せる）</label>
+      <div class="modal-actions">
+        <div style="flex:1"></div>
+        <button id="cancelSearch">閉じる</button>
       </div>
+    </div>
+  </div>
+
+  <!-- edit slot modal (閲覧画面と同じ表示＋コメント/ネタバレ/表紙の編集) -->
+  <div class="modal-backdrop" id="editModal">
+    <div class="modal">
+      <h2 id="eTitle"></h2>
+      <div class="detail-body">
+        <div id="eCoverBox"></div>
+        <div class="dinfo">
+          <div class="dauthor" id="eAuthor"></div>
+          <dl class="dmeta" id="eMeta">
+            <div class="dmeta-row" id="ePublisherRow" style="display:none"><dt>出版社</dt><dd id="ePublisher"></dd></div>
+            <div class="dmeta-row" id="ePubdateRow" style="display:none"><dt>発行日</dt><dd id="ePubdate"></dd></div>
+            <div class="dmeta-row" id="eIsbnRow" style="display:none"><dt>ISBN</dt><dd id="eIsbn"></dd></div>
+            <div class="dmeta-row" id="eSourceRow" style="display:none"><dt>画像参考元</dt><dd id="eSource"></dd></div>
+          </dl>
+          <div class="sel-cover">
+            <button type="button" class="linkbtn" id="changeCoverBtn">表紙を変更</button>
+            <button type="button" class="linkbtn" id="revertCoverBtn" style="display:none">デフォルトに戻す</button>
+            <button type="button" class="linkbtn" id="refetchBook" style="display:none">本データを再取得</button>
+          </div>
+        </div>
+      </div>
+      <div class="dsynopsis" id="eSynopsisBox" style="display:none">
+        <div class="dsynopsis-title">あらすじ</div>
+        <p class="dsynopsis-text" id="eSynopsis"></p>
+      </div>
+      <div class="buy" id="eBuy" style="display:none">
+        <div class="buy-title">購入する</div>
+        <div class="buy-group" id="eBuyPrint"></div>
+        <div class="buy-group" id="eBuyEbook"></div>
+        <div class="buy-group" id="eBuyUsed"></div>
+        <p class="buy-note">[AD]絶版でも電子書籍なら手に入ることがあります。リンクは各社アフィリエイトを含みます。</p>
+      </div>
+      <textarea id="comment" placeholder="ひとことコメント（任意・200文字まで／URLは入力できません）" maxlength="200"></textarea>
+      <label class="check"><input type="checkbox" id="spoiler"> ネタバレを含む（閲覧時に伏せる）</label>
 
       <div class="modal-actions">
-        <button id="removeSlot" style="display:none">この作品を削除</button>
+        <button id="removeSlot">この作品を削除</button>
         <div style="flex:1"></div>
         <button id="cancelEdit">キャンセル</button>
-        <button class="primary" id="saveSlot" disabled>追加する</button>
+        <button class="primary" id="saveSlot">更新する</button>
       </div>
     </div>
   </div>
@@ -146,8 +176,8 @@
       </div>
       <div class="spinner" id="pickSpinner" style="display:none">候補を検索中...</div>
       <div class="cand-grid" id="candGrid"></div>
-      <p class="hint">見つからない場合は画像URLを直接指定できます。</p>
-      <div class="share-url">
+      <p class="hint" id="urlPickHint" style="display:none">見つからない場合は画像URLを直接指定できます。</p>
+      <div class="share-url" id="urlPickRow" style="display:none">
         <input type="text" id="urlInput" placeholder="https://... の画像URL">
         <button type="button" id="useUrl">このURLにする</button>
       </div>
@@ -160,6 +190,10 @@
     </div>
   </div>
 
+  <!--AFF_DATA-->
+  <script src="/ui-dialog.js"></script>
+  <script src="/cover-fit.js"></script>
+  <script src="/affiliate.js"></script>
   <script src="/mylists.js"></script>
   <script src="/app.js"></script>
 </body>

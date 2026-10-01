@@ -4,11 +4,13 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <!--OGP_META-->
+  <!--ANALYTICS-->
   <link rel="stylesheet" href="/styles.css">
 </head>
 <body>
+  <!--GTM_BODY-->
   <header class="site">
-    <h1><a href="/" style="text-decoration:none;color:inherit">my<span class="accent">100</span>manga</a></h1>
+    <h1><a href="/" style="text-decoration:none;color:inherit">My <span class="accent">100</span> Manga</a></h1>
     <p class="tagline" id="subtitle">私を構成する100の漫画</p>
   </header>
 
@@ -24,11 +26,7 @@
     <div class="grid" id="grid" aria-label="おすすめ漫画リスト"></div>
   </div>
 
-  <footer class="site">
-    <p>データ提供: メディア芸術データベース（文化庁）／ 書影: 楽天ブックス・Google Books ｜ my100manga</p>
-    <p class="aff-disclosure">当サイトは Amazon アソシエイト・楽天アフィリエイト等を利用しており、リンク経由の購入で収益を得ることがあります。</p>
-    <p class="foot-links"><a href="/about">利用ソース・アフィリエイトについて</a></p>
-  </footer>
+  <!--FOOTER_AFF-->
 
   <!-- detail modal -->
   <div class="modal-backdrop" id="detailModal">
@@ -36,6 +34,7 @@
       <div class="report-menu" id="reportMenu" style="display:none">
         <button type="button" class="report-toggle" id="reportToggle" title="通報する" aria-haspopup="true" aria-expanded="false">⚐</button>
         <div class="report-pop" id="reportPop" hidden>
+          <button type="button" class="report-item" id="reportTitle" style="display:none">このタイトルを通報</button>
           <button type="button" class="report-item" id="reportCover" style="display:none">この表紙を通報</button>
           <button type="button" class="report-item" id="reportComment" style="display:none">このコメントを通報</button>
         </div>
@@ -45,9 +44,19 @@
         <div id="dCoverBox"></div>
         <div class="dinfo">
           <div class="dauthor" id="dAuthor"></div>
+          <dl class="dmeta" id="dMeta">
+            <div class="dmeta-row" id="dPublisherRow" style="display:none"><dt>出版社</dt><dd id="dPublisher"></dd></div>
+            <div class="dmeta-row" id="dPubdateRow" style="display:none"><dt>発行日</dt><dd id="dPubdate"></dd></div>
+            <div class="dmeta-row" id="dIsbnRow" style="display:none"><dt>ISBN</dt><dd id="dIsbn"></dd></div>
+            <div class="dmeta-row" id="dSourceRow" style="display:none"><dt>画像参考元</dt><dd id="dSource"></dd></div>
+          </dl>
           <div class="dcomment" id="dComment"></div>
           <button class="primary detail-reveal" id="dReveal" style="display:none">ネタバレを表示</button>
         </div>
+      </div>
+      <div class="dsynopsis" id="dSynopsisBox" style="display:none">
+        <div class="dsynopsis-title">あらすじ</div>
+        <p class="dsynopsis-text" id="dSynopsis"></p>
       </div>
       <div class="buy" id="dBuy" style="display:none">
         <div class="buy-title">購入する</div>
@@ -64,6 +73,8 @@
   </div>
 
   <!--LIST_DATA-->
+  <script src="/ui-dialog.js"></script>
+  <script src="/cover-fit.js"></script>
   <script src="/affiliate.js"></script>
   <script src="/mylists.js"></script>
   <script src="/view.js"></script>

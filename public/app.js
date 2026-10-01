@@ -91,9 +91,9 @@ function renderMyLists() {
     del.className = "ml-del";
     del.textContent = "この端末から削除";
     del.title = "公開リストは消えません。この端末に保存した編集リンクだけを削除します。";
-    del.addEventListener("click", () => {
+    del.addEventListener("click", async () => {
       const name = r.owner ? `${r.owner}さんの100作品` : "無題の100作品";
-      if (!confirm(`「${name}」の編集リンクをこの端末から削除します。\n公開リストは消えませんが、編集リンクを別で保存していないと二度と編集できなくなります。よろしいですか？`)) return;
+      if (!(await uiConfirm(`「${name}」の編集リンクをこの端末から削除します。\n公開リストは消えませんが、編集リンクを別で保存していないと二度と編集できなくなります。よろしいですか？`, { danger: true, okLabel: "削除する" }))) return;
       window.MyLists.remove(r.slug);
       renderMyLists();
     });
@@ -131,7 +131,7 @@ async function loadExisting(slug, token) {
     state.published = { owner: state.owner, items: state.items.map(normItem) };
     restoreEditDraft(slug, data.updated_at || 0);
   } catch (e) {
-    alert("既存リストの読み込みに失敗しました。新規作成モードで開きます。");
+    uiAlert("既存リストの読み込みに失敗しました。新規作成モードで開きます。");
   }
 }
 
@@ -204,9 +204,9 @@ function renderEditDiff() {
 }
 
 // Throw away in-progress edits and return to exactly what's published.
-function revertToPublished() {
+async function revertToPublished() {
   if (!state.editSlug || !state.published || diffCount() === 0) return;
-  if (!confirm("編集中の変更を破棄して、公開されている状態にもどします。よろしいですか？")) return;
+  if (!(await uiConfirm("編集中の変更を破棄して、公開されている状態にもどします。よろしいですか？"))) return;
   state.owner = state.published.owner || "";
   state.items = state.published.items.map(normItem);
   clearEditDraft(state.editSlug); // reverted view == server, so no unsaved draft
@@ -287,9 +287,9 @@ function render() {
   clearBtn.style.display = filled > 0 ? "" : "none";
 }
 
-function clearAll() {
+async function clearAll() {
   if (state.items.length === 0) return;
-  if (!confirm(`編集中の${state.items.length}作品をすべて削除します。よろしいですか？`)) return;
+  if (!(await uiConfirm(`編集中の${state.items.length}作品をすべて削除します。よろしいですか？`, { danger: true, okLabel: "全削除" }))) return;
   state.items = [];
   render();
   saveDraft();
@@ -397,9 +397,9 @@ function appendCoverMeta(slot, it) {
     const img = document.createElement("img");
     img.className = "cover";
     img.loading = "lazy";
-    img.src = it.cover_url;
     img.alt = it.title;
     img.onerror = () => { img.replaceWith(placeholderCover(it.title)); };
+    applyCover(img, it.cover_url);
     slot.appendChild(img);
   } else {
     slot.appendChild(placeholderCover(it.title));
@@ -470,9 +470,9 @@ function finishMove(next) {
 
 // Bulk sort the whole list by title. Toggles direction each press. Confirms first,
 // since it discards any manual arrangement (which can't be recovered).
-function sortByName() {
+async function sortByName() {
   if (state.items.length < 2) return;
-  if (!confirm("現在の並び順を破棄して、作品名で並べ替えます。よろしいですか？")) return;
+  if (!(await uiConfirm("現在の並び順を破棄して、作品名で並べ替えます。よろしいですか？"))) return;
   const dir = state.sortAsc ? 1 : -1;
   const coll = new Intl.Collator("ja", { numeric: true, sensitivity: "base" });
   state.items.sort((a, b) => dir * coll.compare(a.title || "", b.title || ""));
@@ -514,60 +514,204 @@ function placeholderCover(title) {
   return d;
 }
 
-/* ---------- edit slot modal ---------- */
-function openEdit(index) { openModal(index); }
-function openAdd() { openModal(-1); }
-
-function openModal(index) {
-  state.editIndex = index;
+/* ---------- add / search modal ---------- */
+// 本の追加は検索モーダルから。1 巻を選ぶと即リストへ追加し、コメント/ネタバレ/表紙は
+// 追加後に編集ポップアップで設定する（本の差し替えは「削除して再追加」の運用）。
+function openAdd() {
+  state.editIndex = -1;
   state.pending = null;
   $("searchInput").value = "";
   $("results").innerHTML = "";
-  $("comment").value = "";
-  $("spoiler").checked = false;
-  const existing = index >= 0 ? state.items[index] : null;
-  if (existing) {
-    $("editTitle").textContent = `${index + 1}番目の作品`;
-    state.pending = { ...existing };
-    showSelected(existing);
-    $("comment").value = existing.comment || "";
-    $("spoiler").checked = !!existing.spoiler;
-    $("removeSlot").style.display = "";
-    $("saveSlot").disabled = false;
-    $("saveSlot").textContent = "更新する";
-  } else {
-    $("editTitle").textContent = "作品を追加";
-    $("selectedBox").style.display = "none";
-    $("removeSlot").style.display = "none";
-    $("saveSlot").disabled = true;
-    $("saveSlot").textContent = "追加する";
-  }
-  $("editModal").classList.add("open");
+  $("searchModal").classList.add("open");
   $("searchInput").focus();
 }
 
-function showSelected(book) {
-  const box = $("selectedBox");
-  box.style.display = "";
-  $("selectedLabel").textContent = book.author ? `選択中: ${book.title} / ${book.author}` : `選択中: ${book.title}`;
-  renderSelCover(book);
+function closeSearch() {
+  $("searchModal").classList.remove("open");
+  state.pending = null;
 }
 
-function renderSelCover(book) {
-  const thumb = $("selCoverThumb");
-  thumb.innerHTML = "";
+/* ---------- edit slot modal (閲覧画面と同じ表示) ---------- */
+// Bumped on every open so a slow /api/book response for a previously-opened book
+// can't overwrite the metadata of the one now showing.
+let editSeq = 0;
+
+function openEdit(index) {
+  const it = state.items[index];
+  if (!it) return;
+  state.editIndex = index;
+  state.pending = { ...it };
+  const seq = ++editSeq;
+
+  $("eTitle").textContent = it.title || "";
+  $("eAuthor").textContent = it.author || "";
+  $("eAuthor").style.display = it.author ? "" : "none";
+  setMetaRow("eIsbnRow", "eIsbn", it.isbn || "");
+  setMetaRow("ePublisherRow", "ePublisher", "");
+  setMetaRow("ePubdateRow", "ePubdate", "");
+  $("eSynopsisBox").style.display = "none";
+  $("eSynopsis").textContent = "";
+  renderEditCover(state.pending);
+  $("revertCoverBtn").style.display = it.isbn ? "" : "none";
+  const refetch = $("refetchBook");
+  refetch.style.display = it.isbn ? "" : "none";
+  refetch.disabled = false;
+  refetch.textContent = "本データを再取得";
+  $("comment").value = it.comment || "";
+  $("spoiler").checked = !!it.spoiler;
+  renderEditBuy(it);
+  loadEditMeta(it, seq);
+
+  $("editModal").classList.add("open");
+}
+
+// 購入リンク（閲覧画面と同じ affiliate.js / buildBuyLinks を使用）。
+function renderEditBuy(it) {
+  const box = $("eBuy");
+  const groups = { print: $("eBuyPrint"), ebook: $("eBuyEbook"), used: $("eBuyUsed") };
+  Object.values(groups).forEach((g) => (g.innerHTML = ""));
+
+  const links = typeof window.buildBuyLinks === "function" ? window.buildBuyLinks(it) : [];
+  if (!links.length) {
+    box.style.display = "none";
+    return;
+  }
+  links.forEach((l) => {
+    const a = document.createElement("a");
+    a.className = "buy-btn " + l.store;
+    a.href = l.url;
+    a.target = "_blank";
+    a.rel = "noopener sponsored nofollow";
+    a.textContent = l.label;
+    (groups[l.format] || groups.print).appendChild(a);
+  });
+  box.style.display = "";
+}
+
+function renderEditCover(book) {
+  const box = $("eCoverBox");
+  box.innerHTML = "";
   if (book.cover_url) {
     const img = document.createElement("img");
-    img.src = book.cover_url;
-    img.alt = book.title;
-    img.onerror = () => { img.replaceWith(noimg()); };
-    thumb.appendChild(img);
+    img.className = "dcover";
+    img.alt = book.title || "";
+    img.onerror = () => {
+      const d = document.createElement("div");
+      d.className = "dnoimg";
+      d.textContent = "No Image";
+      img.replaceWith(d);
+    };
+    applyCover(img, book.cover_url);
+    box.appendChild(img);
   } else {
-    thumb.appendChild(noimg());
+    const d = document.createElement("div");
+    d.className = "dnoimg";
+    d.textContent = "No Image";
+    box.appendChild(d);
+  }
+  setMetaRow("eSourceRow", "eSource", coverSource(book.cover_url));
+}
+
+function setMetaRow(rowId, valueId, text) {
+  const has = !!text;
+  $(rowId).style.display = has ? "" : "none";
+  if (has) $(valueId).textContent = text;
+}
+
+// Which site a cover image comes from, inferred from its host.
+function coverSource(url) {
+  if (!url) return "";
+  let host = "";
+  try {
+    host = new URL(url).hostname;
+  } catch {
+    return "";
+  }
+  if (/rakuten|r10s/.test(host)) return "楽天ブックス";
+  if (/yimg|yahoo/.test(host)) return "Yahoo!ショッピング";
+  if (/google/.test(host)) return "Google Books";
+  return host;
+}
+
+// Fetch richer metadata (all authors, publisher, 発行日, あらすじ) and fill the
+// popup — but only if it's still the one on screen (seq guard).
+async function loadEditMeta(it, seq) {
+  if (!it.isbn) return;
+  let data;
+  try {
+    const res = await fetch(`/api/book?isbn=${encodeURIComponent(it.isbn)}`);
+    if (!res.ok) return;
+    data = await res.json();
+  } catch {
+    return;
+  }
+  if (seq !== editSeq) return;
+  applyBookMeta(data);
+}
+
+// Fill the author / 出版社 / 発行日 / あらすじ rows from an /api/book response.
+function applyBookMeta(data) {
+  if (Array.isArray(data.authors) && data.authors.length) {
+    $("eAuthor").textContent = data.authors.join("、");
+    $("eAuthor").style.display = "";
+  }
+  setMetaRow("ePublisherRow", "ePublisher", data.publisher || "");
+  setMetaRow("ePubdateRow", "ePubdate", data.pubdate || "");
+  if (data.caption) {
+    $("eSynopsis").textContent = data.caption;
+    $("eSynopsisBox").style.display = "";
+  } else {
+    $("eSynopsis").textContent = "";
+    $("eSynopsisBox").style.display = "none";
+  }
+}
+
+// 「本データを再取得」: キャッシュを無視して /api/book?refresh=1 を叩き直し、著者・出版社・
+// 発行日・あらすじを最新に差し替える。空あらすじで固まった行や、追加時にレート制限でメタが
+// 取れなかった本を埋め直すための導線。
+async function refetchBook(btn) {
+  const it = state.pending;
+  if (!it || !it.isbn) return;
+  const seq = editSeq;
+  btn.disabled = true;
+  btn.textContent = "取得中…";
+  try {
+    const res = await fetch(`/api/book?isbn=${encodeURIComponent(it.isbn)}&refresh=1`);
+    if (!res.ok) throw new Error();
+    const data = await res.json();
+    if (seq !== editSeq) return; // popup moved to another book / closed
+    if (data.status === "unavailable") {
+      // Rakuten was rate-limited (1 req/s) — the lookup never ran. Retryable, and we
+      // keep any あらすじ already shown rather than blanking it with this empty response.
+      btn.textContent = "混み合っています。少し待って再取得";
+    } else {
+      applyBookMeta(data);
+      btn.textContent = data.caption ? "再取得しました" : "この巻のあらすじ情報はありません";
+    }
+  } catch {
+    if (seq === editSeq) btn.textContent = "取得に失敗しました";
+  } finally {
+    if (seq === editSeq) {
+      btn.disabled = false;
+      setTimeout(() => {
+        if (seq === editSeq) btn.textContent = "本データを再取得";
+      }, 2500);
+    }
   }
 }
 
 /* ---------- cover picker ---------- */
+// Whether the "画像URLを直接指定" input is usable this session. Driven solely by the
+// server flag (data.url_submit); off by default so an accountless visitor can't post
+// an arbitrary image URL (high vandalism risk). The submission endpoint enforces it
+// server-side too — this just hides the dead input. See src/corrections.ts.
+let urlSubmitEnabled = false;
+function setUrlSubmit(on) {
+  urlSubmitEnabled = !!on;
+  $("urlPickRow").style.display = urlSubmitEnabled ? "" : "none";
+  $("urlPickHint").style.display = urlSubmitEnabled ? "" : "none";
+}
+
 // Shared loader: opens the picker modal and fills it with cover candidates for `it`.
 async function loadCandidates(it) {
   $("candGrid").innerHTML = "";
@@ -581,8 +725,10 @@ async function loadCandidates(it) {
     if (it.title) qs.set("title", it.title);
     const res = await fetch(`/api/cover-candidates?${qs.toString()}`);
     const data = await res.json();
+    setUrlSubmit(data.url_submit);
     renderCandidates(data.candidates || []);
   } catch (e) {
+    setUrlSubmit(false);
     renderCandidates([]);
   } finally {
     $("pickSpinner").style.display = "none";
@@ -599,8 +745,10 @@ async function runCoverSearch() {
   try {
     const res = await fetch(`/api/cover-candidates?q=${encodeURIComponent(q)}`);
     const data = await res.json();
+    setUrlSubmit(data.url_submit);
     renderCandidates(data.candidates || []);
   } catch (e) {
+    setUrlSubmit(false);
     renderCandidates([]);
   } finally {
     $("pickSpinner").style.display = "none";
@@ -617,10 +765,26 @@ async function openCoverPicker() {
   await loadCandidates(it);
 }
 
+// Clear a manually-picked cover and restore the ISBN's shared default (whatever the
+// covers cache resolves for it). No admin suggestion is sent — this only reverts the
+// owner's own override back to the standard cover.
+async function revertCoverToDefault() {
+  if (!state.pending || !state.pending.isbn) return;
+  const btn = $("revertCoverBtn");
+  btn.disabled = true;
+  try {
+    const map = await fetchCovers([state.pending.isbn]);
+    state.pending.cover_url = firstCoverFrom([state.pending.isbn], map);
+    renderEditCover(state.pending);
+  } finally {
+    btn.disabled = false;
+  }
+}
+
 /* ---------- guided missing-cover flow ---------- */
 function startFixMissing() {
   const first = state.items.findIndex((it) => !it.cover_url);
-  if (first < 0) { alert("表紙がない本はありません。"); return; }
+  if (first < 0) { uiAlert("表紙がない本はありません。"); return; }
   openFixPicker(first);
 }
 
@@ -640,7 +804,7 @@ function advanceFix(from) {
   const next = state.items.findIndex((it, i) => i > from && !it.cover_url);
   if (next >= 0) { openFixPicker(next); return; }
   closeCoverPicker();
-  alert("表紙がない本の指定が完了しました。");
+  uiAlert("表紙がない本の指定が完了しました。");
 }
 
 function renderCandidates(cands) {
@@ -649,7 +813,9 @@ function renderCandidates(cands) {
   if (cands.length === 0) {
     const p = document.createElement("p");
     p.className = "hint";
-    p.textContent = "候補が見つかりませんでした。下のURL指定を使ってください。";
+    p.textContent = urlSubmitEnabled
+      ? "候補が見つかりませんでした。下のURL指定を使ってください。"
+      : "候補が見つかりませんでした。キーワードを変えて検索してみてください。";
     grid.appendChild(p);
     return;
   }
@@ -658,10 +824,10 @@ function renderCandidates(cands) {
     cell.className = "cand";
     cell.type = "button";
     const img = document.createElement("img");
-    img.src = c.src;
     img.alt = c.label;
     img.loading = "lazy";
     img.onerror = () => cell.remove();
+    applyCover(img, c.src);
     const srcTag = document.createElement("span");
     srcTag.className = "src";
     srcTag.textContent = c.source || "";
@@ -689,8 +855,7 @@ function applyPickedCover(url) {
   if (!state.pending) return;
   suggestCover(state.pending.isbn, url, state.pending.cover_url);
   state.pending.cover_url = url;
-  renderSelCover(state.pending);
-  $("saveSlot").disabled = false;
+  renderEditCover(state.pending);
   closeCoverPicker();
 }
 
@@ -700,6 +865,7 @@ function applyPickedCover(url) {
 // シリーズ閲覧に反映される。ISBN の無い本（キャッシュのキーが無い）やクリア/無変更は送らない。
 // 送信失敗は握りつぶす（表紙選択自体は成功させる）。
 function suggestCover(isbn, url, prevUrl) {
+  if (!urlSubmitEnabled) return; // kill switch: don't propagate picks to the global queue
   if (!isbn || !url || url === prevUrl) return;
   try {
     fetch("/api/cover-suggestions", {
@@ -720,7 +886,7 @@ function closeCoverPicker() {
 // Toolbar search: opens the add modal and runs the search with the typed query.
 function topSearch() {
   const q = $("topSearch").value.trim();
-  if (q.length < 2) { alert("2文字以上で検索してください"); return; }
+  if (q.length < 2) { uiAlert("2文字以上で検索してください"); return; }
   openAdd();
   $("searchInput").value = q;
   doSearch();
@@ -729,9 +895,11 @@ function topSearch() {
 async function doSearch() {
   const q = $("searchInput").value.trim();
   if (q.length < 2) {
-    alert("2文字以上で検索してください");
+    uiAlert("2文字以上で検索してください");
     return;
   }
+  // Drop focus so the mobile soft keyboard folds away while results load.
+  $("searchInput").blur();
   lastQuery = q;
   $("searchSpinner").style.display = "";
   $("results").innerHTML = "";
@@ -877,7 +1045,7 @@ async function liveFetch(q, btn) {
     if (!live.length) {
       btn.disabled = false;
       btn.textContent = orig;
-      alert("最新DBに該当するシリーズは見つかりませんでした。");
+      uiAlert("最新DBに該当するシリーズは見つかりませんでした。");
       return;
     }
     // 既存カード(マスタ由来)と一致した live 結果は「捨てず」に上書きマージする。live は
@@ -901,17 +1069,17 @@ async function liveFetch(q, btn) {
   } catch (e) {
     btn.disabled = false;
     btn.textContent = orig;
-    alert(e.message || "取得に失敗しました");
+    uiAlert(e.message || "取得に失敗しました");
   }
 }
 
 function coverImg(url, alt) {
   if (url) {
     const img = document.createElement("img");
-    img.src = url;
     img.alt = alt || "";
     img.loading = "lazy";
     img.onerror = () => { img.replaceWith(noimg()); };
+    applyCover(img, url);
     return img;
   }
   return noimg();
@@ -958,6 +1126,18 @@ const COVER_CHUNK = 6;
 // Mounts "表紙を取得（N件）" into `barEl`; clicking fills the uncached covers in
 // chunks and swaps the placeholders in, ticking a "残りN件" status down.
 // entries: [{ isbns, set(url) }] — set() replaces the placeholder with the cover.
+//
+// Auto-retry: a single POST only resolves a handful of covers before
+// resolveCovers' wall-clock budget cuts off the rest, which come back *absent*
+// from the response (undetermined — not cached). We keep re-POSTing just those
+// leftovers, pausing between rounds so Rakuten/Yahoo's 1 req/s limiters refill,
+// until everything resolves. An isbn that comes back present-but-empty ("") is a
+// determined "no cover" and is final — we don't retry it. We stop when a whole
+// round makes no progress (server genuinely can't resolve the rest right now), so
+// even a long series fills over as many rounds as it takes without looping forever.
+const COVER_RETRY_PAUSE_MS = 1200;
+const COVER_RETRY_CAP = 40; // hard backstop against a pathological no-progress loop
+
 function mountCoverFetch(barEl, entries) {
   if (!entries.length) return;
   const btn = document.createElement("button");
@@ -972,24 +1152,42 @@ function mountCoverFetch(barEl, entries) {
 
   btn.addEventListener("click", async () => {
     btn.style.display = "none";
-    let remaining = entries.length;
+    const total = entries.length;
+    let done = 0;
     const paint = () => {
-      status.style.display = remaining > 0 ? "" : "none";
-      if (remaining > 0) status.textContent = `表紙を取得中… 残り${remaining}件`;
+      const left = total - done;
+      status.style.display = left > 0 ? "" : "none";
+      if (left > 0) status.textContent = `表紙を取得中… 残り${left}件`;
     };
     paint();
-    for (let i = 0; i < entries.length; i += COVER_CHUNK) {
-      const chunk = entries.slice(i, i + COVER_CHUNK);
-      const isbns = [];
-      for (const e of chunk) isbns.push(...e.isbns);
-      const map = await fetchCovers(isbns);
-      for (const e of chunk) {
-        const url = firstCoverFrom(e.isbns, map);
-        if (url) e.set(url);
+    let todo = entries.slice();
+    for (let round = 0; round < COVER_RETRY_CAP && todo.length; round++) {
+      if (round > 0) await new Promise((r) => setTimeout(r, COVER_RETRY_PAUSE_MS));
+      const next = [];
+      for (let i = 0; i < todo.length; i += COVER_CHUNK) {
+        const chunk = todo.slice(i, i + COVER_CHUNK);
+        const isbns = [];
+        for (const e of chunk) isbns.push(...e.isbns);
+        const map = await fetchCovers(isbns);
+        for (const e of chunk) {
+          const url = firstCoverFrom(e.isbns, map);
+          if (url) {
+            e.set(url);
+            done++;
+          } else if (e.isbns.every((x) => x in map)) {
+            done++; // determined "no cover" — final, don't retry
+          } else {
+            next.push(e); // undetermined (budget-skipped) — retry next round
+          }
+        }
+        paint();
       }
-      remaining -= chunk.length;
-      paint();
+      // Stop if a whole round resolved nothing new — retrying further won't help
+      // (server can't resolve these right now); leave them as placeholders.
+      if (next.length === todo.length) break;
+      todo = next;
     }
+    status.style.display = "none";
   });
 }
 
@@ -1052,7 +1250,7 @@ async function fetchSupplement(series, btn) {
   } catch (e) {
     btn.disabled = false;
     btn.textContent = orig;
-    alert(e.message || "取得に失敗しました");
+    uiAlert(e.message || "取得に失敗しました");
   }
 }
 
@@ -1072,7 +1270,7 @@ async function refetchLiveSeries(series, btn) {
     if (!match) {
       btn.disabled = false;
       btn.textContent = orig;
-      alert("最新DBに該当するシリーズは見つかりませんでした。");
+      uiAlert("最新DBに該当するシリーズは見つかりませんでした。");
       return;
     }
     series.volumes = match.volumes;
@@ -1082,7 +1280,7 @@ async function refetchLiveSeries(series, btn) {
   } catch (e) {
     btn.disabled = false;
     btn.textContent = orig;
-    alert(e.message || "取得に失敗しました");
+    uiAlert(e.message || "取得に失敗しました");
   }
 }
 
@@ -1405,7 +1603,7 @@ async function pickManualVolume(series, gap, c, volumes) {
     if (!res.ok) throw new Error(data.error || "保存に失敗しました");
     if (data.volume) vol = data.volume;
   } catch (e) {
-    alert(e.message || "保存に失敗しました");
+    uiAlert(e.message || "保存に失敗しました");
     return;
   }
 
@@ -1422,7 +1620,7 @@ async function pickManualVolume(series, gap, c, volumes) {
 // 閲覧者には管理者がパージするまで表示され続ける。確定反映は管理者の判断（パージ）に委ねる
 // ので、この端末では localStorage に記録して自分の画面からだけ即座に消す。
 async function reportWrongVolume(series, v, volumes, btn, opts) {
-  if (!confirm(`「${volLabel(v)}」を誤りとして通報します。あなたの画面では非表示になります（他の人には管理者が確認するまで表示されます）。誤って通報しても「非表示にした巻」からいつでも戻せます。よろしいですか？`)) return;
+  if (!(await uiConfirm(`「${volLabel(v)}」を誤りとして通報します。あなたの画面では非表示になります（他の人には管理者が確認するまで表示されます）。誤って通報しても「非表示にした巻」からいつでも戻せます。よろしいですか？`))) return;
   btn.disabled = true;
   try {
     const res = await fetch(
@@ -1436,7 +1634,7 @@ async function reportWrongVolume(series, v, volumes, btn, opts) {
     const data = await res.json().catch(() => ({}));
     if (!res.ok) throw new Error(data.error || "通報に失敗しました");
   } catch (e) {
-    alert(e.message || "通報に失敗しました");
+    uiAlert(e.message || "通報に失敗しました");
     btn.disabled = false;
     return;
   }
@@ -1483,7 +1681,7 @@ function buildHiddenRestore(series, allVolumes, hidden, opts) {
 // 名前の修正（全体反映）は管理者が確定するまで行わない。この端末では通報済みとして覚え、
 // ボタンを「通報済み」表示に切り替える（名前自体はこの端末でも変わらない）。
 async function reportWrongSeriesName(series, btn, textEl) {
-  if (!confirm(`このシリーズ名「${series.title}」が誤っていると通報します。管理者が確認して修正します。よろしいですか？`)) return;
+  if (!(await uiConfirm(`このシリーズ名「${series.title}」が誤っていると通報します。管理者が確認して修正します。よろしいですか？`))) return;
   btn.disabled = true;
   try {
     const res = await fetch(`/api/series/${encodeURIComponent(series.series_id)}/report`, {
@@ -1494,7 +1692,7 @@ async function reportWrongSeriesName(series, btn, textEl) {
     const data = await res.json().catch(() => ({}));
     if (!res.ok) throw new Error(data.error || "通報に失敗しました");
   } catch (e) {
-    alert(e.message || "通報に失敗しました");
+    uiAlert(e.message || "通報に失敗しました");
     btn.disabled = false;
     return;
   }
@@ -1576,23 +1774,31 @@ function isDuplicate(isbn, exceptIndex = -1) {
   return state.items.some((it, idx) => idx !== exceptIndex && it.isbn === isbn);
 }
 
+// 検索結果から 1 巻を選ぶと即リストへ追加する。コメント/ネタバレ/表紙はあとで編集
+// ポップアップから設定する（本の差し替えは「削除して再追加」の運用）。
 async function selectVolume(v) {
+  const isbn = v.isbn || "";
+  if (isbn && isDuplicate(isbn)) { uiAlert("この本はすでに追加されています。"); return; }
+  if (state.items.length >= MAX_ITEMS) {
+    uiAlert(`追加できるのは${MAX_ITEMS}作品までです。`);
+    return;
+  }
   // The background fill usually resolves the cover before the user clicks; if not,
   // resolve it now so it's baked into the item.
   if (!v.cover_url && v.isbns && v.isbns.length) {
     v.cover_url = firstCoverFrom(v.isbns, await fetchCovers(v.isbns));
   }
-  state.pending = {
-    isbn: v.isbn || "",
+  state.items.push({
+    isbn,
     title: volLabel(v),
     author: v.author || "",
     cover_url: v.cover_url || "",
-    comment: $("comment").value,
-    spoiler: $("spoiler").checked,
-  };
-  showSelected(state.pending);
-  $("saveSlot").disabled = false;
-  $("selectedBox").scrollIntoView({ block: "nearest" });
+    comment: "",
+    spoiler: false,
+  });
+  render();
+  saveDraft();
+  closeSearch();
 }
 
 // Append every volume to the list (no per-slot placement — the list is now dynamic).
@@ -1612,12 +1818,12 @@ function bulkAddSeries(volumes) {
   });
   const skipped = volumes.length - fresh.length;
   if (fresh.length === 0) {
-    alert("この巻はすべて追加済みです。");
+    uiAlert("この巻はすべて追加済みです。");
     return;
   }
   const room = MAX_ITEMS - state.items.length;
   if (room <= 0) {
-    alert(`これ以上追加できません（上限${MAX_ITEMS}作品）。`);
+    uiAlert(`これ以上追加できません（上限${MAX_ITEMS}作品）。`);
     return;
   }
   const n = Math.min(room, fresh.length);
@@ -1634,13 +1840,13 @@ function bulkAddSeries(volumes) {
       spoiler: false,
     });
   }
-  closeEdit();
+  closeSearch();
   render();
   saveDraft();
   const notes = [];
   if (skipped > 0) notes.push(`追加済み${skipped}巻はスキップ`);
   if (fresh.length > n) notes.push(`上限のため残り${fresh.length - n}巻は未追加`);
-  if (notes.length) alert(`${n}巻を追加しました（${notes.join("、")}）。`);
+  if (notes.length) uiAlert(`${n}巻を追加しました（${notes.join("、")}）。`);
 }
 
 // Fetch covers for grid items that still lack one, in chunks sized to the Rakuten
@@ -1654,43 +1860,62 @@ async function fetchMissingCovers() {
   state.fetchingCovers = true;
   render();
   const statusEl = $("coverStatus");
-  let remaining = targets.length;
+  const total = targets.length;
+  let done = 0;
   const paint = () => {
     if (!statusEl) return;
-    statusEl.style.display = remaining > 0 ? "" : "none";
-    if (remaining > 0) statusEl.textContent = `表紙を取得中… 残り${remaining}件`;
+    const left = total - done;
+    statusEl.style.display = left > 0 ? "" : "none";
+    if (left > 0) statusEl.textContent = `表紙を取得中… 残り${left}件`;
   };
   paint();
-  for (let i = 0; i < targets.length; i += COVER_CHUNK) {
-    const batch = targets.slice(i, i + COVER_CHUNK);
-    const map = await fetchCovers(batch.map((it) => it.isbn));
-    let changed = false;
-    for (const it of batch) {
-      state.coverTried.add(it.isbn);
-      const url = map[it.isbn];
-      if (url) {
-        it.cover_url = url;
-        changed = true;
+  // 自動リトライ: 1 回の POST は resolveCovers の予算内に収まる数しか解決できず、残りは
+  // レスポンスから *欠落* で返る（未確定・未キャッシュ）。その欠落分だけを再 POST し、
+  // レート制限が回復するよう間を置いて全部埋まるまで繰り返す。map に present-but-empty（""）で
+  // 返ったものは「確定：表紙なし」なので retry せず coverTried に入れて打ち切る。欠落は
+  // coverTried に入れず残すので、丸ごと 1 ラウンド進捗ゼロなら打ち切る（後で再クリック可能）。
+  let todo = targets.slice();
+  for (let round = 0; round < COVER_RETRY_CAP && todo.length; round++) {
+    if (round > 0) await new Promise((r) => setTimeout(r, COVER_RETRY_PAUSE_MS));
+    const next = [];
+    for (let i = 0; i < todo.length; i += COVER_CHUNK) {
+      const batch = todo.slice(i, i + COVER_CHUNK);
+      const map = await fetchCovers(batch.map((it) => it.isbn));
+      let changed = false;
+      for (const it of batch) {
+        const url = map[it.isbn];
+        if (url) {
+          it.cover_url = url;
+          state.coverTried.add(it.isbn);
+          done++;
+          changed = true;
+        } else if (it.isbn in map) {
+          state.coverTried.add(it.isbn); // 確定「表紙なし」— 再試行しない
+          done++;
+        } else {
+          next.push(it); // 予算超過で未確定 — 次ラウンドで再試行（coverTried には入れない）
+        }
       }
+      if (changed) {
+        render();
+        saveDraft();
+      }
+      paint();
     }
-    remaining -= batch.length;
-    if (changed) {
-      render();
-      saveDraft();
-    }
-    paint();
+    if (next.length === todo.length) break; // 進捗ゼロ — これ以上は解決しない
+    todo = next;
   }
   state.fetchingCovers = false;
   render();
 }
 
 function saveSlot() {
-  if (!state.pending) return;
+  if (!state.pending) return false;
   const commentText = $("comment").value;
   // コメントは匿名公開の自由入力なので URL は不可（スパム・誘導リンク対策）。
   if (/https?:\/\/|www\./i.test(commentText)) {
-    alert("コメントにURLは入力できません。URLを削除してください。");
-    return;
+    uiAlert("コメントにURLは入力できません。URLを削除してください。");
+    return false;
   }
   const item = {
     isbn: state.pending.isbn || "",
@@ -1705,21 +1930,72 @@ function saveSlot() {
   // already contains another copy of this ISBN.
   const isbnUnchanged = state.editIndex >= 0 && (state.items[state.editIndex]?.isbn || "") === item.isbn;
   if (!isbnUnchanged && isDuplicate(item.isbn, state.editIndex)) {
-    alert("この本はすでに追加されています。");
-    return;
+    uiAlert("この本はすでに追加されています。");
+    return false;
   }
   if (state.editIndex >= 0) {
     state.items[state.editIndex] = item;
   } else {
     if (state.items.length >= MAX_ITEMS) {
-      alert(`追加できるのは${MAX_ITEMS}作品までです。`);
-      return;
+      uiAlert(`追加できるのは${MAX_ITEMS}作品までです。`);
+      return false;
     }
     state.items.push(item);
   }
   closeEdit();
   render();
   saveDraft();
+  return true;
+}
+
+// Swipe on the edit card steps to the neighbouring slot. The current slot's edits
+// are committed first (same as 更新), so swiping never loses what was typed; if the
+// commit fails validation the move is cancelled. Clamped at the ends (the trailing
+// 追加 slot isn't included).
+function navigateEdit(dir) {
+  const target = state.editIndex + dir;
+  if (state.editIndex < 0 || target < 0 || target >= state.items.length) return false;
+  if (!saveSlot()) return false;
+  openEdit(target);
+  return true;
+}
+
+function wireEditSwipe(content) {
+  let startX = 0, startY = 0, dx = 0, axis = null, dragging = false;
+
+  content.addEventListener("touchstart", (e) => {
+    if (e.touches.length !== 1) { dragging = false; return; }
+    const t = e.touches[0];
+    startX = t.clientX; startY = t.clientY; dx = 0; axis = null; dragging = true;
+    content.style.transition = "none";
+  }, { passive: true });
+
+  content.addEventListener("touchmove", (e) => {
+    if (!dragging) return;
+    const t = e.touches[0];
+    const mx = t.clientX - startX, my = t.clientY - startY;
+    if (!axis) {
+      if (Math.abs(mx) < 8 && Math.abs(my) < 8) return;
+      axis = Math.abs(mx) > Math.abs(my) ? "x" : "y";
+    }
+    if (axis !== "x") return;
+    e.preventDefault();
+    dx = mx;
+    const atStart = state.editIndex <= 0 && dx > 0;
+    const atEnd = state.editIndex >= state.items.length - 1 && dx < 0;
+    if (atStart || atEnd) dx *= 0.3;
+    content.style.transform = `translateX(${dx}px)`;
+  }, { passive: false });
+
+  const endDrag = () => {
+    if (!dragging) return;
+    dragging = false;
+    content.style.transition = "";
+    if (axis === "x" && Math.abs(dx) > 60) navigateEdit(dx < 0 ? 1 : -1);
+    content.style.transform = "";
+  };
+  content.addEventListener("touchend", endDrag);
+  content.addEventListener("touchcancel", endDrag);
 }
 
 function removeSlot() {
@@ -1750,7 +2026,7 @@ function collectItems() {
 // Publish button: ask for the display name first, then publish/update.
 function openPublishModal() {
   if (state.items.length !== TARGET) {
-    alert(`公開にはちょうど${TARGET}作品が必要です（現在${state.items.length}作品）。`);
+    uiAlert(`公開にはちょうど${TARGET}作品が必要です（現在${state.items.length}作品）。`);
     return;
   }
   $("ownerInput").value = state.owner || "";
@@ -1771,13 +2047,13 @@ function confirmPublish() {
   const name = $("ownerInput").value.trim();
   // 表示名も匿名公開の自由入力なので URL は不可（スパム・誘導リンク対策）。
   if (/https?:\/\/|www\./i.test(name)) {
-    alert("表示名にURLは入力できません。URLを削除してください。");
+    uiAlert("表示名にURLは入力できません。URLを削除してください。");
     return;
   }
   if (!state.editSlug) {
     const slug = $("slugInput").value.trim();
     if (slug && !/^[a-zA-Z0-9_-]{1,15}$/.test(slug)) {
-      alert("URLは英数字・ハイフン・アンダースコアのみ、15文字以内で入力してください。");
+      uiAlert("URLは英数字・ハイフン・アンダースコアのみ、15文字以内で入力してください。");
       return;
     }
     state.customSlug = slug;
@@ -1790,7 +2066,7 @@ function confirmPublish() {
 async function doPublish() {
   const items = collectItems();
   if (items.length !== TARGET) {
-    alert(`公開にはちょうど${TARGET}作品が必要です（現在${items.length}作品）。`);
+    uiAlert(`公開にはちょうど${TARGET}作品が必要です（現在${items.length}作品）。`);
     return;
   }
   $("publish").disabled = true;
@@ -1827,7 +2103,7 @@ async function doPublish() {
       showShare(data.slug, data.edit_token);
     }
   } catch (e) {
-    alert(e.message || "エラーが発生しました");
+    uiAlert(e.message || "エラーが発生しました");
   } finally {
     render();
     renderMyLists();
@@ -1863,16 +2139,19 @@ function wireEvents() {
   $("ownerInput").addEventListener("keydown", (e) => { if (e.key === "Enter" && !e.isComposing) confirmPublish(); });
   $("searchBtn").addEventListener("click", doSearch);
   $("searchInput").addEventListener("keydown", (e) => { if (e.key === "Enter" && !e.isComposing) doSearch(); });
+  $("cancelSearch").addEventListener("click", closeSearch);
   $("saveSlot").addEventListener("click", saveSlot);
   $("removeSlot").addEventListener("click", removeSlot);
   $("cancelEdit").addEventListener("click", closeEdit);
-  $("comment").addEventListener("input", () => { if (state.pending) $("saveSlot").disabled = false; });
 
   $("changeCoverBtn").addEventListener("click", openCoverPicker);
+  $("revertCoverBtn").addEventListener("click", revertCoverToDefault);
+  $("refetchBook").addEventListener("click", (e) => refetchBook(e.currentTarget));
   $("cancelPick").addEventListener("click", closeCoverPicker);
   $("useUrl").addEventListener("click", () => {
+    if (!urlSubmitEnabled) return; // input is hidden when disabled; guard the bypass too
     const url = $("urlInput").value.trim();
-    if (!/^https?:\/\//i.test(url)) { alert("http(s) の画像URLを指定してください。"); return; }
+    if (!/^https?:\/\//i.test(url)) { uiAlert("http(s) の画像URLを指定してください。"); return; }
     applyPickedCover(url);
   });
   $("clearCover").addEventListener("click", () => applyPickedCover(""));
@@ -1885,7 +2164,11 @@ function wireEvents() {
   $("copyEdit").addEventListener("click", () => copy($("editUrl")));
   $("closeShare").addEventListener("click", () => $("shareModal").classList.remove("open"));
 
-  for (const id of ["editModal", "shareModal", "publishModal"]) {
+  $("searchModal").addEventListener("click", (e) => { if (e.target.id === "searchModal") closeSearch(); });
+  $("editModal").addEventListener("click", (e) => { if (e.target.id === "editModal") closeEdit(); });
+  wireEditSwipe($("editModal").querySelector(".modal"));
+
+  for (const id of ["shareModal", "publishModal"]) {
     $(id).addEventListener("click", (e) => { if (e.target.id === id) $(id).classList.remove("open"); });
   }
 }
@@ -1899,3 +2182,43 @@ function copy(input) {
 }
 
 init();
+
+// デプロイ更新の検知: 自分が読み込んだ版（<meta app-version>）とサーバ現行版（/api/version）が
+// 食い違ったら「新しいバージョンが公開されました」バナーを出す。長時間開きっぱなしの SPA タブが
+// 古い app.js を使い続ける問題への対策。タブ復帰時に 60 秒スロットルで確認する。強制リロードは
+// 編集中の入力を失わせうるので避け、再読み込みはユーザのボタン操作に委ねる。
+(function watchVersion() {
+  const meta = document.querySelector('meta[name="app-version"]');
+  const boot = meta && meta.content;
+  if (!boot || boot === "dev") return;
+  let shown = false;
+  let last = 0;
+  async function check() {
+    if (shown || Date.now() - last < 60000) return;
+    last = Date.now();
+    try {
+      const res = await fetch("/api/version", { cache: "no-store" });
+      if (!res.ok) return;
+      const cur = (await res.json()).version;
+      if (!cur || cur === boot || shown) return;
+      shown = true;
+      const bar = document.createElement("div");
+      bar.style.cssText =
+        "position:fixed;left:0;right:0;bottom:0;z-index:9999;display:flex;gap:12px;align-items:center;justify-content:center;padding:10px 16px;background:#1e293b;color:#fff;font-size:14px;box-shadow:0 -2px 8px rgba(0,0,0,.2)";
+      bar.textContent = "新しいバージョンが公開されました。";
+      const btn = document.createElement("button");
+      btn.type = "button";
+      btn.textContent = "再読み込み";
+      btn.style.cssText =
+        "padding:6px 14px;border:0;border-radius:6px;background:#2563eb;color:#fff;cursor:pointer;font-size:14px";
+      btn.addEventListener("click", () => location.reload());
+      bar.appendChild(btn);
+      document.body.appendChild(bar);
+    } catch {}
+  }
+  document.addEventListener("visibilitychange", () => {
+    if (document.visibilityState === "visible") check();
+  });
+  window.addEventListener("focus", check);
+  setInterval(check, 120000);
+})();

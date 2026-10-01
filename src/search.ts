@@ -1,5 +1,5 @@
 import { Env } from "./types";
-import { badRequest, json, normTitle, escapeLike, baseTitle } from "./util";
+import { badRequest, json, normTitle, escapeLikeClamped, baseTitle, LIKE_MAX_BYTES } from "./util";
 import { readCachedCovers } from "./covers";
 import { liveSearchByKeyword } from "./madbLive";
 
@@ -86,7 +86,9 @@ export async function handleSearch(request: Request, env: Env): Promise<Response
   if (q.length < 2) return badRequest("検索語を2文字以上で入力してください");
 
   const nq = normTitle(q);
-  const esc = escapeLike(nq);
+  // Clamp below the D1 LIKE byte cap; the "%|…|%" kana wrappers add up to 4 bytes.
+  // The exact tier below still binds full nq (= ? has no pattern-length limit).
+  const esc = escapeLikeClamped(nq, LIKE_MAX_BYTES - 4);
 
   const like = "%" + esc + "%";
   const prefix = esc + "%";
@@ -322,7 +324,10 @@ async function discoverUnlinked(
     const r = await env.DB.prepare(
       `SELECT id, name FROM series WHERE name_norm LIKE ? ESCAPE '\\'`
     )
-      .bind(escapeLike(base) + "%")
+      // A long base would overflow D1's LIKE byte cap; clamp to a shorter prefix
+      // (scans a few more rows) — the baseTitle(name) === base re-check below keeps
+      // the match exact regardless.
+      .bind(escapeLikeClamped(base, LIKE_MAX_BYTES - 1) + "%")
       .all<{ id: string; name: string }>();
     const set = new Set<string>();
     for (const row of r.results ?? []) if (baseTitle(row.name) === base) set.add(row.id);

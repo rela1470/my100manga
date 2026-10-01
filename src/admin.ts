@@ -1,5 +1,6 @@
 import { Env, ListItem } from "./types";
 import { json, notFound } from "./util";
+import { getMostCommonVolumeTitle } from "./series";
 
 // 管理画面用のエンドポイント群。認証は呼び出し側（src/index.ts）が Cloudflare Access +
 // JWT 検証（src/adminAuth.ts の requireAdmin）で /admin・/api/admin/* をまとめてガードする。
@@ -122,6 +123,9 @@ export async function adminStats(env: Env): Promise<Response> {
 
   return json(
     {
+      // dev=true のとき管理 UI が開発用の「DB初期化」を表示する。DEV_TOOLS を立てた本番でも
+      // true になる（認証は別途 requireAdmin が担保）。無効環境では false で UI にも出さない。
+      dev: devToolsEnabled(env),
       stats: {
         lists,
         series,
@@ -137,6 +141,75 @@ export async function adminStats(env: Env): Promise<Response> {
     200,
     { "cache-control": "no-store" }
   );
+}
+
+// 開発ツールが有効か。DEV_TOOLS="true"（開発期間中は本番 vars にも置ける）か、ローカル
+// dev の ADMIN_DEV_BYPASS="true" のどちらかで有効。ADMIN_DEV_BYPASS と違い DEV_TOOLS は
+// 認証をバイパスしない（この関数は requireAdmin の配下）ので、本番でも管理者だけが使える。
+function devToolsEnabled(env: Env): boolean {
+  return env.DEV_TOOLS === "true" || env.ADMIN_DEV_BYPASS === "true";
+}
+
+// 開発用: マスターデータ (MADB 由来の series / volumes / meta) 以外の全テーブルを
+// 空にして DB を初期状態へ戻す破壊的操作。ユーザ生成データ (lists)・各種キャッシュ
+// (covers / book_meta / series_supplement)・通報/修正キュー・監査ログをまとめて消す。
+// devToolsEnabled が false の環境では fail-closed で拒否する。
+// テーブル名は固定のリテラル配列（外部入力を混ぜない）なので SQL インジェクションの余地はない。
+const DEV_RESET_TABLES = [
+  "lists",
+  "list_item_events",
+  "covers",
+  "book_meta",
+  "series_supplement",
+  "series_correction",
+  "volume_report",
+  "volume_hidden",
+  "series_report",
+  "series_name_override",
+  "volume_title_report",
+  "volume_title_override",
+  "cover_suggestion",
+  "reports",
+  "publish_audit",
+];
+
+// R2 のトリム済み表紙（yahoo/*.jpg）を全消去し、消した件数を返す。D1 の covers を
+// 消しても R2 に残ったトリム結果があると /cover が再トリムせず R2 ヒットで配信して
+// しまうため、クリーン再テスト用に covers キャッシュとセットで消す。list は最大
+// 1000 件/ページなので truncated の間 cursor で回す。binding 未設定なら 0。
+async function purgeCoverStore(env: Env): Promise<number> {
+  if (!env.COVERS) return 0;
+  let removed = 0;
+  let cursor: string | undefined;
+  do {
+    const listed = await env.COVERS.list({ prefix: "yahoo/", limit: 1000, cursor });
+    if (listed.objects.length) {
+      await env.COVERS.delete(listed.objects.map((o) => o.key));
+      removed += listed.objects.length;
+    }
+    cursor = listed.truncated ? listed.cursor : undefined;
+  } while (cursor);
+  return removed;
+}
+
+export async function adminDevReset(env: Env): Promise<Response> {
+  if (!devToolsEnabled(env)) {
+    return json({ error: "開発用機能はこの環境では無効です" }, 403, { "cache-control": "no-store" });
+  }
+  const deleted: Record<string, number> = {};
+  const skipped: string[] = [];
+  for (const table of DEV_RESET_TABLES) {
+    // ローカルの schema がまだ古く当該テーブルが無い（開発中に後から足したテーブル等）
+    // ケースで全体を中断させないよう、テーブル単位で失敗を握り潰して続行する。
+    try {
+      const res = await env.DB.prepare(`DELETE FROM ${table}`).run();
+      deleted[table] = res.meta?.changes ?? 0;
+    } catch {
+      skipped.push(table);
+    }
+  }
+  const r2Covers = await purgeCoverStore(env);
+  return json({ ok: true, deleted, skipped, r2Covers }, 200, { "cache-control": "no-store" });
 }
 
 export async function adminGetList(env: Env, slug: string): Promise<Response> {
@@ -519,6 +592,180 @@ export async function adminListNameOverrides(env: Env, opts: PageOpts): Promise<
   return json({ overrides, total, page: opts.page, per: opts.per }, 200, { "cache-control": "no-store" });
 }
 
+interface AdminVolumeTitleReportRow {
+  isbn: string;
+  series_id: string;
+  reported_title: string;
+  report_count: number;
+  first_reported_at: number;
+  last_reported_at: number;
+  volume_number: string | null; // マスター巻ラベル（どの巻か確認用）
+  current_title: string | null; // 現在の master volumes.title
+  series_name: string | null;   // 所属シリーズ名（series_name_override 適用後）
+  common_title: string | null;  // そのシリーズで最多の巻タイトル（「揃える」候補）
+  override_title: string | null; // 既に修正済みなら volume_title_override.title
+  cover_url: string | null;
+}
+
+/** 本のタイトルの通報一覧。件数の多い順。管理者が正しいタイトルを判断できるよう、現在の
+ *  master タイトル・所属シリーズ名・そのシリーズで最多の巻タイトル（「揃える」候補）・既存の
+ *  上書きを併記する。表紙は covers キャッシュから引いて実物を目視確認できるようにする。 */
+export async function adminListVolumeTitleReports(env: Env, opts: PageOpts): Promise<Response> {
+  const total = await countRows(env, `SELECT COUNT(*) AS n FROM volume_title_report`);
+  const { results } = await env.DB.prepare(
+    `SELECT r.isbn, r.series_id, r.reported_title, r.report_count,
+            r.first_reported_at, r.last_reported_at,
+            v.volume_number AS volume_number, v.title AS current_title,
+            COALESCE(so.name, s.name) AS series_name,
+            (SELECT v2.title FROM volumes v2
+              WHERE v2.series_id = r.series_id AND v2.title <> ''
+              GROUP BY v2.title
+              ORDER BY COUNT(*) DESC, LENGTH(v2.title) DESC, v2.title LIMIT 1) AS common_title,
+            o.title AS override_title,
+            cov.cover_url AS cover_url
+       FROM volume_title_report r
+       LEFT JOIN volumes v ON v.isbn = r.isbn
+       LEFT JOIN series s ON s.id = r.series_id
+       LEFT JOIN series_name_override so ON so.series_id = r.series_id
+       LEFT JOIN volume_title_override o ON o.isbn = r.isbn
+       LEFT JOIN covers cov ON cov.isbn = r.isbn
+      ORDER BY r.report_count DESC, r.last_reported_at DESC LIMIT ? OFFSET ?`
+  )
+    .bind(opts.per, opts.offset)
+    .all<AdminVolumeTitleReportRow>();
+
+  const reports = (results ?? []).map((r) => ({
+    isbn: r.isbn,
+    series_id: r.series_id ?? "",
+    reported_title: r.reported_title ?? "",
+    report_count: r.report_count ?? 0,
+    first_reported_at: r.first_reported_at ?? 0,
+    last_reported_at: r.last_reported_at ?? 0,
+    volume_number: r.volume_number ?? "",
+    current_title: r.current_title ?? "",
+    series_name: r.series_name ?? "",
+    common_title: r.common_title ?? "",
+    override_title: r.override_title ?? "",
+    cover_url: r.cover_url ?? "",
+  }));
+
+  return json({ reports, total, page: opts.page, per: opts.per }, 200, { "cache-control": "no-store" });
+}
+
+/** 本のタイトルの通報を却下（誤報として volume_title_report 行だけ削除）。タイトルは変更しない。 */
+export async function adminDismissVolumeTitleReport(env: Env, isbn: string): Promise<Response> {
+  const res = await env.DB.prepare(`DELETE FROM volume_title_report WHERE isbn = ?`)
+    .bind(isbn)
+    .run();
+  const deleted = res.meta?.changes ?? 0;
+  if (!deleted) return notFound("通報が見つかりません");
+  return json({ ok: true, isbn });
+}
+
+/** 本のタイトルを手動で修正（上書き）。正しいタイトルを volume_title_override に記録し、
+ *  getSeriesVolumes の read 時に全巻へ反映する（再取り込みでマスター名が戻っても残る）。
+ *  併せて対応する通報行を片付ける。空文字は上書きにならないので拒否する。 */
+export async function adminOverrideVolumeTitle(
+  request: Request,
+  env: Env,
+  isbn: string
+): Promise<Response> {
+  const body = (await request.json().catch(() => ({}))) as { title?: unknown };
+  const title = typeof body.title === "string" ? body.title.trim() : "";
+  if (!title) return json({ ok: false, error: "タイトルを指定してください" }, 400);
+  if (title.length > 200) return json({ ok: false, error: "タイトルが長すぎます" }, 400);
+
+  const now = Date.now();
+  await env.DB.prepare(
+    `INSERT INTO volume_title_override (isbn, title, created_at) VALUES (?, ?, ?)
+     ON CONFLICT (isbn) DO UPDATE SET title = excluded.title, created_at = excluded.created_at`
+  )
+    .bind(isbn, title, now)
+    .run();
+  await env.DB.prepare(`DELETE FROM volume_title_report WHERE isbn = ?`).bind(isbn).run();
+  return json({ ok: true, isbn, title });
+}
+
+/** 本のタイトルをそのシリーズで最多の巻タイトルに「揃える」。series_id は通報行から、
+ *  無ければ master volumes から解決し、getMostCommonVolumeTitle で最多タイトルを求めて
+ *  volume_title_override に記録する。シリーズ未特定や巻が無い場合は揃えられないので拒否。 */
+export async function adminApplyCommonTitleToVolume(env: Env, isbn: string): Promise<Response> {
+  const row = await env.DB.prepare(
+    `SELECT COALESCE(NULLIF(r.series_id, ''), v.series_id) AS series_id
+       FROM volume_title_report r
+       LEFT JOIN volumes v ON v.isbn = r.isbn
+      WHERE r.isbn = ?`
+  )
+    .bind(isbn)
+    .first<{ series_id: string | null }>();
+  const seriesId =
+    row?.series_id ??
+    (await env.DB.prepare(`SELECT series_id FROM volumes WHERE isbn = ?`)
+      .bind(isbn)
+      .first<{ series_id: string | null }>())?.series_id ??
+    "";
+  if (!seriesId) return json({ ok: false, error: "シリーズを特定できません" }, 400);
+
+  const common = await getMostCommonVolumeTitle(env, seriesId);
+  if (!common) return json({ ok: false, error: "シリーズに巻がありません" }, 400);
+
+  const now = Date.now();
+  await env.DB.prepare(
+    `INSERT INTO volume_title_override (isbn, title, created_at) VALUES (?, ?, ?)
+     ON CONFLICT (isbn) DO UPDATE SET title = excluded.title, created_at = excluded.created_at`
+  )
+    .bind(isbn, common.title, now)
+    .run();
+  await env.DB.prepare(`DELETE FROM volume_title_report WHERE isbn = ?`).bind(isbn).run();
+  return json({ ok: true, isbn, title: common.title });
+}
+
+interface AdminVolumeTitleOverrideRow {
+  isbn: string;
+  title: string;
+  created_at: number;
+  volume_number: string | null;
+  current_title: string | null; // 現在の master volumes.title（再取り込みで戻った値）
+  series_id: string | null;
+  series_name: string | null;
+  cover_url: string | null;
+}
+
+/** 本のタイトルを修正した履歴（volume_title_override）。新しい修正順。read 時に全巻へ
+ *  反映される上書きなので、何をどう直したか（上書きタイトルと現在の master タイトル）を
+ *  後から確認できるようにする。 */
+export async function adminListVolumeTitleOverrides(env: Env, opts: PageOpts): Promise<Response> {
+  const total = await countRows(env, `SELECT COUNT(*) AS n FROM volume_title_override`);
+  const { results } = await env.DB.prepare(
+    `SELECT o.isbn, o.title, o.created_at,
+            v.volume_number AS volume_number, v.title AS current_title,
+            v.series_id AS series_id,
+            COALESCE(so.name, s.name) AS series_name,
+            cov.cover_url AS cover_url
+       FROM volume_title_override o
+       LEFT JOIN volumes v ON v.isbn = o.isbn
+       LEFT JOIN series s ON s.id = v.series_id
+       LEFT JOIN series_name_override so ON so.series_id = v.series_id
+       LEFT JOIN covers cov ON cov.isbn = o.isbn
+      ORDER BY o.created_at DESC LIMIT ? OFFSET ?`
+  )
+    .bind(opts.per, opts.offset)
+    .all<AdminVolumeTitleOverrideRow>();
+
+  const overrides = (results ?? []).map((r) => ({
+    isbn: r.isbn,
+    title: r.title,
+    created_at: r.created_at,
+    volume_number: r.volume_number ?? "",
+    current_title: r.current_title ?? "",
+    series_id: r.series_id ?? "",
+    series_name: r.series_name ?? "",
+    cover_url: r.cover_url ?? "",
+  }));
+
+  return json({ overrides, total, page: opts.page, per: opts.per }, 200, { "cache-control": "no-store" });
+}
+
 export async function adminCoverSummary(env: Env): Promise<Response> {
   // cover_url = '' は「どこにも書影が無い」と確定してキャッシュした行。削除すると
   // 次回アクセス時に再探索される（新しく書影が追加された本の拾い直しに使う）。
@@ -536,6 +783,40 @@ export async function adminCoverSummary(env: Env): Promise<Response> {
   );
 }
 
+// R2 のトリム済み表紙（yahoo/*.jpg）の件数と合計サイズ。D1 の covers キャッシュとは
+// 別軸の「R2 に materialise 済みの画像」を可視化するための子機能。binding 未設定の
+// 環境では bound:false で返す（画面側は「未設定」と表示）。
+export async function adminCoverR2Summary(env: Env): Promise<Response> {
+  if (!env.COVERS) {
+    return json({ r2: { bound: false, count: 0, bytes: 0 } }, 200, { "cache-control": "no-store" });
+  }
+  let count = 0;
+  let bytes = 0;
+  let cursor: string | undefined;
+  do {
+    const listed = await env.COVERS.list({ prefix: "yahoo/", limit: 1000, cursor });
+    for (const o of listed.objects) {
+      count++;
+      bytes += o.size;
+    }
+    cursor = listed.truncated ? listed.cursor : undefined;
+  } while (cursor);
+  return json({ r2: { bound: true, count, bytes } }, 200, { "cache-control": "no-store" });
+}
+
+// R2 のトリム済み表紙だけを全消去（D1 の covers キャッシュは残す）。covers を消さず
+// R2 だけ消すと、次回アクセス時に同じ元 URL を再トリムして R2 に入れ直す挙動の確認に
+// 使える。全キャッシュ削除（D1+R2）とは別の、R2 単独のクリーン操作。
+export async function adminPurgeCoverR2(env: Env): Promise<Response> {
+  if (!env.COVERS) {
+    return json({ error: "R2 バケット（COVERS）がこの環境では未設定です" }, 400, {
+      "cache-control": "no-store",
+    });
+  }
+  const r2Covers = await purgeCoverStore(env);
+  return json({ ok: true, r2Covers }, 200, { "cache-control": "no-store" });
+}
+
 export async function adminDeleteCover(env: Env, isbn: string): Promise<Response> {
   const res = await env.DB.prepare(`DELETE FROM covers WHERE isbn = ?`).bind(isbn).run();
   const deleted = res.meta?.changes ?? 0;
@@ -551,7 +832,11 @@ export async function adminPurgeCovers(request: Request, env: Env): Promise<Resp
   }
   const sql = mode === "empty" ? `DELETE FROM covers WHERE cover_url = ''` : `DELETE FROM covers`;
   const res = await env.DB.prepare(sql).run();
-  return json({ ok: true, mode, deleted: res.meta?.changes ?? 0 });
+  // 全削除時は R2 のトリム済み表紙も消す。残すと /cover が再トリムせず R2 ヒットで
+  // 配信してしまい、クリーン再テストにならない。empty（No Image 行）は R2 に実体が
+  // 無いのでパージ不要。
+  const r2Covers = mode === "all" ? await purgeCoverStore(env) : 0;
+  return json({ ok: true, mode, deleted: res.meta?.changes ?? 0, r2Covers });
 }
 
 interface AdminCoverSuggestionRow {
@@ -565,6 +850,8 @@ interface AdminCoverSuggestionRow {
   resolution: string;
   title: string | null;   // volumes から引けた場合の作品名（無ければ null）
   creator: string | null;
+  series_id: string | null;      // 巻一覧モーダルを開くための C-id（無ければ null）
+  volume_number: string | null;  // 該当巻の巻数ラベル（無ければ null）
 }
 
 /** 表紙の修正キュー: リスト編集の「表紙を変更」で、ユーザがキャッシュと違う表紙を選んだもの。
@@ -585,7 +872,8 @@ export async function adminListCoverSuggestions(
     : "cs.suggest_count DESC, cs.last_at DESC";
   const { results } = await env.DB.prepare(
     `SELECT cs.isbn, cs.cover_url, cs.old_cover_url, cs.suggest_count,
-            cs.first_at, cs.last_at, cs.resolved_at, cs.resolution, v.title, v.creator
+            cs.first_at, cs.last_at, cs.resolved_at, cs.resolution,
+            v.title, v.creator, v.series_id, v.volume_number
        FROM cover_suggestion cs
        LEFT JOIN volumes v ON v.isbn = cs.isbn
       WHERE ${where}
@@ -605,6 +893,8 @@ export async function adminListCoverSuggestions(
     resolution: r.resolution ?? "",
     title: r.title ?? "",
     creator: r.creator ?? "",
+    series_id: r.series_id ?? "",
+    volume_number: r.volume_number ?? "",
   }));
 
   return json({ suggestions, total, page: opts.page, per: opts.per }, 200, { "cache-control": "no-store" });
@@ -748,6 +1038,111 @@ export async function adminPurgeSupplements(request: Request, env: Env): Promise
     mode === "empty"
       ? `DELETE FROM series_supplement WHERE volumes_json = '[]'`
       : `DELETE FROM series_supplement`;
+  const res = await env.DB.prepare(sql).run();
+  return json({ ok: true, mode, deleted: res.meta?.changes ?? 0 });
+}
+
+export async function adminBookMetaSummary(env: Env): Promise<Response> {
+  // caption = '' は「楽天にエントリはあったが、あらすじ(itemCaption)が無かった」と確定して
+  // キャッシュした行。削除すると次回詳細ポップアップを開いた時に楽天を引き直す
+  // （後からあらすじが追加された本の拾い直しに使う）。See src/book.ts。
+  const row = await env.DB.prepare(
+    `SELECT COUNT(*) AS total,
+            SUM(CASE WHEN caption = '' THEN 1 ELSE 0 END) AS empty
+       FROM book_meta`
+  ).first<{ total: number; empty: number | null }>();
+  const total = row?.total ?? 0;
+  const empty = row?.empty ?? 0;
+  return json(
+    { summary: { total, empty, with_caption: total - empty } },
+    200,
+    { "cache-control": "no-store" }
+  );
+}
+
+interface AdminBookMetaRow {
+  isbn: string;
+  authors: string;
+  publisher: string;
+  pubdate: string;
+  caption: string;
+  checked_at: number;
+  title: string | null;        // マスター volumes から引けた作品名
+  series_id: string | null;    // 巻一覧モーダルを開くための C-id
+  volume_number: string | null; // 該当巻の巻数ラベル
+  cover_url: string | null;    // covers キャッシュの表紙（実物の目視確認用）
+}
+
+/** 楽天データ（book_meta）キャッシュ一覧。あらすじ・作者・出版社・発行日を新しい確認順で返す。
+ *  作品名・巻数・表紙は covers / volumes から引いて、どの本のキャッシュか目視確認できるようにする。
+ *  q 指定時は ISBN・作者・出版社・作品名（volumes.title）を部分一致で絞り込む。 */
+export async function adminListBookMeta(env: Env, opts: PageOpts, q = ""): Promise<Response> {
+  const term = q.trim();
+  // LIKE のワイルドカード（% _）をエスケープして部分一致検索。ESCAPE '\' を併用する。
+  const like = `%${term.replace(/[\\%_]/g, (c) => `\\${c}`)}%`;
+  const where = term
+    ? `WHERE bm.isbn LIKE ?1 ESCAPE '\\' OR bm.authors LIKE ?1 ESCAPE '\\'
+          OR bm.publisher LIKE ?1 ESCAPE '\\' OR v.title LIKE ?1 ESCAPE '\\'`
+    : "";
+
+  const countSql = term
+    ? `SELECT COUNT(*) AS n FROM book_meta bm LEFT JOIN volumes v ON v.isbn = bm.isbn ${where}`
+    : `SELECT COUNT(*) AS n FROM book_meta`;
+  const total = term ? await countRows(env, countSql, [like]) : await countRows(env, countSql);
+
+  const listSql =
+    `SELECT bm.isbn, bm.authors, bm.publisher, bm.pubdate, bm.caption, bm.checked_at,
+            v.title AS title, v.series_id AS series_id, v.volume_number AS volume_number,
+            cov.cover_url AS cover_url
+       FROM book_meta bm
+       LEFT JOIN volumes v ON v.isbn = bm.isbn
+       LEFT JOIN covers cov ON cov.isbn = bm.isbn
+      ${where}
+      ORDER BY bm.checked_at DESC LIMIT ?2 OFFSET ?3`;
+  const stmt = term
+    ? env.DB.prepare(listSql).bind(like, opts.per, opts.offset)
+    : env.DB.prepare(
+        `SELECT bm.isbn, bm.authors, bm.publisher, bm.pubdate, bm.caption, bm.checked_at,
+                v.title AS title, v.series_id AS series_id, v.volume_number AS volume_number,
+                cov.cover_url AS cover_url
+           FROM book_meta bm
+           LEFT JOIN volumes v ON v.isbn = bm.isbn
+           LEFT JOIN covers cov ON cov.isbn = bm.isbn
+          ORDER BY bm.checked_at DESC LIMIT ? OFFSET ?`
+      ).bind(opts.per, opts.offset);
+  const { results } = await stmt.all<AdminBookMetaRow>();
+
+  const books = (results ?? []).map((r) => ({
+    isbn: r.isbn,
+    authors: r.authors ? r.authors.split("/") : [],
+    publisher: r.publisher ?? "",
+    pubdate: r.pubdate ?? "",
+    caption: r.caption ?? "",
+    checked_at: r.checked_at ?? 0,
+    title: r.title ?? "",
+    series_id: r.series_id ?? "",
+    volume_number: r.volume_number ?? "",
+    cover_url: r.cover_url ?? "",
+  }));
+
+  return json({ books, total, page: opts.page, per: opts.per, q: term }, 200, { "cache-control": "no-store" });
+}
+
+export async function adminDeleteBookMeta(env: Env, isbn: string): Promise<Response> {
+  const res = await env.DB.prepare(`DELETE FROM book_meta WHERE isbn = ?`).bind(isbn).run();
+  const deleted = res.meta?.changes ?? 0;
+  if (!deleted) return notFound("楽天データキャッシュが見つかりません");
+  return json({ ok: true, isbn });
+}
+
+export async function adminPurgeBookMeta(request: Request, env: Env): Promise<Response> {
+  const body = (await request.json().catch(() => ({}))) as { mode?: unknown };
+  const mode = body.mode;
+  if (mode !== "empty" && mode !== "all") {
+    return json({ error: "mode は 'empty' か 'all' を指定してください" }, 400);
+  }
+  const sql =
+    mode === "empty" ? `DELETE FROM book_meta WHERE caption = ''` : `DELETE FROM book_meta`;
   const res = await env.DB.prepare(sql).run();
   return json({ ok: true, mode, deleted: res.meta?.changes ?? 0 });
 }

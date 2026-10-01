@@ -15,9 +15,12 @@ const pageState = {
   corr: 1,
   coverSuggest: 1,
   sup: 1,
+  bookMeta: 1,
   volHidden: 1,
   corrReviewed: 1,
   nameOverrides: 1,
+  volTitleReports: 1,
+  titleOverrides: 1,
   reportResolved: 1,
   coverSuggestResolved: 1,
 };
@@ -207,7 +210,11 @@ async function loadLists(page = pageState.lists) {
 }
 
 function coverThumb(url, cls, noimgCls, alt) {
-  if (url) return el("img", { className: cls, src: url, loading: "lazy", alt: alt || "" });
+  if (url) {
+    const img = el("img", { className: cls, loading: "lazy", alt: alt || "" });
+    applyCover(img, url);
+    return img;
+  }
   return el("div", { className: noimgCls, textContent: "No Image" });
 }
 
@@ -308,48 +315,37 @@ function filterAuditBySlug(slug) {
   else location.hash = "#audit"; // hashchange → showPage('audit') → loadAudit(1) が input を読む
 }
 
-// リスト詳細モーダルにそのリストの公開履歴（誰がいつ公開したか）を紐づけて表示する。
-// モーダルは先頭ページ（最新 PER 件）だけ出す。総件数は total を使う。
+// リスト詳細モーダルに公開履歴の件数と、監査ログページへのリンクだけ出す。
+// 一覧（デカい表）はモーダルに展開せず、監査ログページ側で slug 絞り込みして見る。
 async function renderDetailAudit(slug) {
   const box = $("detailAudit");
   box.textContent = "";
   let data;
   try {
-    const res = await fetch(`/api/admin/publish-audit?slug=${encodeURIComponent(slug)}&per=${PER}`);
+    const res = await fetch(`/api/admin/publish-audit?slug=${encodeURIComponent(slug)}&per=1`);
     data = await res.json();
   } catch {
     box.append(el("p", { className: "hint warn", textContent: "公開履歴の取得に失敗しました" }));
     return;
   }
-  const audit = data.audit || [];
-  const total = data.total ?? audit.length;
+  const total = data.total ?? (data.audit || []).length;
   if (total === 0) {
     box.append(el("p", { className: "hint", textContent: "公開の記録はありません。" }));
     return;
   }
-  const shownNote = total > audit.length ? `（新しい順・直近${audit.length}件を表示）` : "（新しい順）";
-  box.append(el("p", { className: "hint", textContent: `公開履歴 ${total.toLocaleString("ja-JP")}件${shownNote}` }));
-  const rows = audit.map((a) =>
-    el("tr", null, [
-      el("td", { textContent: fmtDate(a.created_at) }),
-      el("td", { textContent: AUDIT_ACTION_LABEL[a.action] || a.action }),
-      el("td", { className: "slug", textContent: a.ip || "-" }),
-      el("td", { textContent: a.country || "-" }),
-      el("td", { className: "report-text", textContent: a.user_agent || "-" }),
-    ])
-  );
+  const link = el("a", {
+    className: "slug detail",
+    textContent: "監査ログを表示",
+    title: "このリストの監査ログをログページで表示",
+  });
+  link.addEventListener("click", () => {
+    closeDetail();
+    filterAuditBySlug(slug);
+  });
   box.append(
-    el("table", { className: "admin-table" }, [
-      el("thead", null, [
-        el("tr", null, [
-          el("th", { textContent: "時刻" }),
-          el("th", { textContent: "操作" }),
-          el("th", { textContent: "IP" }),
-          el("th", { textContent: "国" }),
-          el("th", { textContent: "User-Agent" }),
-        ]),
-      ]),
-      el("tbody", null, rows),
+    el("p", { className: "hint" }, [
+      document.createTextNode(`公開履歴 ${total.toLocaleString("ja-JP")}件 ｜ `),
+      link,
     ])
   );
 }
@@ -529,7 +525,8 @@ async function loadCoverSuggestions(page = pageState.coverSuggest) {
       el("tr", { dataset: { key: `${s.isbn}/${s.cover_url}` } }, [
         el("td", null, [zoomableCover(s.old_cover_url, "現在の表紙")]),
         el("td", null, [zoomableCover(s.cover_url, "提案された表紙")]),
-        el("td", { className: "owner", textContent: label }),
+        el("td", { className: "owner", title: s.series_id || "" }, [seriesVolumesLink(s.series_id, label, label)]),
+        el("td", null, [seriesVolumesLink(s.series_id, s.volume_number || "-", label)]),
         el("td", { textContent: s.isbn }),
         isbnConfirmCell(s.isbn),
         el("td", { className: "num", textContent: String(s.suggest_count) }),
@@ -585,7 +582,8 @@ async function loadResolvedCoverSuggestions(page = pageState.coverSuggestResolve
     body.append(
       el("tr", { dataset: { key: `${s.isbn}/${s.cover_url}` } }, [
         el("td", null, [zoomableCover(s.cover_url, "提案された表紙")]),
-        el("td", { className: "owner", textContent: label }),
+        el("td", { className: "owner", title: s.series_id || "" }, [seriesVolumesLink(s.series_id, label, label)]),
+        el("td", null, [seriesVolumesLink(s.series_id, s.volume_number || "-", label)]),
         el("td", { textContent: s.isbn }),
         el("td", { className: "num", textContent: String(s.suggest_count) }),
         el("td", { textContent: COVER_RESOLUTION[s.resolution] || s.resolution || "-" }),
@@ -599,7 +597,7 @@ async function loadResolvedCoverSuggestions(page = pageState.coverSuggestResolve
 }
 
 async function approveCoverSuggestion(isbn, coverUrl, btn) {
-  if (!confirm(`この表紙を承認し、表紙キャッシュ（ISBN ${isbn}）を上書きします。同じ本を載せた全リスト・シリーズ閲覧に反映されます。よろしいですか？`)) return;
+  if (!(await uiConfirm(`この表紙を承認し、表紙キャッシュ（ISBN ${isbn}）を上書きします。同じ本を載せた全リスト・シリーズ閲覧に反映されます。よろしいですか？`, { okLabel: "承認する" }))) return;
   btn.disabled = true;
   btn.textContent = "承認中…";
   try {
@@ -612,14 +610,14 @@ async function approveCoverSuggestion(isbn, coverUrl, btn) {
     if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
     await loadCoverSuggestions(pageState.coverSuggest);
   } catch (e) {
-    alert("承認に失敗しました: " + e.message);
+    uiAlert("承認に失敗しました: " + e.message);
     btn.disabled = false;
     btn.textContent = "承認";
   }
 }
 
 async function dismissCoverSuggestion(isbn, coverUrl, btn) {
-  if (!confirm(`この表紙の提案（ISBN ${isbn}）を却下し削除します。表紙キャッシュは変更しません。よろしいですか？`)) return;
+  if (!(await uiConfirm(`この表紙の提案（ISBN ${isbn}）を却下し削除します。表紙キャッシュは変更しません。よろしいですか？`, { danger: true, okLabel: "却下する" }))) return;
   btn.disabled = true;
   btn.textContent = "却下中…";
   try {
@@ -632,7 +630,7 @@ async function dismissCoverSuggestion(isbn, coverUrl, btn) {
     if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
     await loadCoverSuggestions(pageState.coverSuggest);
   } catch (e) {
-    alert("却下に失敗しました: " + e.message);
+    uiAlert("却下に失敗しました: " + e.message);
     btn.disabled = false;
     btn.textContent = "却下";
   }
@@ -730,7 +728,7 @@ async function loadVolumeReports(page = pageState.volReports) {
 }
 
 async function confirmVolumeReport(seriesId, isbn, seriesName, btn) {
-  if (!confirm(`「${seriesName}」のこの巻（ISBN ${isbn}）を確定し、全ての閲覧者から非表示にします。ユーザ投稿の巻の場合は元データも削除されます。よろしいですか？`)) return;
+  if (!(await uiConfirm(`「${seriesName}」のこの巻（ISBN ${isbn}）を確定し、全ての閲覧者から非表示にします。ユーザ投稿の巻の場合は元データも削除されます。よろしいですか？`, { danger: true, okLabel: "確定する" }))) return;
   btn.disabled = true;
   btn.textContent = "確定中…";
   try {
@@ -742,14 +740,14 @@ async function confirmVolumeReport(seriesId, isbn, seriesName, btn) {
     if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
     await loadVolumeReports(pageState.volReports);
   } catch (e) {
-    alert("確定に失敗しました: " + e.message);
+    uiAlert("確定に失敗しました: " + e.message);
     btn.disabled = false;
     btn.textContent = "確定";
   }
 }
 
 async function dismissVolumeReport(seriesId, isbn, btn) {
-  if (!confirm("この通報を却下（削除）します。巻データはそのまま残ります。よろしいですか？")) return;
+  if (!(await uiConfirm("この通報を却下（削除）します。巻データはそのまま残ります。よろしいですか？", { okLabel: "却下する" }))) return;
   btn.disabled = true;
   btn.textContent = "却下中…";
   try {
@@ -761,7 +759,7 @@ async function dismissVolumeReport(seriesId, isbn, btn) {
     if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
     await loadVolumeReports(pageState.volReports);
   } catch (e) {
-    alert("却下に失敗しました: " + e.message);
+    uiAlert("却下に失敗しました: " + e.message);
     btn.disabled = false;
     btn.textContent = "却下";
   }
@@ -856,14 +854,14 @@ async function loadSeriesReports(page = pageState.seriesReports) {
 
 async function overrideSeriesName(r, btn) {
   const suggested = r.override_name || r.name_kana || r.vol_title || "";
-  const name = prompt(
+  const name = await uiPrompt(
     `シリーズ「${r.reported_name || r.series_id}」の正しい名前を入力してください。\n全ての閲覧者の検索/詳細表示に反映されます。`,
     suggested
   );
   if (name === null) return;
   const trimmed = name.trim();
   if (!trimmed) {
-    alert("名前を入力してください");
+    uiAlert("名前を入力してください");
     return;
   }
   btn.disabled = true;
@@ -878,14 +876,14 @@ async function overrideSeriesName(r, btn) {
     if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
     await loadSeriesReports(pageState.seriesReports);
   } catch (e) {
-    alert("名前の修正に失敗しました: " + e.message);
+    uiAlert("名前の修正に失敗しました: " + e.message);
     btn.disabled = false;
     btn.textContent = "名前を修正";
   }
 }
 
 async function dismissSeriesReport(seriesId, btn) {
-  if (!confirm("この通報を却下（削除）します。シリーズ名は変更されません。よろしいですか？")) return;
+  if (!(await uiConfirm("この通報を却下（削除）します。シリーズ名は変更されません。よろしいですか？", { okLabel: "却下する" }))) return;
   btn.disabled = true;
   btn.textContent = "却下中…";
   try {
@@ -896,7 +894,163 @@ async function dismissSeriesReport(seriesId, btn) {
     if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
     await loadSeriesReports(pageState.seriesReports);
   } catch (e) {
-    alert("却下に失敗しました: " + e.message);
+    uiAlert("却下に失敗しました: " + e.message);
+    btn.disabled = false;
+    btn.textContent = "却下";
+  }
+}
+
+async function loadVolumeTitleReports(page = pageState.volTitleReports) {
+  const table = $("volTitleReportTable");
+  const body = $("volTitleReportBody");
+  const hint = $("volTitleReportHint");
+  const count = $("volTitleReportCount");
+  body.textContent = "";
+  hint.style.display = "none";
+  table.style.display = "none";
+  $("volTitleReportPager").style.display = "none";
+
+  let data;
+  try {
+    const res = await fetch(`/api/admin/volume-title-reports?page=${page}&per=${PER}`);
+    data = await res.json();
+  } catch {
+    hint.textContent = "本のタイトルの通報の取得に失敗しました";
+    hint.style.display = "";
+    return;
+  }
+
+  const reports = data.reports || [];
+  const total = data.total ?? reports.length;
+  if (reports.length === 0 && page > 1 && total > 0) {
+    return loadVolumeTitleReports(Math.min(page - 1, Math.max(1, Math.ceil(total / PER))));
+  }
+  pageState.volTitleReports = page;
+  count.textContent = `${total.toLocaleString("ja-JP")}件`;
+
+  if (total === 0) {
+    hint.textContent = "本のタイトルの通報はまだありません。";
+    hint.style.display = "";
+    return;
+  }
+
+  for (const r of reports) {
+    // 「揃える」: そのシリーズで最多の巻タイトルへ統一。common_title が無ければ押せない。
+    const commonBtn = el("button", {
+      className: "ok",
+      textContent: "揃える",
+      disabled: !r.common_title,
+      title: r.common_title ? `「${r.common_title}」に揃えます` : "最多タイトルを特定できません",
+    });
+    commonBtn.addEventListener("click", () => applyCommonTitle(r, commonBtn));
+    // 「修正」: 正しいタイトルを手入力して上書き。
+    const overrideBtn = el("button", {
+      textContent: r.override_title ? "再修正" : "修正",
+    });
+    overrideBtn.addEventListener("click", () => overrideVolumeTitle(r, overrideBtn));
+    const dismissBtn = el("button", { className: "danger", textContent: "却下" });
+    dismissBtn.addEventListener("click", () => dismissVolumeTitleReport(r.isbn, dismissBtn));
+
+    const seriesName = r.series_name || "（不明なシリーズ）";
+    const seriesCell = seriesVolumesLink(r.series_id, seriesName, seriesName);
+
+    const currentText = r.override_title
+      ? `${r.override_title}（修正済み）`
+      : r.current_title || r.reported_title || "-";
+
+    const countCls = "num" + (r.report_count >= 3 ? " hot" : r.report_count > 0 ? " warn" : "");
+    const spanDays = daysBetween(r.first_reported_at, r.last_reported_at);
+    const dateCell = el("td", {
+      textContent:
+        fmtDate(r.last_reported_at) + (spanDays > 0 ? `（${spanDays}日継続）` : ""),
+    });
+
+    body.append(
+      el("tr", { dataset: { vtkey: r.isbn } }, [
+        el("td", null, [coverThumb(r.cover_url, "corr-thumb", "corr-noimg", currentText)]),
+        el("td", { textContent: r.isbn }),
+        el("td", { textContent: currentText }),
+        el("td", { className: "owner", title: r.series_id }, [seriesCell]),
+        el("td", { className: "muted", textContent: r.common_title || "-" }),
+        el("td", { className: countCls, textContent: String(r.report_count) }),
+        dateCell,
+        el("td", { className: "report-actions" }, [commonBtn, overrideBtn, dismissBtn]),
+      ])
+    );
+  }
+
+  table.style.display = "";
+  renderPager("volTitleReportPager", page, total, loadVolumeTitleReports);
+}
+
+async function applyCommonTitle(r, btn) {
+  if (
+    !(await uiConfirm(
+      `この巻（ISBN ${r.isbn}）のタイトルを、シリーズで最多の「${r.common_title}」に揃えます。全ての閲覧者の表示に反映されます。よろしいですか？`,
+      { okLabel: "揃える" }
+    ))
+  )
+    return;
+  btn.disabled = true;
+  btn.textContent = "処理中…";
+  try {
+    const res = await fetch(
+      `/api/admin/volume-title-reports/${encodeURIComponent(r.isbn)}/common`,
+      { method: "POST" }
+    );
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
+    await loadVolumeTitleReports(pageState.volTitleReports);
+  } catch (e) {
+    uiAlert("揃えるのに失敗しました: " + e.message);
+    btn.disabled = false;
+    btn.textContent = "揃える";
+  }
+}
+
+async function overrideVolumeTitle(r, btn) {
+  const suggested = r.override_title || r.common_title || r.current_title || "";
+  const title = await uiPrompt(
+    `この巻（ISBN ${r.isbn}）の正しいタイトルを入力してください。\n全ての閲覧者の巻一覧/詳細表示に反映されます。`,
+    suggested
+  );
+  if (title === null) return;
+  const trimmed = title.trim();
+  if (!trimmed) {
+    uiAlert("タイトルを入力してください");
+    return;
+  }
+  btn.disabled = true;
+  btn.textContent = "修正中…";
+  try {
+    const res = await fetch(`/api/admin/volume-title-reports/${encodeURIComponent(r.isbn)}`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ title: trimmed }),
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
+    await loadVolumeTitleReports(pageState.volTitleReports);
+  } catch (e) {
+    uiAlert("タイトルの修正に失敗しました: " + e.message);
+    btn.disabled = false;
+    btn.textContent = "修正";
+  }
+}
+
+async function dismissVolumeTitleReport(isbn, btn) {
+  if (!(await uiConfirm("この通報を却下（削除）します。タイトルは変更されません。よろしいですか？", { okLabel: "却下する" }))) return;
+  btn.disabled = true;
+  btn.textContent = "却下中…";
+  try {
+    const res = await fetch(`/api/admin/volume-title-reports/${encodeURIComponent(isbn)}`, {
+      method: "DELETE",
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
+    await loadVolumeTitleReports(pageState.volTitleReports);
+  } catch (e) {
+    uiAlert("却下に失敗しました: " + e.message);
     btn.disabled = false;
     btn.textContent = "却下";
   }
@@ -1085,6 +1239,59 @@ async function loadNameOverrides(page = pageState.nameOverrides) {
   renderPager("nameOverridePager", page, total, loadNameOverrides);
 }
 
+// タイトル修正で確定した巻タイトル上書き（volume_title_override）。
+async function loadTitleOverrides(page = pageState.titleOverrides) {
+  const table = $("titleOverrideTable");
+  const body = $("titleOverrideBody");
+  const hint = $("titleOverrideHint");
+  const count = $("volTitleReportCount");
+  body.textContent = "";
+  hint.style.display = "none";
+  table.style.display = "none";
+  $("titleOverridePager").style.display = "none";
+
+  let data;
+  try {
+    const res = await fetch(`/api/admin/volume-title-overrides?page=${page}&per=${PER}`);
+    data = await res.json();
+  } catch {
+    hint.textContent = "確定済みの取得に失敗しました";
+    hint.style.display = "";
+    return;
+  }
+
+  const overrides = data.overrides || [];
+  const total = data.total ?? overrides.length;
+  if (overrides.length === 0 && page > 1 && total > 0) {
+    return loadTitleOverrides(Math.min(page - 1, Math.max(1, Math.ceil(total / PER))));
+  }
+  pageState.titleOverrides = page;
+  count.textContent = `確定済み ${total.toLocaleString("ja-JP")}件`;
+
+  if (total === 0) {
+    hint.textContent = "タイトル修正で確定した上書きはまだありません。";
+    hint.style.display = "";
+    return;
+  }
+
+  for (const o of overrides) {
+    const seriesName = o.series_name || "（不明なシリーズ）";
+    body.append(
+      el("tr", { dataset: { key: o.isbn } }, [
+        el("td", null, [coverThumb(o.cover_url, "corr-thumb", "corr-noimg", o.title)]),
+        el("td", { className: "slug", textContent: o.isbn }),
+        el("td", { className: "owner", textContent: o.title }),
+        el("td", { className: "muted", textContent: o.current_title || "-" }),
+        el("td", { title: o.series_id }, [seriesVolumesLink(o.series_id, seriesName, seriesName)]),
+        el("td", { textContent: fmtDate(o.created_at) }),
+      ])
+    );
+  }
+
+  table.style.display = "";
+  renderPager("titleOverridePager", page, total, loadTitleOverrides);
+}
+
 // 未処理キュー ⇄ 確定済み履歴の切り替え。一度に片方だけを表示する。
 const HISTORY = {
   volReports: {
@@ -1104,6 +1311,16 @@ const HISTORY = {
     load: () => loadNameOverrides(1),
     reload: () => loadSeriesReports(pageState.seriesReports),
     onLabel: "修正した名前を表示",
+    offLabel: "未処理の通報に戻る",
+    on: false,
+  },
+  volumeTitleReports: {
+    btn: "toggleTitleOverrides",
+    pending: ["volTitleReportTable", "volTitleReportPager", "volTitleReportHint"],
+    history: ["titleOverrideTable", "titleOverridePager", "titleOverrideHint"],
+    load: () => loadTitleOverrides(1),
+    reload: () => loadVolumeTitleReports(pageState.volTitleReports),
+    onLabel: "修正したタイトルを表示",
     offLabel: "未処理の通報に戻る",
     on: false,
   },
@@ -1161,6 +1378,18 @@ function resetHistory(key) {
     if (e) e.style.display = "none";
   }
   $(c.btn).textContent = c.onLabel;
+}
+
+// series_id が引けた行はクリックで巻一覧モーダルを開くリンク、引けない行は素のテキストを返す。
+function seriesVolumesLink(seriesId, text, label) {
+  if (!seriesId) return el("span", { textContent: text });
+  const link = el("a", {
+    className: "slug detail",
+    textContent: text,
+    title: "このシリーズの巻一覧を表示",
+  });
+  link.addEventListener("click", () => openSeriesVolumes(seriesId, label || text));
+  return link;
 }
 
 // シリーズの巻一覧をリスト詳細モーダルに流用して表示する。covers はキャッシュのみなので
@@ -1224,14 +1453,14 @@ async function approveCorrection(seriesId, isbn, seriesName, btn) {
     if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
     await loadCorrections(pageState.corr);
   } catch (e) {
-    alert("確定に失敗しました: " + e.message);
+    uiAlert("確定に失敗しました: " + e.message);
     btn.disabled = false;
     btn.textContent = "確定";
   }
 }
 
 async function deleteCorrection(seriesId, isbn, seriesName, btn) {
-  if (!confirm(`「${seriesName}」の修正（ISBN ${isbn}）を却下し、完全に削除します。元に戻せません。よろしいですか？`)) return;
+  if (!(await uiConfirm(`「${seriesName}」の修正（ISBN ${isbn}）を却下し、完全に削除します。元に戻せません。よろしいですか？`, { danger: true, okLabel: "削除する" }))) return;
   btn.disabled = true;
   btn.textContent = "却下中…";
   try {
@@ -1244,14 +1473,14 @@ async function deleteCorrection(seriesId, isbn, seriesName, btn) {
     }
     await loadCorrections(pageState.corr);
   } catch (e) {
-    alert("却下に失敗しました: " + e.message);
+    uiAlert("却下に失敗しました: " + e.message);
     btn.disabled = false;
     btn.textContent = "却下";
   }
 }
 
 async function deleteList(slug, owner, btn) {
-  if (!confirm(`リスト「${owner}」(${slug}) を削除します。元に戻せません。よろしいですか？`)) return;
+  if (!(await uiConfirm(`リスト「${owner}」(${slug}) を削除します。元に戻せません。よろしいですか？`, { danger: true, okLabel: "削除する" }))) return;
   btn.disabled = true;
   btn.textContent = "削除中…";
   try {
@@ -1262,7 +1491,7 @@ async function deleteList(slug, owner, btn) {
     }
     await loadLists(pageState.lists);
   } catch (e) {
-    alert("削除に失敗しました: " + e.message);
+    uiAlert("削除に失敗しました: " + e.message);
     btn.disabled = false;
     btn.textContent = "削除";
   }
@@ -1411,7 +1640,7 @@ async function loadResolvedReports(page = pageState.reportResolved) {
 }
 
 async function redactReport(id, targetLabel, btn) {
-  if (!confirm(`${targetLabel}のテキストを削除します（リスト・作品自体は残ります）。よろしいですか？`)) return;
+  if (!(await uiConfirm(`${targetLabel}のテキストを削除します（リスト・作品自体は残ります）。よろしいですか？`, { danger: true, okLabel: "削除する" }))) return;
   btn.disabled = true;
   btn.textContent = "削除中…";
   try {
@@ -1420,14 +1649,14 @@ async function redactReport(id, targetLabel, btn) {
     if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
     await loadReports(pageState.reports);
   } catch (e) {
-    alert("削除に失敗しました: " + e.message);
+    uiAlert("削除に失敗しました: " + e.message);
     btn.disabled = false;
     btn.textContent = "文字を削除";
   }
 }
 
 async function dismissReport(id, btn) {
-  if (!confirm("この通報を却下（削除）します。テキストはそのままです。よろしいですか？")) return;
+  if (!(await uiConfirm("この通報を却下（削除）します。テキストはそのままです。よろしいですか？", { okLabel: "却下する" }))) return;
   btn.disabled = true;
   btn.textContent = "却下中…";
   try {
@@ -1436,7 +1665,7 @@ async function dismissReport(id, btn) {
     if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
     await loadReports(pageState.reports);
   } catch (e) {
-    alert("却下に失敗しました: " + e.message);
+    uiAlert("却下に失敗しました: " + e.message);
     btn.disabled = false;
     btn.textContent = "却下";
   }
@@ -1453,12 +1682,54 @@ async function loadCoverSummary() {
   }
 }
 
+async function loadCoverR2Summary() {
+  const out = $("coverR2Summary");
+  if (!out) return;
+  try {
+    const res = await fetch("/api/admin/covers/r2/summary");
+    const r2 = (await res.json()).r2 || {};
+    if (!r2.bound) {
+      out.textContent = "R2 未設定";
+      return;
+    }
+    const mb = (r2.bytes || 0) / (1024 * 1024);
+    out.textContent = `${(r2.count ?? 0).toLocaleString("ja-JP")} 件（${mb.toFixed(1)} MB）`;
+  } catch {
+    out.textContent = "取得失敗";
+  }
+}
+
+async function purgeCoverR2(btn) {
+  if (
+    !(await uiConfirm(
+      "R2 のトリム済み表紙画像を全削除します。D1 の表紙キャッシュは残り、次回アクセス時に同じ元画像から再トリムされます。よろしいですか？",
+      { danger: true, okLabel: "削除する" }
+    ))
+  )
+    return;
+  const orig = btn.textContent;
+  btn.disabled = true;
+  btn.textContent = "削除中…";
+  try {
+    const res = await fetch("/api/admin/covers/r2/purge", { method: "POST" });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
+    uiAlert(`R2 のトリム画像を ${(data.r2Covers ?? 0).toLocaleString("ja-JP")} 件削除しました。`);
+    await loadCoverR2Summary();
+  } catch (e) {
+    uiAlert("削除に失敗しました: " + e.message);
+  } finally {
+    btn.disabled = false;
+    btn.textContent = orig;
+  }
+}
+
 async function purgeCovers(mode, btn) {
   const label =
     mode === "all"
-      ? "表紙キャッシュを全削除します。全ての本が次回アクセス時に再探索されます。よろしいですか？"
+      ? "表紙キャッシュを全削除します。R2 のトリム済み画像も消え、全ての本が次回アクセス時に再探索・再トリムされます。よろしいですか？"
       : "No Image のキャッシュを削除します。該当の本は次回アクセス時に再探索されます。よろしいですか？";
-  if (!confirm(label)) return;
+  if (!(await uiConfirm(label, { danger: true, okLabel: "削除する" }))) return;
   const orig = btn.textContent;
   btn.disabled = true;
   btn.textContent = "削除中…";
@@ -1470,10 +1741,12 @@ async function purgeCovers(mode, btn) {
     });
     const data = await res.json().catch(() => ({}));
     if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
-    alert(`${data.deleted} 件削除しました。`);
+    const r2 = data.r2Covers ? `（トリム済み画像 R2 ${data.r2Covers} 件も削除）` : "";
+    uiAlert(`${data.deleted} 件削除しました。${r2}`);
     await loadCoverSummary();
+    await loadCoverR2Summary();
   } catch (e) {
-    alert("削除に失敗しました: " + e.message);
+    uiAlert("削除に失敗しました: " + e.message);
   } finally {
     btn.disabled = false;
     btn.textContent = orig;
@@ -1484,7 +1757,7 @@ async function deleteCover(btn) {
   const input = $("coverIsbn");
   const isbn = input.value.replace(/[^0-9Xx]/g, "");
   if (!isbn) {
-    alert("ISBN を入力してください。");
+    uiAlert("ISBN を入力してください。");
     return;
   }
   btn.disabled = true;
@@ -1494,11 +1767,11 @@ async function deleteCover(btn) {
     const res = await fetch(`/api/admin/covers/${encodeURIComponent(isbn)}`, { method: "DELETE" });
     const data = await res.json().catch(() => ({}));
     if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
-    alert(`ISBN ${isbn} のキャッシュを削除しました。`);
+    uiAlert(`ISBN ${isbn} のキャッシュを削除しました。`);
     input.value = "";
     await loadCoverSummary();
   } catch (e) {
-    alert("削除に失敗しました: " + e.message);
+    uiAlert("削除に失敗しました: " + e.message);
   } finally {
     btn.disabled = false;
     btn.textContent = orig;
@@ -1521,7 +1794,7 @@ async function purgeSupplements(mode, btn) {
     mode === "all"
       ? "補完キャッシュを全削除します。全シリーズが次回アクセス時にライブMADBを引き直します。よろしいですか？"
       : "「該当なし」の補完キャッシュを削除します。該当シリーズは次回アクセス時に引き直します。よろしいですか？";
-  if (!confirm(label)) return;
+  if (!(await uiConfirm(label, { danger: true, okLabel: "削除する" }))) return;
   const orig = btn.textContent;
   btn.disabled = true;
   btn.textContent = "削除中…";
@@ -1533,11 +1806,11 @@ async function purgeSupplements(mode, btn) {
     });
     const data = await res.json().catch(() => ({}));
     if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
-    alert(`${data.deleted} 件削除しました。`);
+    uiAlert(`${data.deleted} 件削除しました。`);
     await loadSupSummary();
     await loadSupplements(1);
   } catch (e) {
-    alert("削除に失敗しました: " + e.message);
+    uiAlert("削除に失敗しました: " + e.message);
   } finally {
     btn.disabled = false;
     btn.textContent = orig;
@@ -1656,7 +1929,7 @@ function openSupDetail(seriesId) {
 
 // 一覧の行から削除。入力欄版は deleteSupplement。
 async function deleteSupplementRow(seriesId, seriesName, btn) {
-  if (!confirm(`「${seriesName}」(${seriesId}) の補完キャッシュを削除します。次回アクセス時に再取得します。よろしいですか？`)) return;
+  if (!(await uiConfirm(`「${seriesName}」(${seriesId}) の補完キャッシュを削除します。次回アクセス時に再取得します。よろしいですか？`, { danger: true, okLabel: "削除する" }))) return;
   btn.disabled = true;
   btn.textContent = "削除中…";
   try {
@@ -1668,7 +1941,7 @@ async function deleteSupplementRow(seriesId, seriesName, btn) {
     await loadSupSummary();
     await loadSupplements(pageState.sup);
   } catch (e) {
-    alert("削除に失敗しました: " + e.message);
+    uiAlert("削除に失敗しました: " + e.message);
     btn.disabled = false;
     btn.textContent = "削除";
   }
@@ -1678,7 +1951,7 @@ async function deleteSupplement(btn) {
   const input = $("supSeriesId");
   const seriesId = input.value.trim();
   if (!seriesId) {
-    alert("series_id を入力してください。");
+    uiAlert("series_id を入力してください。");
     return;
   }
   btn.disabled = true;
@@ -1688,12 +1961,254 @@ async function deleteSupplement(btn) {
     const res = await fetch(`/api/admin/supplements/${encodeURIComponent(seriesId)}`, { method: "DELETE" });
     const data = await res.json().catch(() => ({}));
     if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
-    alert(`series_id ${seriesId} の補完キャッシュを削除しました。`);
+    uiAlert(`series_id ${seriesId} の補完キャッシュを削除しました。`);
     input.value = "";
     await loadSupSummary();
     await loadSupplements(pageState.sup);
   } catch (e) {
-    alert("削除に失敗しました: " + e.message);
+    uiAlert("削除に失敗しました: " + e.message);
+  } finally {
+    btn.disabled = false;
+    btn.textContent = orig;
+  }
+}
+
+async function loadBookMetaSummary() {
+  const out = $("bookMetaSummary");
+  try {
+    const res = await fetch("/api/admin/book-meta/summary");
+    const s = (await res.json()).summary || {};
+    out.textContent = `全${(s.total ?? 0).toLocaleString("ja-JP")}件（あらすじあり ${(s.with_caption ?? 0).toLocaleString("ja-JP")} / あらすじ無し ${(s.empty ?? 0).toLocaleString("ja-JP")}）`;
+  } catch {
+    out.textContent = "取得失敗";
+  }
+}
+
+async function purgeBookMeta(mode, btn) {
+  const label =
+    mode === "all"
+      ? "楽天データキャッシュを全削除します。全ての本が次回ポップアップ表示時に楽天を引き直します。よろしいですか？"
+      : "「あらすじ無し」の楽天データキャッシュを削除します。該当の本は次回ポップアップ表示時に引き直します。よろしいですか？";
+  if (!(await uiConfirm(label, { danger: true, okLabel: "削除する" }))) return;
+  const orig = btn.textContent;
+  btn.disabled = true;
+  btn.textContent = "削除中…";
+  try {
+    const res = await fetch("/api/admin/book-meta/purge", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ mode }),
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
+    uiAlert(`${data.deleted} 件削除しました。`);
+    await loadBookMetaSummary();
+    await loadBookMeta(1);
+  } catch (e) {
+    uiAlert("削除に失敗しました: " + e.message);
+  } finally {
+    btn.disabled = false;
+    btn.textContent = orig;
+  }
+}
+
+let bookMetaCache = [];
+let bookMetaQuery = "";
+
+async function loadBookMeta(page = pageState.bookMeta) {
+  const table = $("bookMetaTable");
+  const body = $("bookMetaBody");
+  const hint = $("bookMetaHint");
+  body.textContent = "";
+  hint.style.display = "none";
+  table.style.display = "none";
+  $("bookMetaPager").style.display = "none";
+  $("bookMetaClear").style.display = bookMetaQuery ? "" : "none";
+
+  let data;
+  try {
+    const qs = bookMetaQuery ? `&q=${encodeURIComponent(bookMetaQuery)}` : "";
+    const res = await fetch(`/api/admin/book-meta?page=${page}&per=${PER}${qs}`);
+    data = await res.json();
+  } catch {
+    hint.textContent = "楽天データ一覧の取得に失敗しました";
+    hint.style.display = "";
+    return;
+  }
+
+  const books = data.books || [];
+  const total = data.total ?? books.length;
+  if (books.length === 0 && page > 1 && total > 0) {
+    return loadBookMeta(Math.min(page - 1, Math.max(1, Math.ceil(total / PER))));
+  }
+  pageState.bookMeta = page;
+  bookMetaCache = books;
+
+  if (total === 0) {
+    hint.textContent = bookMetaQuery
+      ? `「${bookMetaQuery}」に一致する楽天データはありません。`
+      : "楽天データキャッシュはまだありません。";
+    hint.style.display = "";
+    return;
+  }
+
+  for (const b of books) {
+    const titleText = b.title || "（マスター未登録）";
+    const titleCell = b.series_id
+      ? seriesVolumesLink(b.series_id, titleText, titleText)
+      : el("span", { textContent: titleText });
+
+    const captionCell = el("td", { className: "book-meta-caption" });
+    if (b.caption) {
+      const link = el("button", {
+        className: "linkish",
+        textContent: "あり",
+        title: "クリックで全文を表示",
+      });
+      link.addEventListener("click", () => openBookMetaDetail(b.isbn));
+      captionCell.append(link);
+    } else {
+      captionCell.classList.add("muted");
+      captionCell.textContent = "なし";
+    }
+
+    const delBtn = el("button", { className: "danger", textContent: "削除" });
+    delBtn.addEventListener("click", () => deleteBookMetaRow(b.isbn, delBtn));
+
+    body.append(
+      el("tr", { dataset: { isbn: b.isbn } }, [
+        el("td", null, [zoomableCover(b.cover_url, titleText)]),
+        el("td", { className: "book-title" }, [titleCell]),
+        el("td", { className: "book-authors", textContent: b.authors.join("、") }),
+        el("td", { className: "book-publisher", textContent: b.publisher || "-" }),
+        el("td", { textContent: b.pubdate || "-" }),
+        captionCell,
+        isbnConfirmCell(b.isbn),
+        el("td", { textContent: fmtDate(b.checked_at) }),
+        el("td", null, [delBtn]),
+      ])
+    );
+  }
+
+  table.style.display = "";
+  renderPager("bookMetaPager", page, total, loadBookMeta);
+}
+
+function openBookMetaDetail(isbn) {
+  const b = bookMetaCache.find((x) => x.isbn === isbn);
+  if (!b) return;
+  const modal = $("detailModal");
+  const grid = $("detailGrid");
+  const meta = $("detailMeta");
+  const titleEl = $("detailTitle");
+  grid.textContent = "";
+  $("detailAudit").textContent = "";
+
+  const titleText = b.title || "（マスター未登録）";
+  titleEl.textContent = `${titleText} — ${b.isbn}`;
+  const bits = [b.authors.join("、"), b.publisher, b.pubdate].filter(Boolean);
+  meta.textContent = `${bits.join(" ｜ ")} ｜ 最終確認 ${fmtDate(b.checked_at)}`;
+
+  grid.append(
+    el("div", { className: "book-meta-full", textContent: b.caption || "（あらすじなし）" })
+  );
+  modal.classList.add("open");
+}
+
+// 一覧の行から削除。入力欄版は deleteBookMeta。
+async function deleteBookMetaRow(isbn, btn) {
+  if (!(await uiConfirm(`ISBN ${isbn} の楽天データキャッシュを削除します。次回ポップアップ表示時に再取得します。よろしいですか？`, { danger: true, okLabel: "削除する" }))) return;
+  btn.disabled = true;
+  btn.textContent = "削除中…";
+  try {
+    const res = await fetch(`/api/admin/book-meta/${encodeURIComponent(isbn)}`, { method: "DELETE" });
+    if (!res.ok) {
+      const data = await res.json().catch(() => ({}));
+      throw new Error(data.error || `HTTP ${res.status}`);
+    }
+    await loadBookMetaSummary();
+    await loadBookMeta(pageState.bookMeta);
+  } catch (e) {
+    uiAlert("削除に失敗しました: " + e.message);
+    btn.disabled = false;
+    btn.textContent = "削除";
+  }
+}
+
+async function deleteBookMeta(btn) {
+  const input = $("delBookMetaIsbn");
+  const isbn = input.value.replace(/[^0-9Xx]/g, "");
+  if (!isbn) {
+    uiAlert("ISBN を入力してください。");
+    return;
+  }
+  btn.disabled = true;
+  const orig = btn.textContent;
+  btn.textContent = "削除中…";
+  try {
+    const res = await fetch(`/api/admin/book-meta/${encodeURIComponent(isbn)}`, { method: "DELETE" });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
+    uiAlert(`ISBN ${isbn} の楽天データキャッシュを削除しました。`);
+    input.value = "";
+    await loadBookMetaSummary();
+    await loadBookMeta(pageState.bookMeta);
+  } catch (e) {
+    uiAlert("削除に失敗しました: " + e.message);
+  } finally {
+    btn.disabled = false;
+    btn.textContent = orig;
+  }
+}
+
+// --- 開発ツール（ローカル dev 限定: ADMIN_DEV_BYPASS）------------------------
+// マスターデータ以外を全削除して DB を初期化する破壊的操作。本番では /api/admin/stats の
+// dev=false でナビ自体を隠し、サーバ側でも 403 で fail-closed する。
+let devEnabled = false;
+
+async function initDevTools() {
+  try {
+    const res = await fetch("/api/admin/stats");
+    const data = await res.json();
+    devEnabled = !!data.dev;
+  } catch {
+    devEnabled = false;
+  }
+  $("navDevTools").hidden = !devEnabled;
+  // dev 無効環境で #dev-tools に直接来ていたら概要へ戻す。
+  if (!devEnabled && currentPageName() === "dev-tools") location.hash = "#dashboard";
+}
+
+async function devReset(btn) {
+  if (
+    !(await uiConfirm(
+      "マスターデータ（シリーズ・巻・メタ情報）以外の全テーブルを削除し、DB を開発用に初期化します。公開リスト・各種キャッシュ・通報・監査ログ、R2 のトリム済み表紙画像が全て消えます。元に戻せません。よろしいですか？",
+      { danger: true, okLabel: "次へ" }
+    ))
+  )
+    return;
+  const typed = await uiPrompt("確認のため RESET と入力してください。", "", {
+    okLabel: "初期化する",
+    placeholder: "RESET",
+    danger: true,
+  });
+  if (typed === null) return;
+  if (typed.trim().toUpperCase() !== "RESET") {
+    uiAlert("入力が一致しませんでした。初期化を中止しました。");
+    return;
+  }
+  const orig = btn.textContent;
+  btn.disabled = true;
+  btn.textContent = "初期化中…";
+  try {
+    const res = await fetch("/api/admin/dev/reset", { method: "POST" });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
+    const total = Object.values(data.deleted || {}).reduce((a, b) => a + b, 0);
+    const r2 = data.r2Covers ? `＋トリム済み画像 R2 ${data.r2Covers.toLocaleString("ja-JP")} 件` : "";
+    uiAlert(`DB を初期化しました（${total.toLocaleString("ja-JP")} 行削除${r2}）。`);
+  } catch (e) {
+    uiAlert("初期化に失敗しました: " + e.message);
   } finally {
     btn.disabled = false;
     btn.textContent = orig;
@@ -1718,6 +2233,10 @@ const PAGES = {
     resetHistory("seriesReports");
     loadSeriesReports(1);
   },
+  "volume-title-reports": () => {
+    resetHistory("volumeTitleReports");
+    loadVolumeTitleReports(1);
+  },
   corrections: () => {
     resetHistory("corrections");
     loadCorrections(1);
@@ -1726,11 +2245,21 @@ const PAGES = {
     resetHistory("coverSuggestions");
     loadCoverSuggestions(1);
   },
-  covers: () => loadCoverSummary(),
+  covers: () => {
+    loadCoverSummary();
+    loadCoverR2Summary();
+  },
   supplements: () => {
     loadSupSummary();
     loadSupplements(1);
   },
+  "book-meta": () => {
+    bookMetaQuery = "";
+    $("bookMetaQuery").value = "";
+    loadBookMetaSummary();
+    loadBookMeta(1);
+  },
+  "dev-tools": () => {},
 };
 
 function currentPageName() {
@@ -1768,11 +2297,15 @@ $("reloadVolReport").addEventListener("click", () =>
 $("reloadSeriesReport").addEventListener("click", () =>
   HISTORY.seriesReports.on ? loadNameOverrides(pageState.nameOverrides) : loadSeriesReports(pageState.seriesReports)
 );
+$("reloadVolTitleReport").addEventListener("click", () =>
+  HISTORY.volumeTitleReports.on ? loadTitleOverrides(pageState.titleOverrides) : loadVolumeTitleReports(pageState.volTitleReports)
+);
 $("reloadCorr").addEventListener("click", () =>
   HISTORY.corrections.on ? loadReviewedCorrections(pageState.corrReviewed) : loadCorrections(pageState.corr)
 );
 $("toggleVolHidden").addEventListener("click", () => toggleHistory("volReports"));
 $("toggleNameOverrides").addEventListener("click", () => toggleHistory("seriesReports"));
+$("toggleTitleOverrides").addEventListener("click", () => toggleHistory("volumeTitleReports"));
 $("toggleCorrReviewed").addEventListener("click", () => toggleHistory("corrections"));
 $("toggleReportResolved").addEventListener("click", () => toggleHistory("reports"));
 $("toggleCoverSuggestResolved").addEventListener("click", () => toggleHistory("coverSuggestions"));
@@ -1782,6 +2315,8 @@ $("reloadCoverSuggest").addEventListener("click", () =>
     : loadCoverSuggestions(pageState.coverSuggest)
 );
 $("reloadCover").addEventListener("click", loadCoverSummary);
+$("reloadCoverR2").addEventListener("click", loadCoverR2Summary);
+$("purgeCoverR2").addEventListener("click", (e) => purgeCoverR2(e.currentTarget));
 $("purgeEmpty").addEventListener("click", (e) => purgeCovers("empty", e.currentTarget));
 $("purgeAll").addEventListener("click", (e) => purgeCovers("all", e.currentTarget));
 $("delCover").addEventListener("click", (e) => deleteCover(e.currentTarget));
@@ -1792,6 +2327,26 @@ $("reloadSup").addEventListener("click", () => {
 $("purgeSupEmpty").addEventListener("click", (e) => purgeSupplements("empty", e.currentTarget));
 $("purgeSupAll").addEventListener("click", (e) => purgeSupplements("all", e.currentTarget));
 $("delSup").addEventListener("click", (e) => deleteSupplement(e.currentTarget));
+$("reloadBookMeta").addEventListener("click", () => {
+  loadBookMetaSummary();
+  loadBookMeta(pageState.bookMeta);
+});
+function runBookMetaSearch() {
+  bookMetaQuery = $("bookMetaQuery").value.trim();
+  loadBookMeta(1);
+}
+$("bookMetaSearch").addEventListener("click", runBookMetaSearch);
+$("bookMetaQuery").addEventListener("keydown", (e) => {
+  if (e.key === "Enter") runBookMetaSearch();
+});
+$("bookMetaClear").addEventListener("click", () => {
+  bookMetaQuery = "";
+  $("bookMetaQuery").value = "";
+  loadBookMeta(1);
+});
+$("purgeBookMetaEmpty").addEventListener("click", (e) => purgeBookMeta("empty", e.currentTarget));
+$("purgeBookMetaAll").addEventListener("click", (e) => purgeBookMeta("all", e.currentTarget));
+$("delBookMeta").addEventListener("click", (e) => deleteBookMeta(e.currentTarget));
 $("detailClose").addEventListener("click", closeDetail);
 $("detailModal").addEventListener("click", (e) => {
   if (e.target === $("detailModal")) closeDetail();
@@ -1804,6 +2359,47 @@ document.addEventListener("keydown", (e) => {
   }
 });
 
+$("devResetBtn").addEventListener("click", (e) => devReset(e.currentTarget));
+
 window.addEventListener("hashchange", () => showPage(currentPageName()));
 
+initDevTools();
 showPage(currentPageName());
+
+// デプロイ更新の検知: 自分が読み込んだ版（<meta app-version>）とサーバ現行版（/api/version）が
+// 食い違ったら再読み込みを促すバナーを出す。開きっぱなしのタブが古い admin.js を使い続ける対策。
+(function watchVersion() {
+  const meta = document.querySelector('meta[name="app-version"]');
+  const boot = meta && meta.content;
+  if (!boot || boot === "dev") return;
+  let shown = false;
+  let last = 0;
+  async function check() {
+    if (shown || Date.now() - last < 60000) return;
+    last = Date.now();
+    try {
+      const res = await fetch("/api/version", { cache: "no-store" });
+      if (!res.ok) return;
+      const cur = (await res.json()).version;
+      if (!cur || cur === boot || shown) return;
+      shown = true;
+      const bar = document.createElement("div");
+      bar.style.cssText =
+        "position:fixed;left:0;right:0;bottom:0;z-index:9999;display:flex;gap:12px;align-items:center;justify-content:center;padding:10px 16px;background:#1e293b;color:#fff;font-size:14px;box-shadow:0 -2px 8px rgba(0,0,0,.2)";
+      bar.textContent = "新しいバージョンが公開されました。";
+      const btn = document.createElement("button");
+      btn.type = "button";
+      btn.textContent = "再読み込み";
+      btn.style.cssText =
+        "padding:6px 14px;border:0;border-radius:6px;background:#2563eb;color:#fff;cursor:pointer;font-size:14px";
+      btn.addEventListener("click", () => location.reload());
+      bar.appendChild(btn);
+      document.body.appendChild(bar);
+    } catch {}
+  }
+  document.addEventListener("visibilitychange", () => {
+    if (document.visibilityState === "visible") check();
+  });
+  window.addEventListener("focus", check);
+  setInterval(check, 120000);
+})();

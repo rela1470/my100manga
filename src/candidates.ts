@@ -1,7 +1,10 @@
 import { Env } from "./types";
 import { badRequest, json } from "./util";
+import { coverSuggestionsEnabled } from "./corrections";
 import { probeGoogleCover } from "./covers";
-import { rakutenByIsbn, rakutenSearchTitle } from "./rakuten";
+import { probeYahooCover } from "./yahoo";
+import { rakutenResolveFull, rakutenSearchTitle, RakutenBook, RakutenBookFull } from "./rakuten";
+import { bookMetaInsertFromRakuten, cacheBookMetaBatch } from "./book";
 
 interface Candidate {
   src: string;
@@ -10,8 +13,9 @@ interface Candidate {
 }
 
 // Candidate cover images for the correction page: Google (if real), Rakuten by
-// exact ISBN, and Rakuten title-search hits (so the owner can pick the right one
-// when the stored ISBN's edition has no cover). GET /api/cover-candidates.
+// exact ISBN, Yahoo!ショッピング by exact ISBN (jan_code), and Rakuten title-search
+// hits (so the owner can pick the right one when the stored ISBN's edition has no
+// cover). GET /api/cover-candidates.
 // `q` is an owner-typed keyword: when present we run a literal Rakuten title
 // search (no broadening, no ISBN lookups) so they can steer past bad auto matches.
 export async function coverCandidates(request: Request, env: Env): Promise<Response> {
@@ -30,23 +34,48 @@ export async function coverCandidates(request: Request, env: Env): Promise<Respo
     }
   };
 
+  // Tells the client whether the "画像URLを直接指定" input should be shown (single
+  // source of truth = the server flag; the submission endpoint enforces it anyway).
+  const urlSubmit = coverSuggestionsEnabled(env);
+
   if (q) {
-    const hits = await rakutenSearchTitle(env, q, 30, { genre: false, priority: "high" });
+    const hits = await searchOwnerQuery(env, q);
     for (const b of hits) add(b.cover_url, "楽天ブックス", b.title);
-    return json({ candidates }, 200, { "cache-control": "no-store" });
+    await cacheBookMetaBatch(env, hits);
+    return json({ candidates, url_submit: urlSubmit }, 200, { "cache-control": "no-store" });
   }
 
-  const [google, rakutenIsbn, rakutenTitle] = await Promise.all([
+  // A title ending in a volume ("鋼の錬金術師 6") gets a precise Rakuten "（n）"
+  // phrase too, so the exact volume floats above the series-broadened hits.
+  const volPhrase = volumePhrase(title);
+  const emptyIsbnRes: { cover: string | null; meta: RakutenBookFull | null } = { cover: "", meta: null };
+  const [google, yahoo, rakutenIsbnRes, rakutenVolume, rakutenTitle] = await Promise.all([
     isbn ? probeGoogleCover(env, isbn) : Promise.resolve(""),
-    isbn ? rakutenByIsbn(env, isbn, "high") : Promise.resolve(""),
+    isbn ? probeYahooCover(env, isbn) : Promise.resolve(""),
+    isbn ? rakutenResolveFull(env, isbn, "high") : Promise.resolve(emptyIsbnRes),
+    volPhrase ? rakutenSearchTitle(env, volPhrase, 30, { genre: false, priority: "high" }) : Promise.resolve([]),
     title ? searchTitleBroadening(env, title) : Promise.resolve([]),
   ]);
 
+  // The exact-ISBN cover call also carried the book's author/publisher/発行日/あらすじ
+  // — cache it (book_meta) so the detail popup's /api/book is a free cache read
+  // instead of a second Rakuten call for the same ISBN.
+  if (rakutenIsbnRes.meta) {
+    const stmt = bookMetaInsertFromRakuten(env, rakutenIsbnRes.meta);
+    if (stmt) await stmt.run();
+  }
+
+  // The title-search calls (volume phrase + broadened series) each returned full
+  // records too — cache them so their ISBNs' popups are a free book_meta read.
+  await cacheBookMetaBatch(env, [...rakutenVolume, ...rakutenTitle]);
+
   if (google) add(google, "Google Books", "ISBN一致");
-  if (rakutenIsbn) add(rakutenIsbn, "楽天ブックス", "ISBN一致");
+  if (rakutenIsbnRes.cover) add(rakutenIsbnRes.cover, "楽天ブックス", "ISBN一致");
+  if (yahoo) add(yahoo, "Yahoo!ショッピング", "ISBN一致");
+  for (const b of rakutenVolume) add(b.cover_url, "楽天ブックス", b.title);
   for (const b of rakutenTitle) add(b.cover_url, "楽天ブックス", b.title);
 
-  return json({ candidates }, 200, { "cache-control": "no-store" });
+  return json({ candidates, url_submit: urlSubmit }, 200, { "cache-control": "no-store" });
 }
 
 interface VolumeCandidate {
@@ -68,6 +97,7 @@ export async function volumeCandidates(request: Request, env: Env): Promise<Resp
   if (!title || !Number.isFinite(vnum)) return badRequest("title と volume を指定してください");
 
   const hits = await searchVolume(env, title, String(vnum));
+  await cacheBookMetaBatch(env, hits);
   const candidates: VolumeCandidate[] = hits.map((b) => ({
     isbn: b.isbn,
     title: b.title,
@@ -94,6 +124,36 @@ async function searchVolume(env: Env, title: string, vnum: string) {
     if (out.length >= 12) break;
   }
   return out;
+}
+
+/** Owner-typed keyword search for the manual picker. Rakuten's `title` is a strict
+ *  phrase match, so a space-separated volume ("鋼の錬金術師 6") finds nothing even
+ *  though the series is stocked as "鋼の錬金術師（6）". Try the literal phrase first
+ *  (owner may be steering deliberately); if that's empty and the tail is a volume
+ *  number, retry in Rakuten's "（n）" form so a trailing volume still lands on the
+ *  exact book — without broadening to unrelated titles. */
+async function searchOwnerQuery(env: Env, q: string): Promise<RakutenBook[]> {
+  for (const v of ownerQueryVariants(q)) {
+    const hits = await rakutenSearchTitle(env, v, 30, { genre: false, priority: "high" });
+    if (hits.length) return hits;
+  }
+  return [];
+}
+
+/** The literal query, then — when it ends in a volume number — the Rakuten
+ *  "<title>（n）" phrase ("鋼の錬金術師 6" → "鋼の錬金術師（6）"). */
+function ownerQueryVariants(q: string): string[] {
+  const variants = [q];
+  const phrase = volumePhrase(q);
+  if (phrase) variants.push(phrase);
+  return [...new Set(variants.filter(Boolean))];
+}
+
+/** When a title ends in a volume number, Rakuten's exact "<title>（n）" phrase
+ *  ("鋼の錬金術師 6" → "鋼の錬金術師（6）"); "" when there's no trailing volume. */
+function volumePhrase(title: string): string {
+  const m = title.match(/^(.*?)[\s　]+[（(]?\s*(\d{1,4})\s*[）)]?$/);
+  return m ? `${m[1].trim()}（${m[2]}）` : "";
 }
 
 /** Rakuten's `title` search is a strict phrase match, so a compound MADB title

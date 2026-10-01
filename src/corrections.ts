@@ -117,6 +117,14 @@ export async function addCorrection(request: Request, env: Env, seriesId: string
 // ones (existing ones still bump their count) so one ISBN can't be flooded with junk.
 const MAX_COVER_SUGGESTIONS_PER_ISBN = 10;
 
+/** User-submitted cover URL flow. Off by default — letting accountless visitors post
+ *  arbitrary image URLs into the review queue (and, on approve, the global covers
+ *  cache) is too high a vandalism risk. Set COVER_SUGGESTIONS_ENABLED="true" (or "1")
+ *  to re-enable. The code stays wired up so it can be turned back on later. */
+export function coverSuggestionsEnabled(env: Env): boolean {
+  return env.COVER_SUGGESTIONS_ENABLED === "true" || env.COVER_SUGGESTIONS_ENABLED === "1";
+}
+
 /** POST /api/cover-suggestions — collect a user-chosen cover that differs from the
  *  global cache. When a list editor uses 「表紙を変更」to fix a wrong/missing cover,
  *  that URL is only saved into their own list (items_json), so the master covers cache
@@ -126,6 +134,14 @@ const MAX_COVER_SUGGESTIONS_PER_ISBN = 10;
  *  reports. Only { isbn, cover_url } is trusted; both are validated and a pick that
  *  already equals the cached cover is ignored (no correction needed). */
 export async function suggestCover(request: Request, env: Env): Promise<Response> {
+  // Kill switch (default off): accept silently without queuing so the client's local
+  // cover change still works, but no user-supplied URL ever reaches the review queue
+  // or the global covers cache. This is the authoritative boundary — a direct POST
+  // can't bypass it. See coverSuggestionsEnabled.
+  if (!coverSuggestionsEnabled(env)) {
+    return json({ ok: true, queued: false }, 200, { "cache-control": "no-store" });
+  }
+
   const body = (await request.json().catch(() => ({}))) as { isbn?: unknown; cover_url?: unknown };
   const isbn = typeof body.isbn === "string" ? normalizeIsbn(body.isbn) : null;
   const coverUrl = typeof body.cover_url === "string" ? normalizeCoverUrl(body.cover_url) : null;
@@ -245,6 +261,44 @@ export async function reportVolume(request: Request, env: Env, seriesId: string)
                             ELSE volume_report.volume_number END`
   )
     .bind(seriesId, isbn, label, now, now)
+    .run();
+
+  return json({ ok: true }, 200, { "cache-control": "no-store" });
+}
+
+/** POST /api/volume-title-reports — flag a VOLUME'S TITLE as wrong (本のタイトルが違う？).
+ *  Book titles are per-volume schema:name; variant-title splits make some volumes carry an
+ *  odd title. Mirrors reportVolume's collect-only policy: does NOT rewrite the title
+ *  globally, only bumps report_count (+timestamps) in volume_title_report for the admin
+ *  audit; the reporter's own browser suppresses nothing (title is normalized at read time).
+ *  Only the ISBN is trusted from the client — series_id and the title snapshot are read
+ *  server-side from the master volumes row (empty if unknown). Admin later 却下 or
+ *  修正 (writes volume_title_override / snaps to the series' most-common title). */
+export async function reportVolumeTitle(request: Request, env: Env): Promise<Response> {
+  const body = (await request.json().catch(() => ({}))) as { isbn?: unknown };
+  const isbn = typeof body.isbn === "string" ? normalizeIsbn(body.isbn) : null;
+  if (!isbn) return badRequest("ISBN13 を指定してください");
+
+  // Resolve series + current master title snapshot server-side (never trust the client).
+  const vol = await env.DB.prepare(`SELECT series_id, title FROM volumes WHERE isbn = ?`)
+    .bind(isbn)
+    .first<{ series_id: string | null; title: string | null }>();
+  const seriesId = vol?.series_id ?? "";
+  const reportedTitle = vol?.title ?? "";
+
+  const now = Date.now();
+  await env.DB.prepare(
+    `INSERT INTO volume_title_report
+       (isbn, series_id, reported_title, report_count, first_reported_at, last_reported_at)
+     VALUES (?, ?, ?, 1, ?, ?)
+     ON CONFLICT (isbn) DO UPDATE SET
+       report_count = report_count + 1,
+       last_reported_at = excluded.last_reported_at,
+       series_id = CASE WHEN volume_title_report.series_id = '' THEN excluded.series_id
+                        ELSE volume_title_report.series_id END,
+       reported_title = excluded.reported_title`
+  )
+    .bind(isbn, seriesId, reportedTitle, now, now)
     .run();
 
   return json({ ok: true }, 200, { "cache-control": "no-store" });

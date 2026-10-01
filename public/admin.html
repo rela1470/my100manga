@@ -4,12 +4,12 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="robots" content="noindex, nofollow">
-  <title>管理画面 - my100manga</title>
+  <title>管理画面 - My 100 Manga</title>
   <link rel="stylesheet" href="/styles.css">
 </head>
 <body>
   <header class="site">
-    <h1>my<span class="accent">100</span>manga</h1>
+    <h1>My <span class="accent">100</span> Manga</h1>
     <p class="tagline">管理画面</p>
   </header>
 
@@ -21,10 +21,13 @@
       <a href="#audit" data-page="audit">監査ログ</a>
       <a href="#volume-reports" data-page="volume-reports">巻の通報</a>
       <a href="#series-reports" data-page="series-reports">シリーズ名の通報</a>
+      <a href="#volume-title-reports" data-page="volume-title-reports">本のタイトルの通報</a>
       <a href="#corrections" data-page="corrections">巻の修正</a>
       <a href="#cover-suggestions" data-page="cover-suggestions">表紙の修正</a>
       <a href="#covers" data-page="covers">表紙キャッシュ</a>
       <a href="#supplements" data-page="supplements">補完キャッシュ</a>
+      <a href="#book-meta" data-page="book-meta">楽天データ</a>
+      <a href="#dev-tools" data-page="dev-tools" id="navDevTools" hidden>開発ツール</a>
     </nav>
 
     <!-- 概要 -->
@@ -235,6 +238,59 @@
       <div class="pager" id="nameOverridePager" style="display:none"></div>
     </section>
 
+    <!-- 本のタイトルの通報 -->
+    <section class="admin-page" id="page-volume-title-reports" hidden>
+      <div class="toolbar">
+        <strong>本のタイトルの通報</strong>
+        <span class="count" id="volTitleReportCount"></span>
+        <div style="flex:1"></div>
+        <button id="toggleTitleOverrides">修正したタイトルを表示</button>
+        <button id="reloadVolTitleReport">再読み込み</button>
+      </div>
+      <p class="hint">
+        閲覧者が「本のタイトルが違う」と通報した巻（ISBN 単位）の一覧です。巻の schema:name は
+        シリーズ名の繰り返しですが、表記ゆれ分割などで一部の巻だけ変なタイトルを背負うことが
+        あります。所属シリーズで最多の巻タイトルをヒントとして併記しています。「揃える」で
+        <strong>そのシリーズで最多のタイトルに統一</strong>、または「修正」で正しいタイトルを
+        手入力すると、<strong>全ての閲覧者の巻一覧/詳細表示に反映</strong>されます（再取り込みで
+        マスターが戻っても上書きは維持されます）。誤報なら「却下」で通報だけ消します。
+      </p>
+      <p class="hint" id="volTitleReportHint" style="display:none"></p>
+      <table class="admin-table" id="volTitleReportTable" style="display:none">
+        <thead>
+          <tr>
+            <th>表紙</th>
+            <th>ISBN</th>
+            <th>現在のタイトル</th>
+            <th>シリーズ</th>
+            <th>最多の巻タイトル（揃える候補）</th>
+            <th class="num">通報</th>
+            <th>通報日時</th>
+            <th></th>
+          </tr>
+        </thead>
+        <tbody id="volTitleReportBody"></tbody>
+      </table>
+      <div class="pager" id="volTitleReportPager" style="display:none"></div>
+
+      <!-- タイトル修正で確定した上書きの履歴（volume_title_override） -->
+      <p class="hint" id="titleOverrideHint" style="display:none"></p>
+      <table class="admin-table" id="titleOverrideTable" style="display:none">
+        <thead>
+          <tr>
+            <th>表紙</th>
+            <th>ISBN</th>
+            <th>修正後のタイトル（表示名）</th>
+            <th>現在のマスタータイトル</th>
+            <th>シリーズ</th>
+            <th>修正日時</th>
+          </tr>
+        </thead>
+        <tbody id="titleOverrideBody"></tbody>
+      </table>
+      <div class="pager" id="titleOverridePager" style="display:none"></div>
+    </section>
+
     <!-- 巻の修正（ユーザ投稿） -->
     <section class="admin-page" id="page-corrections" hidden>
       <div class="toolbar">
@@ -299,6 +355,7 @@
         見比べて、提案が正しければ「承認」で<strong>表紙キャッシュを上書きし全体に反映</strong>します
         （同じ本を載せた他のリストやシリーズ閲覧にも波及。同 ISBN の他の候補は解決済みとして消えます）。
         誤りなら「却下」で提案だけ消します。ISBN をクリックすると外部サイトで実物を確認できます。
+        作品名・巻数をクリックすると、そのシリーズの巻一覧を表示して実物を確認できます。
       </p>
       <p class="hint" id="coverSuggestHint" style="display:none"></p>
       <table class="admin-table" id="coverSuggestTable" style="display:none">
@@ -307,6 +364,7 @@
             <th>現在の表紙</th>
             <th>提案された表紙</th>
             <th>作品</th>
+            <th>巻数</th>
             <th>ISBN</th>
             <th>確認</th>
             <th class="num">提案</th>
@@ -325,6 +383,7 @@
           <tr>
             <th>提案された表紙</th>
             <th>作品</th>
+            <th>巻数</th>
             <th>ISBN</th>
             <th class="num">提案</th>
             <th>処理</th>
@@ -346,7 +405,8 @@
       </div>
       <p class="hint">
         「No Image」は書影が見つからず確定キャッシュした本です。削除すると次回アクセス時に再探索されます
-        （新しく書影が追加された本の拾い直しに有効）。
+        （新しく書影が追加された本の拾い直しに有効）。「全キャッシュ削除」は R2 のトリム済み表紙画像も消すので、
+        次回アクセス時に再探索・再トリムされます（表紙トリムのクリーン再テスト用）。
       </p>
       <div class="cover-actions">
         <button id="purgeEmpty">No Image を削除して再探索</button>
@@ -354,6 +414,24 @@
         <div class="cover-single">
           <input type="text" id="coverIsbn" placeholder="ISBN13（数字13桁）" inputmode="numeric">
           <button id="delCover">指定ISBNを削除</button>
+        </div>
+      </div>
+
+      <!-- 子機能: R2 に materialise 済みのトリム画像だけを管理 -->
+      <div class="cover-r2-section">
+        <div class="toolbar">
+          <strong>トリム済み表紙画像（R2）</strong>
+          <span class="count" id="coverR2Summary"></span>
+          <div style="flex:1"></div>
+          <button id="reloadCoverR2">再読み込み</button>
+        </div>
+        <p class="hint">
+          Yahoo!ショッピングの正方形表紙を白帯トリムして R2 に保存した画像です。ここで削除すると、
+          D1 の表紙キャッシュは残したまま R2 の実体だけを消します（次回アクセス時に同じ元画像から
+          再トリムして入れ直されます）。表紙トリム処理そのものの再テストに使います。
+        </p>
+        <div class="cover-actions">
+          <button class="danger" id="purgeCoverR2">R2 のトリム画像を全削除</button>
         </div>
       </div>
     </section>
@@ -396,6 +474,81 @@
         </div>
       </div>
     </section>
+
+    <!-- 楽天データ（book_meta: あらすじ・作者・出版社・発行日のキャッシュ） -->
+    <section class="admin-page" id="page-book-meta" hidden>
+      <div class="toolbar">
+        <strong>楽天データ（あらすじ・作者・出版社）</strong>
+        <span class="count" id="bookMetaSummary"></span>
+        <input type="text" id="bookMetaQuery" placeholder="作品名・作者・出版社・ISBN で検索" style="margin-left:8px;min-width:220px">
+        <button id="bookMetaSearch">検索</button>
+        <button id="bookMetaClear" style="display:none">クリア</button>
+        <div style="flex:1"></div>
+        <button id="reloadBookMeta">再読み込み</button>
+      </div>
+      <p class="hint">
+        本の詳細ポップアップ用に、楽天ブックスから取得したあらすじ（itemCaption）・作者・出版社・発行日を
+        ISBN ごとにキャッシュしています（出版済みの本のメタデータは不変なので永続キャッシュ）。
+        「あらすじ無し」は楽天にエントリはあったがあらすじが無く確定キャッシュした本です。削除すると
+        次回ポップアップを開いた時に楽天を引き直します（後からあらすじが付いた本の拾い直しに有効）。
+        あらすじをクリックすると全文を表示します。
+      </p>
+      <p class="hint" id="bookMetaHint" style="display:none"></p>
+      <div class="table-scroll">
+        <table class="admin-table" id="bookMetaTable" style="display:none">
+          <thead>
+            <tr>
+              <th>表紙</th>
+              <th>作品</th>
+              <th>作者</th>
+              <th>出版社</th>
+              <th>発行日</th>
+              <th>あらすじ</th>
+              <th>確認</th>
+              <th>最終確認</th>
+              <th></th>
+            </tr>
+          </thead>
+          <tbody id="bookMetaBody"></tbody>
+        </table>
+      </div>
+      <div class="pager" id="bookMetaPager" style="display:none"></div>
+      <div class="cover-actions" style="margin-top:16px">
+        <button id="purgeBookMetaEmpty">「あらすじ無し」を削除して再取得</button>
+        <button class="danger" id="purgeBookMetaAll">全キャッシュ削除</button>
+        <div class="cover-single">
+          <input type="text" id="delBookMetaIsbn" placeholder="ISBN13（数字13桁）" inputmode="numeric">
+          <button id="delBookMeta">指定ISBNを削除</button>
+        </div>
+      </div>
+    </section>
+
+    <!-- 開発ツール（ローカル dev 限定: ADMIN_DEV_BYPASS） -->
+    <section class="admin-page" id="page-dev-tools" hidden>
+      <div class="toolbar">
+        <strong>開発ツール</strong>
+        <span class="count">ローカル開発環境限定</span>
+      </div>
+      <p class="hint">
+        この操作は <code>DEV_TOOLS</code> が有効な環境でのみ表示・実行できます（開発期間中は本番でも管理者のみ実行可能。正式リリース時にフラグを外します）。
+      </p>
+      <div class="dev-danger-box">
+        <h3>DB の初期化（マスターデータ以外を全削除）</h3>
+        <p class="hint">
+          MADB 由来の<strong>マスターデータ（シリーズ・巻・メタ情報）は残したまま</strong>、それ以外の
+          テーブルを全て空にして開発用に初期化します。削除対象は次のとおりです:
+        </p>
+        <ul class="hint">
+          <li>公開リスト（<code>lists</code>）と追加イベントログ（<code>list_item_events</code>）</li>
+          <li>各種キャッシュ（表紙・楽天データ・補完）</li>
+          <li>ユーザ投稿の修正・通報・各種上書き・表紙の修正</li>
+          <li>自由入力の通報・公開の監査ログ</li>
+          <li>R2 のトリム済み表紙画像（<code>yahoo/*.jpg</code>）</li>
+        </ul>
+        <p class="hint"><strong>この操作は元に戻せません。</strong></p>
+        <button class="danger" id="devResetBtn">DB を初期化する</button>
+      </div>
+    </section>
   </div>
 
   <footer class="site">
@@ -421,6 +574,8 @@
     </div>
   </div>
 
+  <script src="/ui-dialog.js"></script>
+  <script src="/cover-fit.js"></script>
   <script src="/admin.js"></script>
 </body>
 </html>

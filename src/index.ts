@@ -1,7 +1,8 @@
 import { handleSearch, handleLiveSearch } from "./search";
-import { getSeriesVolumes } from "./series";
-import { addCorrection, reportVolume, reportSeriesName, suggestCover } from "./corrections";
+import { getSeriesVolumes, handleMasterInfo } from "./series";
+import { addCorrection, reportVolume, reportSeriesName, reportVolumeTitle, suggestCover } from "./corrections";
 import { coverCandidates, volumeCandidates } from "./candidates";
+import { handleBook } from "./book";
 import { resolveCovers } from "./covers";
 import { createList, getList, getListData, updateList } from "./lists";
 import {
@@ -27,27 +28,105 @@ import {
   adminDismissSeriesReport,
   adminOverrideSeriesName,
   adminListNameOverrides,
+  adminListVolumeTitleReports,
+  adminDismissVolumeTitleReport,
+  adminOverrideVolumeTitle,
+  adminApplyCommonTitleToVolume,
+  adminListVolumeTitleOverrides,
   adminListSupplements,
   adminPurgeCovers,
+  adminCoverR2Summary,
+  adminPurgeCoverR2,
   adminPurgeSupplements,
   adminDeleteSupplement,
+  adminBookMetaSummary,
+  adminListBookMeta,
+  adminDeleteBookMeta,
+  adminPurgeBookMeta,
   adminRedactReport,
   adminSupplementSummary,
   adminStats,
+  adminDevReset,
   parsePage,
 } from "./admin";
 import { addReport } from "./reports";
 import { requireAdmin } from "./adminAuth";
 import { handleRanking } from "./ranking";
+import { analyticsTags, gtmBody, injectAnalytics, appVersion } from "./analytics";
+import { footerHtml } from "./footer";
 import { bumpPopularity } from "./popularity";
 import { Env, MangaList } from "./types";
 import { rateLimit } from "./ratelimit";
+import { trimWhitespace } from "./covertrim";
 import { escapeHtml, json, notFound } from "./util";
 
 export { RakutenRateLimiter } from "./ratelimiter";
 
+const COVER_CACHE = "public, max-age=31536000, immutable";
+
+function coverHeaders(etag?: string): Headers {
+  const h = new Headers();
+  h.set("content-type", "image/jpeg");
+  h.set("cache-control", COVER_CACHE);
+  if (etag) h.set("etag", etag);
+  return h;
+}
+
+async function sha256Hex(s: string): Promise<string> {
+  const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(s));
+  return [...new Uint8Array(digest)].map((b) => b.toString(16).padStart(2, "0")).join("");
+}
+
+// Serve a Yahoo cover with its baked-in white bars trimmed. First hit decodes +
+// trims (src/covertrim.ts) and persists the result to R2 keyed by a hash of the
+// source URL; every later hit streams straight from R2. Whitelisted to *.yimg.jp
+// so it can't be used as an open proxy. If trimming yields nothing (not square /
+// no content), the original image is stored and served unchanged.
+async function handleCover(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
+  const u = new URL(request.url).searchParams.get("u") || "";
+  let target: URL;
+  try {
+    target = new URL(u);
+  } catch {
+    return new Response("bad url", { status: 400 });
+  }
+  if (target.protocol !== "https:" || !/(^|\.)yimg\.jp$/.test(target.hostname)) {
+    return new Response("forbidden host", { status: 403 });
+  }
+
+  const key = "yahoo/" + (await sha256Hex(target.toString())) + ".jpg";
+
+  if (env.COVERS) {
+    const hit = await env.COVERS.get(key);
+    if (hit) return new Response(hit.body, { status: 200, headers: coverHeaders(hit.httpEtag) });
+  }
+
+  const upstream = await fetch(target.toString(), {
+    cf: { cacheEverything: true, cacheTtl: 86400 },
+  });
+  if (!upstream.ok) return new Response("upstream error", { status: 502 });
+  const original = await upstream.arrayBuffer();
+
+  let out: ArrayBuffer = original;
+  try {
+    const trimmed = await trimWhitespace(original);
+    if (trimmed) out = trimmed;
+  } catch {
+    // decode/encode failure: fall back to the original bytes.
+  }
+
+  if (env.COVERS) {
+    ctx.waitUntil(
+      env.COVERS.put(key, out, {
+        httpMetadata: { contentType: "image/jpeg", cacheControl: COVER_CACHE },
+      }),
+    );
+  }
+  return new Response(out, { status: 200, headers: coverHeaders() });
+}
+
 export default {
-  async fetch(request: Request, env: Env): Promise<Response> {
+  async fetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
     const url = new URL(request.url);
     const path = url.pathname;
 
@@ -64,17 +143,42 @@ export default {
           if (limited) return limited;
         }
       }
+      // ユーザが明示的に押す「本データを再取得」(/api/book?refresh=1) は Rakuten を叩き直す
+      // ので、GET でも外部 API 枠（RL_COVERS）で濫用よけする。通常の /api/book はキャッシュ
+      // 返却なので対象外。
+      if (
+        request.method === "GET" &&
+        path === "/api/book" &&
+        url.searchParams.get("refresh") === "1"
+      ) {
+        const limited = await rateLimit(request, env.RL_COVERS, "covers");
+        if (limited) return limited;
+      }
       // --- API ---
       if (path === "/api/search" && request.method === "GET") {
         return await handleSearch(request, env);
+      }
+      // 現在のデプロイ版を返す。開きっぱなしの SPA タブがこれを見て、自分が読み込んだ版
+      // （<meta app-version>）と食い違ったら「新しい版」バナーを出す。see public/app.js
+      if (path === "/api/version" && request.method === "GET") {
+        return json({ version: appVersion(env) }, 200, { "cache-control": "no-store" });
       }
       // 本が追加されている回数ランキング (累計 / 過去30日 / 7日 / 24時間)。
       if (path === "/api/ranking" && request.method === "GET") {
         return await handleRanking(env);
       }
+      // MADB master provenance (release tag/date + last import) for the about page.
+      if (path === "/api/master-info" && request.method === "GET") {
+        return await handleMasterInfo(env);
+      }
       // Keyword discovery against live MADB for works missing from the master.
       if (path === "/api/live-search" && request.method === "GET") {
         return await handleLiveSearch(request, env);
+      }
+      // Trimmed Yahoo cover served from R2 (materialised on first hit). See
+      // handleCover: strips the white bars baked into 正方形 seller images.
+      if (path === "/cover" && request.method === "GET") {
+        return await handleCover(request, env, ctx);
       }
       const seriesMatch = path.match(/^\/api\/series\/([A-Za-z0-9]+)\/volumes$/);
       if (seriesMatch && request.method === "GET") {
@@ -108,8 +212,17 @@ export default {
       if (path === "/api/cover-suggestions" && request.method === "POST") {
         return await suggestCover(request, env);
       }
+      // Flag a wrong VOLUME TITLE (本のタイトルが違う？). Collect-only; admin fixes via
+      // override / snap-to-common. Keyed by ISBN, so no series id in the path.
+      if (path === "/api/volume-title-reports" && request.method === "POST") {
+        return await reportVolumeTitle(request, env);
+      }
       if (path === "/api/volume-candidates" && request.method === "GET") {
         return await volumeCandidates(request, env);
+      }
+      // Metadata for the view-page detail popup (authors/publisher/発行日/あらすじ).
+      if (path === "/api/book" && request.method === "GET") {
+        return await handleBook(request, env);
       }
       if (path === "/api/covers" && request.method === "POST") {
         return await resolveCoversApi(request, env);
@@ -145,6 +258,10 @@ export default {
       }
       if (path === "/api/admin/stats" && request.method === "GET") {
         return await adminStats(env);
+      }
+      // 開発用: マスターデータ以外を全削除して DB を初期化。dev（ADMIN_DEV_BYPASS）限定。
+      if (path === "/api/admin/dev/reset" && request.method === "POST") {
+        return await adminDevReset(env);
       }
       if (path === "/api/admin/lists" && request.method === "GET") {
         return await adminListLists(env, parsePage(url));
@@ -208,6 +325,32 @@ export default {
         // 却下: 通報行だけ削除。名前は変更しない。
         return await adminDismissSeriesReport(env, adminSeriesReportMatch[1]);
       }
+      // 本のタイトルの通報（巻 ISBN 単位）。series-reports と同じ構成。
+      if (path === "/api/admin/volume-title-reports" && request.method === "GET") {
+        return await adminListVolumeTitleReports(env, parsePage(url));
+      }
+      // タイトル修正で確定した巻タイトル上書きの履歴（volume_title_override）。
+      if (path === "/api/admin/volume-title-overrides" && request.method === "GET") {
+        return await adminListVolumeTitleOverrides(env, parsePage(url));
+      }
+      const adminVolTitleCommonMatch = path.match(
+        /^\/api\/admin\/volume-title-reports\/([0-9Xx]+)\/common$/
+      );
+      if (adminVolTitleCommonMatch && request.method === "POST") {
+        // 「揃える」: そのシリーズで最多の巻タイトルを override として記録。
+        return await adminApplyCommonTitleToVolume(env, adminVolTitleCommonMatch[1]);
+      }
+      const adminVolTitleReportMatch = path.match(
+        /^\/api\/admin\/volume-title-reports\/([0-9Xx]+)$/
+      );
+      if (adminVolTitleReportMatch && request.method === "POST") {
+        // タイトル修正（手動上書き）: body の title を volume_title_override に記録。
+        return await adminOverrideVolumeTitle(request, env, adminVolTitleReportMatch[1]);
+      }
+      if (adminVolTitleReportMatch && request.method === "DELETE") {
+        // 却下: 通報行だけ削除。タイトルは変更しない。
+        return await adminDismissVolumeTitleReport(env, adminVolTitleReportMatch[1]);
+      }
       if (path === "/api/admin/cover-suggestions" && request.method === "GET") {
         // ?resolved=1 で処理済み(承認/却下/差し替え)の履歴、無ければレビュー待ちキュー。
         return await adminListCoverSuggestions(env, parsePage(url), url.searchParams.get("resolved") === "1");
@@ -230,6 +373,12 @@ export default {
       if (path === "/api/admin/covers/purge" && request.method === "POST") {
         return await adminPurgeCovers(request, env);
       }
+      if (path === "/api/admin/covers/r2/summary" && request.method === "GET") {
+        return await adminCoverR2Summary(env);
+      }
+      if (path === "/api/admin/covers/r2/purge" && request.method === "POST") {
+        return await adminPurgeCoverR2(env);
+      }
       const adminCoverMatch = path.match(/^\/api\/admin\/covers\/([0-9Xx]+)$/);
       if (adminCoverMatch && request.method === "DELETE") {
         return await adminDeleteCover(env, adminCoverMatch[1]);
@@ -246,6 +395,19 @@ export default {
       const adminSupMatch = path.match(/^\/api\/admin\/supplements\/([A-Za-z0-9]+)$/);
       if (adminSupMatch && request.method === "DELETE") {
         return await adminDeleteSupplement(env, adminSupMatch[1]);
+      }
+      if (path === "/api/admin/book-meta" && request.method === "GET") {
+        return await adminListBookMeta(env, parsePage(url), url.searchParams.get("q") ?? "");
+      }
+      if (path === "/api/admin/book-meta/summary" && request.method === "GET") {
+        return await adminBookMetaSummary(env);
+      }
+      if (path === "/api/admin/book-meta/purge" && request.method === "POST") {
+        return await adminPurgeBookMeta(request, env);
+      }
+      const adminBookMetaMatch = path.match(/^\/api\/admin\/book-meta\/([0-9Xx]+)$/);
+      if (adminBookMetaMatch && request.method === "DELETE") {
+        return await adminDeleteBookMeta(env, adminBookMetaMatch[1]);
       }
       if (path === "/api/admin/reports" && request.method === "GET") {
         // ?resolved=1 で処理済み(却下/伏字)の履歴、無ければレビュー待ちキュー。
@@ -280,7 +442,8 @@ export default {
     }
 
     // --- Static assets (editor, css, js, view.html template, etc.) ---
-    return env.ASSETS.fetch(request);
+    // HTML ページには <!--ANALYTICS--> に Google タグを差し込む（admin は素通り）。
+    return injectAnalytics(await env.ASSETS.fetch(request), env);
   },
 } satisfies ExportedHandler<Env>;
 
@@ -319,7 +482,10 @@ async function renderViewPage(env: Env, slug: string, origin: string): Promise<R
 
   html = html
     .replace("<!--OGP_META-->", meta)
-    .replace("<!--LIST_DATA-->", injected);
+    .replace("<!--ANALYTICS-->", analyticsTags(env))
+    .replace("<!--GTM_BODY-->", gtmBody(env))
+    .replace("<!--LIST_DATA-->", injected)
+    .replace("<!--FOOTER_AFF-->", footerHtml(true));
 
   return new Response(html, {
     headers: { "content-type": "text/html; charset=utf-8" },
@@ -339,7 +505,7 @@ function buildOgp(data: MangaList, pageUrl: string): string {
 
   const tags = [
     `<meta property="og:type" content="website">`,
-    `<meta property="og:site_name" content="my100manga">`,
+    `<meta property="og:site_name" content="My 100 Manga">`,
     `<meta property="og:title" content="${escapeHtml(title)}">`,
     `<meta property="og:description" content="${escapeHtml(desc)}">`,
     `<meta property="og:url" content="${escapeHtml(pageUrl)}">`,
@@ -352,7 +518,7 @@ function buildOgp(data: MangaList, pageUrl: string): string {
     tags.push(`<meta property="og:image" content="${escapeHtml(image)}">`);
     tags.push(`<meta name="twitter:image" content="${escapeHtml(image)}">`);
   }
-  tags.push(`<title>${escapeHtml(title)} | my100manga</title>`);
+  tags.push(`<title>${escapeHtml(title)} | My 100 Manga</title>`);
   return tags.join("\n  ");
 }
 

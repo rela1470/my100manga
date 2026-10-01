@@ -1,4 +1,4 @@
-# my100manga
+# My 100 Manga
 
 「私を構成する100の漫画」を選んでカード化し、URLで共有できるサイト。
 
@@ -65,6 +65,13 @@ npm run ingest:remote:dev
 `scripts/ingest.mjs` は [mediaarts-db/dataset](https://github.com/mediaarts-db/dataset) の最新リリースから
 マンガ単行本（`metadata101`）とシリーズ（`metadata104`）の JSON-LD を取得し、
 ストリームパースして `INSERT OR REPLACE` の SQL に変換、`wrangler d1 execute` で流し込む。
+
+投入は **blue-green 方式**でサイトを止めない。シャドウテーブル `series_new` / `volumes_new`
+に全件ロードし終えてから、最後に一回の `ALTER TABLE ... RENAME`（瞬時のメタ操作）で
+現行テーブルと差し替える。ロード中は本番の検索・シリーズ表示は旧マスタをそのまま参照し続け、
+空や中途半端な状態を一切見せない。差し替え後に正規のインデックスを張り直し、旧マスタ基準で
+作られた `series_supplement` キャッシュを破棄して再計算させる。
+
 主なフラグ:
 
 | フラグ | 説明 |
@@ -78,7 +85,8 @@ npm run ingest:remote:dev
 > ⚠️ **D1 の書き込み上限に注意**。初回シードは概算で **series 約 14 万行 + volumes 約 36 万行 ≒ 50 万 rows written**。
 > D1 無料枠は **100,000 rows written / 日** なので初回シードは無料枠では 1 日で完了しない。
 > Workers 有料プラン（$5/月、50M rows written/日）が実質必須。
-> 月次更新も `INSERT OR REPLACE` で全行を書き直すため毎回同規模の書き込みが発生する。
+> 月次更新も全行を書き直すため毎回同規模の書き込みが発生する（blue-green でも書き込み量は変わらない）。
+> また差し替え前はシャドウと現行の両方が同時に存在するため、ロード中だけ当該テーブルのストレージが一時的に約 2 倍になる。
 
 ## 手動取り込み（GitHub Actions）
 

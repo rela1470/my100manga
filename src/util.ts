@@ -19,6 +19,30 @@ export function escapeLike(s: string): string {
   return s.replace(/[\\%_]/g, (m) => "\\" + m);
 }
 
+/** D1/SQLite caps LIKE/GLOB pattern length at 50 bytes
+ *  (SQLITE_LIMIT_LIKE_PATTERN_LENGTH); anything longer throws "LIKE or GLOB
+ *  pattern too complex". Leave a few bytes of slack for surrounding wildcards. */
+export const LIKE_MAX_BYTES = 48;
+
+const UTF8 = new TextEncoder();
+
+/** Longest prefix of `s`, escaped for LIKE (ESCAPE '\'), whose encoded form stays
+ *  within `maxBytes` — never splitting a character or a `\x` escape pair. Lets a
+ *  long query or title be used as a LIKE pattern without tripping D1's length cap;
+ *  callers needing exactness re-check the (possibly shortened) match in JS. */
+export function escapeLikeClamped(s: string, maxBytes: number): string {
+  let out = "";
+  let bytes = 0;
+  for (const ch of s) {
+    const esc = escapeLike(ch);
+    const n = UTF8.encode(esc).length;
+    if (bytes + n > maxBytes) break;
+    out += esc;
+    bytes += n;
+  }
+  return out;
+}
+
 /** A title's "base": the head before MADB's alt-title / subtitle separators
  *  (= ： : ／ ∥), with trailing punctuation dropped, then normalized. MADB registers
  *  the same work under several schema:name strings — an English alias after "=", a

@@ -40,6 +40,42 @@ const SERIES_ASSET = "metadata104_json.zip"; // マンガ単行本シリーズ
 const DB_BINDING = "DB";
 const ID_PREFIX = "https://mediaarts-db.artmuseums.go.jp/id/";
 
+// Column definitions kept in sync with db/schema.sql (series / volumes). The shadow
+// tables deliberately omit indexes — they're added post-swap (see SWAP_SQL).
+const SERIES_COLS =
+  "id TEXT PRIMARY KEY, name TEXT NOT NULL, name_norm TEXT NOT NULL, name_kana TEXT, " +
+  "name_kana_norm TEXT, creator TEXT, publisher TEXT, label TEXT, num_items INTEGER";
+const VOLUMES_COLS =
+  "isbn TEXT PRIMARY KEY, series_id TEXT, volume_number TEXT, vol_sort INTEGER, " +
+  "title TEXT NOT NULL, creator TEXT, publisher TEXT, label TEXT, pubdate TEXT";
+
+const DROP_AND_CREATE_SHADOW_SQL =
+  "DROP TABLE IF EXISTS series_new; DROP TABLE IF EXISTS volumes_new; " +
+  `CREATE TABLE series_new (${SERIES_COLS}); ` +
+  `CREATE TABLE volumes_new (${VOLUMES_COLS});`;
+
+// Blue-green cutover. RENAMEs are instant metadata ops, so the window where the live
+// `series`/`volumes` names point at anything other than a fully-loaded table is
+// negligible. Old tables are dropped first to free the global index names, then the
+// canonical indexes are rebuilt on the freshly-promoted tables.
+const SWAP_SQL = [
+  `CREATE TABLE IF NOT EXISTS series (${SERIES_COLS});`,
+  `CREATE TABLE IF NOT EXISTS volumes (${VOLUMES_COLS});`,
+  "DROP TABLE IF EXISTS series_old;",
+  "DROP TABLE IF EXISTS volumes_old;",
+  "ALTER TABLE series RENAME TO series_old;",
+  "ALTER TABLE volumes RENAME TO volumes_old;",
+  "ALTER TABLE series_new RENAME TO series;",
+  "ALTER TABLE volumes_new RENAME TO volumes;",
+  "DROP TABLE series_old;",
+  "DROP TABLE volumes_old;",
+  "CREATE INDEX IF NOT EXISTS idx_series_name_norm ON series (name_norm);",
+  "CREATE INDEX IF NOT EXISTS idx_series_kana_norm ON series (name_kana_norm);",
+  "CREATE INDEX IF NOT EXISTS idx_volumes_series ON volumes (series_id, vol_sort);",
+  "CREATE TABLE IF NOT EXISTS series_supplement (series_id TEXT PRIMARY KEY, volumes_json TEXT NOT NULL, checked_at INTEGER NOT NULL);",
+  "DELETE FROM series_supplement;",
+].join(" ");
+
 function parseArgs(argv) {
   const a = {
     target: "local",
@@ -321,10 +357,11 @@ async function main() {
   fs.rmSync(a.out, { recursive: true, force: true });
   fs.mkdirSync(a.out, { recursive: true });
 
-  // 1. series
+  // 1. series → load into a shadow table (series_new); swapped in atomically at the
+  // end so the live site never reads a half-loaded master. See the swap block below.
   const seriesWriter = new SqlChunkWriter(
     a.out,
-    "series",
+    "series_new",
     ["id", "name", "name_norm", "name_kana", "name_kana_norm", "creator", "publisher", "label", "num_items"],
     a.chunk
   );
@@ -357,10 +394,10 @@ async function main() {
   const seriesFiles = seriesWriter.finish();
   log(`series: ${seriesCount} rows → ${seriesFiles.length} files`);
 
-  // 2. volumes (deduped by ISBN)
+  // 2. volumes (deduped by ISBN) → shadow table volumes_new, swapped in below.
   const volumesWriter = new SqlChunkWriter(
     a.out,
-    "volumes",
+    "volumes_new",
     ["isbn", "series_id", "volume_number", "vol_sort", "title", "creator", "publisher", "label", "pubdate"],
     a.chunk
   );
@@ -411,17 +448,34 @@ async function main() {
     return;
   }
 
-  // Apply: clear existing rows first, then load chunks. series_supplement is a
-  // live-SPARQL cache of volumes the *old* master lacked, filtered against it at
-  // write time; once master is replaced those entries can duplicate newly-ingested
-  // volumes, so drop the cache and let it recompute against the fresh master.
+  // Apply with a blue-green swap so the live site never reads a half-loaded master.
+  // We load the whole dump into shadow tables (series_new / volumes_new), then flip
+  // them into place with instant RENAMEs. The old approach (DELETE then reload the
+  // live tables chunk-by-chunk) left search / "全巻追加" broken for the whole load
+  // window — minutes to hours against remote D1.
   const targetFlag = a.target === "remote" ? "--remote" : "--local";
   const envArgs = a.env ? ["--env", a.env] : [];
-  execWrangler(envArgs, targetFlag, "--command", "DELETE FROM volumes; DELETE FROM series; DELETE FROM series_supplement;");
+
+  // 1. Fresh shadow tables, no indexes yet. SQLite index names are global, so we
+  //    can't create the canonical indexes on *_new while the live tables still own
+  //    those names — they're (re)created after the old tables are dropped in step 3.
+  execWrangler(envArgs, targetFlag, "--command", DROP_AND_CREATE_SHADOW_SQL);
+
+  // 2. Stream the chunks into the shadow tables. The live site keeps serving the
+  //    current master untouched throughout.
   for (const f of [...seriesFiles, ...volumeFiles]) {
     log("apply", path.basename(f.path));
     execWrangler(envArgs, targetFlag, "--file", f.path);
   }
+
+  // 3. Atomic cutover: rename shadow → live, drop the old tables (freeing the index
+  //    names), recreate indexes, and reset series_supplement. The supplement is a
+  //    live-SPARQL cache of volumes the *old* master lacked; once the master is
+  //    replaced those rows can duplicate freshly-ingested volumes, so we drop it and
+  //    let it recompute against the new master. CREATE IF NOT EXISTS on the live
+  //    tables keeps this working on a first-ever ingest where they don't exist yet.
+  log("swap shadow tables into place");
+  execWrangler(envArgs, targetFlag, "--command", SWAP_SQL);
 
   // Record dump provenance so the UI can show "マスター更新". released_at is the MADB
   // release date (preferred); imported_at is when this ingest ran (fallback).

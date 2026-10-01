@@ -25,19 +25,36 @@
   "observability": {
     "enabled": true
   },
+  // 毎デプロイで変わるバージョン ID を Worker から読めるようにする（env.CF_VERSION.id）。
+  // HTML の script に ?v= を付けてキャッシュを破棄し、/api/version と <meta app-version>
+  // で開きっぱなしの SPA タブに新デプロイを気付かせる。see src/analytics.ts / public/app.js
+  "version_metadata": { "binding": "CF_VERSION" },
   // ── production (deployed by `wrangler deploy`, no --env) ──────────────────
   // デプロイ先ごとの個人設定は公開リポに載せず、すべて
   // `wrangler secret put <NAME>` で注入する（未設定でも起動はする）:
   //   AMAZON_ASSOCIATE_TAG / RAKUTEN_AFFILIATE_ID / MERCARI_AFID
   //     … アフィリンクの紹介タグ。未設定ならタグ無しのリンク（購入は可能）。
-  //   RAKUTEN_APP_ID / RAKUTEN_ACCESS_KEY … 楽天 API（表紙フォールバック）。
+  //   RAKUTEN_APP_ID / RAKUTEN_ACCESS_KEY … 楽天 API（表紙フォールバック Tier1）。
+  //   YAHOO_APP_ID … Yahoo!ショッピング 商品検索API の Client ID（表紙フォールバック
+  //     Tier2、jan_code で ISBN 直引き）。未設定なら Yahoo はスキップ。see src/yahoo.ts
   //   ACCESS_TEAM_DOMAIN / ACCESS_AUD … 自分の Cloudflare Access アプリの値。
   //   ADMIN_EMAILS … 許可メール（カンマ区切り）。未設定だと admin は fail-closed で 403。
   // RAKUTEN_REFERER と routes のドメインは公開値なので vars に残す。自分のドメインに変更する。
   "vars": {
     "RAKUTEN_REFERER": "https://example.com/",
     // Google Books cover source: off by default. Set to "true" to re-enable.
-    "GOOGLE_ENABLED": "false"
+    "GOOGLE_ENABLED": "false",
+    // ユーザによる表紙URL投稿（「表紙を変更 → 画像URLを直接指定」）: いたずらリスクが
+    // 高いので既定で off。"true" で再有効化。see src/corrections.ts coverSuggestionsEnabled
+    "COVER_SUGGESTIONS_ENABLED": "false",
+    // Google タグ（src/analytics.ts）。公開値なので vars。ADSENSE_CLIENT は AdSense の
+    // パブリッシャ ID（"ca-pub-..."）、GTM_CONTAINER_ID は GTM コンテナ ID（"GTM-..."）。
+    "ADSENSE_CLIENT": "",
+    "GTM_CONTAINER_ID": "",
+    // 開発ツール（admin 画面の「DB初期化」= マスターデータ以外を全削除）を有効化。"true" で
+    // 表示・実行可能。認証は requireAdmin（Cloudflare Access）が担保するので管理者だけが使える
+    // （ADMIN_DEV_BYPASS と違い認証はバイパスしない）。正式リリース時は外す/"false" にする。
+    "DEV_TOOLS": "false"
   },
   "d1_databases": [
     {
@@ -81,8 +98,13 @@
       // （`wrangler secret put <NAME> --env dev`）。トップレベル vars のコメント参照。
       "vars": {
         "RAKUTEN_REFERER": "https://dev.example.com/",
-        "GOOGLE_ENABLED": "false"
+        "GOOGLE_ENABLED": "false",
+        "COVER_SUGGESTIONS_ENABLED": "false",
+        "ADSENSE_CLIENT": "",
+        "GTM_CONTAINER_ID": "",
+        "DEV_TOOLS": "false"
       },
+      "version_metadata": { "binding": "CF_VERSION" },
       "d1_databases": [
         {
           "binding": "DB",

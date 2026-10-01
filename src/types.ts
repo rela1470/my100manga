@@ -3,8 +3,20 @@ import type { RakutenRateLimiter } from "./ratelimiter";
 export interface Env {
   DB: D1Database;
   ASSETS: Fetcher;
-  // Global 1 req/s coordinator for Rakuten API calls. Optional so local tests /
-  // misconfigured envs degrade to "no pacing" rather than crashing.
+  // Per-deploy version stamp (Cloudflare version_metadata binding). `id` changes on
+  // every deploy; we surface it to the HTML (script `?v=` + <meta app-version>) and
+  // /api/version so an open SPA tab can detect a new deploy and prompt a reload.
+  // Optional so local/misconfigured envs degrade to an unversioned "dev" stamp.
+  CF_VERSION?: { id: string; tag?: string };
+  // Trimmed-cover store. /cover materialises Yahoo square covers (white bars cut)
+  // here once, keyed by a hash of the source URL, so every later view is served
+  // from R2/edge instead of re-trimming. Optional so envs without the binding
+  // degrade to serving the original (untrimmed) image.
+  COVERS?: R2Bucket;
+  // Global 1 req/s coordinator. A generic spacer DO (named historically after
+  // Rakuten); src/yahoo.ts reuses it under a separate "yahoo" instance so the two
+  // APIs pace independently. Optional so local tests / misconfigured envs degrade
+  // to "no pacing" rather than crashing.
   RAKUTEN_LIMITER?: DurableObjectNamespace<RakutenRateLimiter>;
   // Rakuten Books (楽天ブックス書籍検索API) — cover fallback when Google has none.
   // APP_ID/ACCESS_KEY are secrets (.dev.vars locally, `wrangler secret put` in prod);
@@ -13,9 +25,19 @@ export interface Env {
   RAKUTEN_APP_ID?: string;
   RAKUTEN_ACCESS_KEY?: string;
   RAKUTEN_REFERER?: string;
+  // Yahoo!ショッピング 商品検索API の Client ID (appid). Tier 2 cover source behind
+  // Rakuten: exact-ISBN via jan_code, free, no sales gate. Secret (.dev.vars locally,
+  // `wrangler secret put` in prod); the fallback is skipped when unset. See src/yahoo.ts.
+  YAHOO_APP_ID?: string;
   // Google Books cover source toggle. Off unless "true"/"1" — Rakuten is primary;
   // Google stays implemented but dormant. See covers.ts googleEnabled.
   GOOGLE_ENABLED?: string;
+  // User-submitted cover URL toggle. Off unless "true"/"1". The "表紙を変更 →
+  // 画像URLを直接指定" flow lets an accountless visitor post an arbitrary image URL
+  // into the admin review queue (and, on approve, the global covers cache) — too
+  // high a vandalism risk, so it's dormant by default. Code stays wired up for a
+  // possible later re-enable. See corrections.ts coverSuggestionsEnabled.
+  COVER_SUGGESTIONS_ENABLED?: string;
   // Affiliate identifiers for the "購入" links on the view page. Public (they
   // show up in the outbound URLs), so they live in wrangler.jsonc vars, not
   // secrets. Empty/unset → links are built without a referral tag.
@@ -35,6 +57,18 @@ export interface Env {
   ACCESS_AUD?: string;
   ADMIN_EMAILS?: string;
   ADMIN_DEV_BYPASS?: string;
+  // 開発ツール（admin 画面の「DB初期化」）の有効化フラグ。"true" で有効。ADMIN_DEV_BYPASS
+  // とは別物で認証はバイパスしない（エンドポイントは requireAdmin の配下のまま）ので、本番で
+  // も管理者だけが使える。開発期間中のみ本番 vars に "true" を置き、正式リリース時に外す想定。
+  // ローカル dev では ADMIN_DEV_BYPASS="true" でも有効になる（下の devToolsEnabled 参照）。
+  DEV_TOOLS?: string;
+  // Google タグ（src/analytics.ts）。HTML ページの <!--ANALYTICS-->（head）と
+  // <!--GTM_BODY-->（body 冒頭の noscript）に注入する。ADSENSE_CLIENT は AdSense の
+  // パブリッシャ ID（"ca-pub-..."）、GTM_CONTAINER_ID は Google タグマネージャの
+  // コンテナ ID（"GTM-..."）。どちらも公開値なので secret ではなく wrangler.jsonc vars。
+  // 空/未設定ならそのタグは出力しない（admin はプレースホルダ無しで常に素通り）。
+  ADSENSE_CLIENT?: string;
+  GTM_CONTAINER_ID?: string;
   // 公開書き込み系の濫用よけ（src/ratelimit.ts）。RL_WRITE は POST/PUT の書き込み全般、
   // RL_COVERS は表紙解決（外部 API を叩く /api/covers）用。binding 未設定なら fail-open。
   RL_WRITE?: RateLimit;

@@ -41,6 +41,21 @@ CREATE TABLE IF NOT EXISTS covers (
   checked_at INTEGER NOT NULL
 );
 
+-- Cache of per-ISBN book metadata for the view-page detail popup: all authors,
+-- publisher, 発行日 and the あらすじ (Rakuten itemCaption). Merged from the MADB
+-- master (volumes) + Rakuten and cached permanently — a published book's metadata
+-- is immutable, so each ISBN hits Rakuten at most once (same reasoning as `covers`).
+-- Only written when the Rakuten lookup was determinate; a rate-limit-skipped lookup
+-- is left uncached so a later open can retry. See src/book.ts.
+CREATE TABLE IF NOT EXISTS book_meta (
+  isbn       TEXT PRIMARY KEY,
+  authors    TEXT NOT NULL DEFAULT '',  -- "/"-joined author list
+  publisher  TEXT NOT NULL DEFAULT '',
+  pubdate    TEXT NOT NULL DEFAULT '',  -- already display-formatted
+  caption    TEXT NOT NULL DEFAULT '',
+  checked_at INTEGER NOT NULL
+);
+
 -- Key/value metadata. Currently holds the MADB dump provenance written by each
 -- ingest: madb_release_tag (release tag), madb_released_at / imported_at (epoch ms).
 -- Surfaced in the volume view as "マスター更新". See scripts/ingest.mjs.
@@ -170,6 +185,38 @@ CREATE INDEX IF NOT EXISTS idx_series_report_last ON series_report (last_reporte
 CREATE TABLE IF NOT EXISTS series_name_override (
   series_id  TEXT PRIMARY KEY,   -- MADB collection C-id whose display name is overridden
   name       TEXT NOT NULL,      -- corrected series title shown to everyone
+  created_at INTEGER NOT NULL
+);
+
+-- ── 巻(本)のタイトルの通報 (本のタイトルが違う？) ───────────────────────────
+-- MADB のマスタは巻ごとに schema:name を持つが、タイトル表記ゆれの分割などで一部の巻
+-- だけ変なタイトル文字列を背負うことがある（例: "Dジェネシス = D GENESIS : ダンジョン…"）。
+-- 閲覧者が巻一覧/リスト詳細で「このタイトルを通報」すると、volume_report と同じく
+-- 全体へは即時反映せず report_count を増やすだけ（本人端末のみ localStorage で抑止）。
+-- 管理者がレビューして 却下 するか、タイトル修正（volume_title_override を書く／シリーズ
+-- 最多タイトルへ揃える）する。reported_title は通報時点のマスタタイトルのスナップショット。
+-- series_id は通報時に ISBN から解決したもの（最多タイトル算出の対象シリーズ）。1 ISBN 1 行。
+-- See src/corrections.ts (reportVolumeTitle) と src/admin.ts (list / dismiss / override)。
+CREATE TABLE IF NOT EXISTS volume_title_report (
+  isbn              TEXT PRIMARY KEY,          -- normalized ISBN13 of the reported volume
+  series_id         TEXT NOT NULL DEFAULT '',  -- resolved series C-id (for most-common計算)
+  reported_title    TEXT NOT NULL DEFAULT '',  -- master title snapshot at report time
+  report_count      INTEGER NOT NULL DEFAULT 0,
+  first_reported_at INTEGER NOT NULL,
+  last_reported_at  INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_volume_title_report_last ON volume_title_report (last_reported_at);
+
+-- Admin-confirmed per-ISBN title overrides. When an admin fixes a reported volume
+-- title (manually, or by snapping to the series' most-common title), the corrected
+-- title is stored here keyed by ISBN and applied at READ time in getSeriesVolumes
+-- (COALESCE over the master volumes.title), so it survives the monthly MADB re-ingest
+-- that would otherwise restore the odd master title. Display-only; one row per ISBN.
+-- NOTE: like cover_suggestion, this does NOT retroactively rewrite title snapshots
+-- already stored in published lists' items_json. See src/admin.ts and src/series.ts.
+CREATE TABLE IF NOT EXISTS volume_title_override (
+  isbn       TEXT PRIMARY KEY,   -- normalized ISBN13 whose display title is overridden
+  title      TEXT NOT NULL,      -- corrected volume title shown to everyone
   created_at INTEGER NOT NULL
 );
 

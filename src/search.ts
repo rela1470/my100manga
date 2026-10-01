@@ -1,17 +1,7 @@
 import { Env } from "./types";
-import { badRequest, json } from "./util";
+import { badRequest, json, normTitle, escapeLike, baseTitle } from "./util";
 import { readCachedCovers } from "./covers";
 import { liveSearchByKeyword } from "./madbLive";
-
-/** Normalize a query the same way series.name_norm is stored (strip spaces, lower). */
-function normTitle(s: string): string {
-  return s.replace(/[\s　]+/g, "").toLowerCase();
-}
-
-/** Escape LIKE wildcards so a query containing % or _ matches literally. */
-function escapeLike(s: string): string {
-  return s.replace(/[\\%_]/g, (m) => "\\" + m);
-}
 
 interface SeriesResult {
   series_id: string;
@@ -286,7 +276,8 @@ async function discoverUnlinked(
 
   // Resolve each work's title to its series in one batched, index-backed lookup
   // (idx_series_name_norm). A normalized title maps to exactly one series → promote; to
-  // several → ambiguous, can't attribute, so keep standalone; to none → standalone.
+  // several → ambiguous, can't attribute, so keep standalone; to none → fall through to
+  // the base-title pass below.
   const norms = [...new Set(picked.map((g) => normTitle(g.title)))];
   const idsByNorm = new Map<string, string[]>();
   const nameRes = await env.DB.prepare(
@@ -302,11 +293,47 @@ async function discoverUnlinked(
 
   const promoteIds = new Set<string>();
   const standaloneGroups: Group[] = [];
+  const needsBasePass: Group[] = [];
   for (const g of picked) {
     const ids = idsByNorm.get(normTitle(g.title));
     if (ids && ids.length === 1) {
-      // Sole series for this exact title: the match belongs to it. Drop if already shown.
+      // Sole series for this EXACT title: the match belongs to it. Drop if already shown.
       if (!existingIds.has(ids[0])) promoteIds.add(ids[0]);
+    } else if (ids && ids.length > 1) {
+      // Same exact title shared by several series: can't attribute → standalone.
+      standaloneGroups.push(g);
+    } else {
+      // No exact-title series — retry on the BASE title below.
+      needsBasePass.push(g);
+    }
+  }
+
+  // Base-title pass: for groups with no exact-title series, find the series whose base
+  // title equals the group's base, so alt-title/subtitle variants (「Dジェネシス」 /
+  // 「Dジェネシス : …」) attach to the one series that owns the base. name_norm LIKE
+  // base||'%' is index-backed (idx_series_name_norm) and base is always a prefix of
+  // name_norm; we then re-check baseTitle(name) === base in JS so a longer-based sibling
+  // (「…外伝」) is excluded. Promote only when exactly ONE series owns the base —
+  // otherwise (0 or several) the volume can't be attributed and stays a standalone card
+  // (same guard as the exact pass and series.ts's sole-series-for-base fold).
+  const bases = [...new Set(needsBasePass.map((g) => baseTitle(g.title)).filter(Boolean))];
+  const idsByBase = new Map<string, Set<string>>();
+  for (const base of bases) {
+    const r = await env.DB.prepare(
+      `SELECT id, name FROM series WHERE name_norm LIKE ? ESCAPE '\\'`
+    )
+      .bind(escapeLike(base) + "%")
+      .all<{ id: string; name: string }>();
+    const set = new Set<string>();
+    for (const row of r.results ?? []) if (baseTitle(row.name) === base) set.add(row.id);
+    idsByBase.set(base, set);
+  }
+  for (const g of needsBasePass) {
+    const base = baseTitle(g.title);
+    const ids = base ? idsByBase.get(base) : undefined;
+    if (ids && ids.size === 1) {
+      const [id] = ids;
+      if (!existingIds.has(id)) promoteIds.add(id);
     } else {
       standaloneGroups.push(g);
     }

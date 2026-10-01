@@ -7,6 +7,34 @@ export function googleCover(isbn: string): string {
     : "";
 }
 
+/** Normalize a title/query the way series.name_norm is stored: strip spaces
+ *  (ASCII + full-width) and lowercase. Mirrors scripts/ingest.mjs normTitle so
+ *  stored *_norm columns and runtime queries align. */
+export function normTitle(s: string): string {
+  return s.replace(/[\s　]+/g, "").toLowerCase();
+}
+
+/** Escape LIKE wildcards so a value containing % or _ matches literally (ESCAPE '\'). */
+export function escapeLike(s: string): string {
+  return s.replace(/[\\%_]/g, (m) => "\\" + m);
+}
+
+/** A title's "base": the head before MADB's alt-title / subtitle separators
+ *  (= ： : ／ ∥), with trailing punctuation dropped, then normalized. MADB registers
+ *  the same work under several schema:name strings — an English alias after "=", a
+ *  descriptive subtitle after ":", or none at all — e.g.
+ *    「Dジェネシス = D GENESIS : ダンジョンが出来て3年」「Dジェネシス」「Dジェネシス : …．」
+ *  all share base "dジェネシス". Grouping on the base re-unites these variants into one
+ *  series card. The cut is ONLY at a separator, so a genuinely distinct work like
+ *  「Dジェネシス外伝」(no separator) keeps its own base and never merges. Because the
+ *  head is a prefix of the full name, baseTitle(name) is always a prefix of name_norm,
+ *  letting callers pre-filter with `name_norm LIKE base || '%'` (index-backed) before
+ *  re-checking equality in JS. */
+export function baseTitle(s: string): string {
+  const head = s.split(/[=:：／∥]/)[0].replace(/[\s　.．。・･、,]+$/u, "");
+  return normTitle(head);
+}
+
 export function json(data: unknown, status = 200, headers: Record<string, string> = {}): Response {
   return new Response(JSON.stringify(data), {
     status,

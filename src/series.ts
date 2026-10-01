@@ -1,5 +1,5 @@
 import { Env } from "./types";
-import { json, notFound } from "./util";
+import { json, notFound, normTitle, baseTitle, escapeLike } from "./util";
 import { readCachedCovers, firstCover } from "./covers";
 import {
   getSupplementVolumes,
@@ -93,6 +93,15 @@ export async function getSeriesVolumes(
   // different creator per volume (e.g. リュート vs 鍋島テツヒロ), and gating on the
   // master creator would drop one half. Duplicate volume_numbers just collapse into
   // sibling ISBNs of the volume already present, so no volume is double-counted.
+  const foldUnlinked = (rows: VolumeRow[]) => {
+    for (const v of rows) {
+      const key = v.volume_number ? `n:${v.volume_number}` : `i:${v.isbn}`;
+      const g = groups.get(key);
+      if (g) g.isbns.push(v.isbn);
+      else groups.set(key, { rep: v, isbns: [v.isbn] });
+    }
+  };
+
   if (await isSoleSeriesForName(env, meta.id, meta.name)) {
     const unlinked = await env.DB.prepare(
       `SELECT isbn, volume_number, vol_sort, title, creator, publisher, label, pubdate
@@ -100,12 +109,30 @@ export async function getSeriesVolumes(
     )
       .bind(meta.name)
       .all<VolumeRow>();
-    for (const v of unlinked.results ?? []) {
-      const key = v.volume_number ? `n:${v.volume_number}` : `i:${v.isbn}`;
-      const g = groups.get(key);
-      if (g) g.isbns.push(v.isbn);
-      else groups.set(key, { rep: v, isbns: [v.isbn] });
-    }
+    foldUnlinked(unlinked.results ?? []);
+  }
+
+  // Also fold variants MADB filed under a different schema:name string for the SAME work
+  // — an English alias after "=", a descriptive subtitle after ":", or none — e.g. this
+  // series「Dジェネシス = D GENESIS : ダンジョンが出来て3年」plus loose「Dジェネシス」and
+  // 「Dジェネシス : …．」volumes. They share a base title (see util.baseTitle) but not the
+  // exact one above, so the exact fold misses them. Only when THIS series uniquely owns
+  // the base (no sibling「…外伝」/sequel contends) — otherwise a loose volume can't be
+  // attributed. Skipped when the name has no separator (base === full norm): the exact
+  // fold already covered everything. Duplicate volume_numbers just collapse into sibling
+  // ISBNs, so nothing is double-counted.
+  const base = baseTitle(meta.name);
+  if (base && base !== normTitle(meta.name) && (await isSoleSeriesForBase(env, meta.id, base))) {
+    const variants = await env.DB.prepare(
+      `SELECT isbn, volume_number, vol_sort, title, creator, publisher, label, pubdate
+       FROM volumes
+       WHERE series_id IS NULL
+         AND REPLACE(REPLACE(LOWER(title), ' ', ''), '　', '') LIKE ? ESCAPE '\\'
+       ORDER BY vol_sort, pubdate, isbn`
+    )
+      .bind(escapeLike(base) + "%")
+      .all<VolumeRow>();
+    foldUnlinked((variants.results ?? []).filter((v) => baseTitle(v.title) === base));
   }
 
   interface Entry {
@@ -297,6 +324,20 @@ async function isSoleSeriesForName(env: Env, seriesId: string, name: string): Pr
     .bind(name, seriesId)
     .first<{ n: number }>();
   return (row?.n ?? 0) === 0;
+}
+
+/** True when no OTHER series shares this exact BASE title (see util.baseTitle) — so the
+ *  loose variants carrying it can be safely attributed to this one series (base-title
+ *  fold in getSeriesVolumes). base is a prefix of name_norm, so name_norm LIKE base||'%'
+ *  (index-backed) narrows the scan; we re-check baseTitle(name) === base in JS to drop a
+ *  longer-based sibling (「…外伝」/「…:re」) that merely shares the prefix. */
+async function isSoleSeriesForBase(env: Env, seriesId: string, base: string): Promise<boolean> {
+  const res = await env.DB.prepare(
+    `SELECT id, name FROM series WHERE name_norm LIKE ? ESCAPE '\\' AND id != ?`
+  )
+    .bind(escapeLike(base) + "%", seriesId)
+    .all<{ id: string; name: string }>();
+  return !(res.results ?? []).some((r) => baseTitle(r.name) === base);
 }
 
 /** True when no OTHER series with the same exact name and creator also uses `fmt`.

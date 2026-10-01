@@ -222,6 +222,8 @@ function sqlInt(n) {
 }
 
 // Buffered writer that flushes multi-row INSERTs into numbered .sql files.
+// finish() returns [{ path, rows }] in apply order so the daily seeder can
+// budget exactly how many rows each file writes (see scripts/seed-daily.mjs).
 class SqlChunkWriter {
   constructor(outDir, prefix, columns, rowsPerFile) {
     this.outDir = outDir;
@@ -231,7 +233,7 @@ class SqlChunkWriter {
     this.fileIdx = 0;
     this.rowsInFile = 0;
     this.values = [];
-    this.files = [];
+    this.counts = []; // [{ path, rows }] finalized files, in order
     fs.mkdirSync(outDir, { recursive: true });
   }
   add(valuesTuple) {
@@ -251,18 +253,18 @@ class SqlChunkWriter {
     this.values = [];
   }
   _currentPath() {
-    const p = path.join(this.outDir, `${this.prefix}_${String(this.fileIdx).padStart(3, "0")}.sql`);
-    if (!this.files.includes(p)) this.files.push(p);
-    return p;
+    return path.join(this.outDir, `${this.prefix}_${String(this.fileIdx).padStart(3, "0")}.sql`);
   }
   _rotate() {
     this._flushStatement();
+    this.counts.push({ path: this._currentPath(), rows: this.rowsInFile });
     this.fileIdx++;
     this.rowsInFile = 0;
   }
   finish() {
     this._flushStatement();
-    return this.files;
+    if (this.rowsInFile > 0) this.counts.push({ path: this._currentPath(), rows: this.rowsInFile });
+    return this.counts;
   }
 }
 
@@ -391,6 +393,19 @@ async function main() {
   const volumeFiles = volumesWriter.finish();
   log(`volumes: ${volCount} rows → ${volumeFiles.length} files`);
 
+  // Emit a manifest so a resumable per-day loader (scripts/seed-daily.mjs) can
+  // budget exactly how many rows each file writes, in apply order.
+  const manifest = {
+    tag: releaseTag,
+    releasedAt,
+    chunk: a.chunk,
+    files: [
+      ...seriesFiles.map((f) => ({ file: path.basename(f.path), table: "series", rows: f.rows })),
+      ...volumeFiles.map((f) => ({ file: path.basename(f.path), table: "volumes", rows: f.rows })),
+    ],
+  };
+  fs.writeFileSync(path.join(a.out, "manifest.json"), JSON.stringify(manifest, null, 2));
+
   if (!a.apply) {
     log("--no-apply: SQL written to", a.out);
     return;
@@ -404,8 +419,8 @@ async function main() {
   const envArgs = a.env ? ["--env", a.env] : [];
   execWrangler(envArgs, targetFlag, "--command", "DELETE FROM volumes; DELETE FROM series; DELETE FROM series_supplement;");
   for (const f of [...seriesFiles, ...volumeFiles]) {
-    log("apply", path.basename(f));
-    execWrangler(envArgs, targetFlag, "--file", f);
+    log("apply", path.basename(f.path));
+    execWrangler(envArgs, targetFlag, "--file", f.path);
   }
 
   // Record dump provenance so the UI can show "マスター更新". released_at is the MADB

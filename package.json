@@ -3,6 +3,7 @@
   "version": "0.1.0",
   "private": true,
   "description": "私を構成する100の漫画を作って共有するサイト",
+  "license": "Apache-2.0",
   "scripts": {
     "dev": "wrangler dev",
     "deploy": "wrangler deploy --env=''",
@@ -19,5 +20,8 @@
     "stream-json": "^3.7.0",
     "typescript": "^5.6.0",
     "wrangler": "^4.143.0"
+  },
+  "dependencies": {
+    "@jsquash/jpeg": "^1.6.0"
   }
 }

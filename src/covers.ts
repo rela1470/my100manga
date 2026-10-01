@@ -1,6 +1,8 @@
 import { Env } from "./types";
 import { googleCover } from "./util";
-import { rakutenByIsbn, rakutenReady } from "./rakuten";
+import { rakutenResolveFull, rakutenReady } from "./rakuten";
+import { yahooResolveCover, yahooReady } from "./yahoo";
+import { bookMetaInsertFromRakuten } from "./book";
 
 // Google Books returns a ~10.8KB gray "image not available" placeholder when an
 // ISBN has no cover. Real covers we've seen are ≥12.6KB, so anything smaller than
@@ -59,10 +61,11 @@ export async function readCachedCovers(env: Env, isbns: string[]): Promise<Map<s
 }
 
 /** Resolve the best cover URL for each ISBN: the Rakuten Books cover (exact-ISBN)
- *  if one exists, else a real Google Books cover, else "". Results (including "no
- *  cover") are cached permanently in the `covers` table; only cache misses hit the
- *  network, so Rakuten's rate limit is paid at most once per ISBN. Returns a map
- *  isbn → cover URL (""=none). */
+ *  if one exists, else a Yahoo!ショッピング cover (exact-ISBN via jan_code), else a
+ *  real Google Books cover, else "". Results (including "no cover") are cached
+ *  permanently in the `covers` table; only cache misses hit the network, so each
+ *  API's rate limit is paid at most once per ISBN. Returns a map isbn → cover URL
+ *  (""=none). */
 export async function resolveCovers(env: Env, isbns: string[]): Promise<Map<string, string>> {
   const out = await readCachedCovers(env, isbns);
   const uniq = [...new Set(isbns.filter(Boolean))];
@@ -78,7 +81,13 @@ export async function resolveCovers(env: Env, isbns: string[]): Promise<Map<stri
   // back undetermined (rate-limit/HTTP error) are left out entirely so the cache is
   // never poisoned with a permanent "no cover" for something that just wasn't tried.
   const determined = new Map<string, string>();
-  const needGoogle: string[] = [];
+  // ISBNs Rakuten confirmed it has no cover for — handed down the fallback chain
+  // (Yahoo → Google).
+  const needFallback: string[] = [];
+  // Book metadata (author/publisher/発行日/あらすじ) parsed from the SAME Rakuten
+  // response as the cover, cached for the detail popup so /api/book is a pure cache
+  // read instead of a second Rakuten call. See src/book.ts / bookMetaInsertFromRakuten.
+  const metaWrites: D1PreparedStatement[] = [];
 
   // Tier 1: Rakuten exact-ISBN (rate-limited — small concurrent batches), bounded
   // by RESOLVE_BUDGET_MS so a big batch of cache misses can't outlive the request.
@@ -87,21 +96,46 @@ export async function resolveCovers(env: Env, isbns: string[]): Promise<Map<stri
       const remaining = deadline - Date.now();
       if (remaining <= 0) break; // out of time — leave the rest uncached
       const batch = toResolve.slice(i, i + RAKUTEN_CONCURRENCY);
-      const urls = await Promise.all(batch.map((isbn) => rakutenByIsbn(env, isbn, "low", remaining)));
+      const results = await Promise.all(
+        batch.map((isbn) => rakutenResolveFull(env, isbn, "low", remaining))
+      );
       batch.forEach((isbn, j) => {
-        const u = urls[j];
-        if (u === null) return; // undetermined — don't cache, retry on a later POST
-        if (u) determined.set(isbn, u); // found
-        else needGoogle.push(isbn); // Rakuten confirmed none — fall through to Google
+        const { cover, meta } = results[j];
+        if (meta) {
+          const stmt = bookMetaInsertFromRakuten(env, meta);
+          if (stmt) metaWrites.push(stmt);
+        }
+        if (cover === null) return; // undetermined — don't cache, retry on a later POST
+        if (cover) determined.set(isbn, cover); // found
+        else needFallback.push(isbn); // Rakuten confirmed none — fall through to Yahoo/Google
       });
     }
   } else {
-    needGoogle.push(...toResolve);
+    needFallback.push(...toResolve);
   }
 
-  // Tier 2: Google (parallel — no rate limit) for ISBNs Rakuten couldn't cover.
-  // Off by default; see googleEnabled. Either way these are now determined: a
-  // Google cover, or a confirmed "no cover" ("").
+  // Tier 2: Yahoo (jan_code exact-ISBN) for Rakuten misses — rate-limited and
+  // bounded by the SAME deadline as Rakuten. Found → cached cover; Yahoo-confirmed
+  // "none" falls through to Google. Items not reached before the deadline (or that
+  // come back undetermined) are left uncached so a later POST retries them, exactly
+  // like the Rakuten tier.
+  const needGoogle: string[] = [];
+  if (needFallback.length && yahooReady(env)) {
+    for (const isbn of needFallback) {
+      const remaining = deadline - Date.now();
+      if (remaining <= 0) break; // out of time — leave the rest uncached
+      const cover = await yahooResolveCover(env, isbn, "low", remaining);
+      if (cover === null) continue; // undetermined — don't cache, retry on a later POST
+      if (cover) determined.set(isbn, cover); // found
+      else needGoogle.push(isbn); // Yahoo confirmed none — fall through to Google
+    }
+  } else {
+    needGoogle.push(...needFallback);
+  }
+
+  // Tier 3: Google (parallel — no rate limit) for ISBNs neither Rakuten nor Yahoo
+  // could cover. Off by default; see googleEnabled. Either way these are now
+  // determined: a Google cover, or a confirmed "no cover" ("").
   if (needGoogle.length && googleEnabled(env)) {
     const hasGoogle = await Promise.all(needGoogle.map((i) => probeGoogle(i)));
     needGoogle.forEach((isbn, k) => {
@@ -120,6 +154,7 @@ export async function resolveCovers(env: Env, isbns: string[]): Promise<Map<stri
     );
   }
   if (writes.length) await env.DB.batch(writes);
+  if (metaWrites.length) await env.DB.batch(metaWrites);
 
   return out;
 }

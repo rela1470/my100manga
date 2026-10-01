@@ -8,11 +8,18 @@ const BOOKS_SEARCH = "https://openapi.rakuten.co.jp/services/api/BooksBook/Searc
 const COMICS_GENRE = "001001"; // 本 > コミック
 const DEFAULT_REFERER = "https://my100manga.com/";
 
-export interface RakutenBook {
+export interface RakutenBookFull {
   title: string;
   isbn: string;
-  volume: string; // best-effort volume number parsed from the title ("" if none)
+  author: string; // raw Rakuten author string; multiple contributors joined with "/"
+  publisher: string; // publisherName
+  pubdate: string; // salesDate, already in Japanese form ("2015年08月04日")
+  caption: string; // itemCaption — the publisher's blurb / synopsis
   cover_url: string;
+}
+
+export interface RakutenBook extends RakutenBookFull {
+  volume: string; // best-effort volume number parsed from the title ("" if none)
 }
 
 /** True when Rakuten credentials are configured; callers should skip Rakuten otherwise. */
@@ -39,6 +46,31 @@ function headers(env: Env): Record<string, string> {
 /** Bump Rakuten's thumbnail size hint (…?_ex=200x200) up for a sharper cover. */
 function upsize(url: string): string {
   return url ? url.replace(/_ex=\d+x\d+/, "_ex=300x300") : url;
+}
+
+// Rakuten serves a gray "noimage" placeholder as a normal largeImageUrl for books
+// it has no cover for. The filename always contains "noimage" (…/noimage_01.gif),
+// which is the reliable signal — the byte size isn't: upsizing to _ex=300x300
+// inflates the placeholder to ~8KB, past any sane small-image threshold. The byte
+// floor is kept only as a secondary guard for other tiny/broken images.
+const COVER_MIN_BYTES = 4000;
+
+/** False only when the URL is *definitively* a noimage placeholder (by filename)
+ *  or a tiny image. A network error or a missing Content-Length returns true, so a
+ *  possibly-real cover is never dropped (nor cached as "no cover") on a transient
+ *  failure. */
+async function isRealCover(url: string): Promise<boolean> {
+  if (!url) return false;
+  if (/noimage/i.test(url)) return false; // Rakuten's placeholder filename
+  try {
+    const res = await fetch(url, { method: "HEAD", cf: { cacheEverything: true, cacheTtl: 86400 } });
+    if (!res.ok) return true;
+    const len = Number(res.headers.get("content-length") ?? "0");
+    if (len <= 0) return true; // unknown size — don't drop
+    return len >= COVER_MIN_BYTES;
+  } catch {
+    return true;
+  }
 }
 
 /** Parse a volume number out of a Rakuten book title (「ワカコ酒（27）」→ "27"). */
@@ -106,33 +138,51 @@ async function call(
 }
 
 function toBook(item: any): RakutenBook {
-  const title = String(item?.title ?? "");
+  const full = toFull(item, String(item?.isbn ?? ""));
+  return { ...full, volume: parseVolume(full.title) };
+}
+
+function toFull(item: any, isbn: string): RakutenBookFull {
   return {
-    title,
-    isbn: String(item?.isbn ?? ""),
-    volume: parseVolume(title),
+    title: String(item?.title ?? ""),
+    isbn: String(item?.isbn ?? isbn),
+    author: String(item?.author ?? ""),
+    publisher: String(item?.publisherName ?? ""),
+    pubdate: String(item?.salesDate ?? ""),
+    caption: String(item?.itemCaption ?? ""),
     cover_url: upsize(String(item?.largeImageUrl ?? "")),
   };
 }
 
-/** Exact-ISBN cover lookup. Returns the cover URL, "" when Rakuten definitively
- *  has no cover, or `null` when the lookup was *not made* (rate-limit budget
- *  exhausted, HTTP/network error). Callers must not cache `null` as "no cover" —
- *  it just means "unknown, try again later".
- *  `priority` picks the rate-limit lane: "high" for user-initiated lookups,
- *  "low" (default) for background bulk cover fills. `maxWaitMs` caps how long the
- *  call may wait for a rate-limit slot before giving up (returns null). */
-export async function rakutenByIsbn(
+const emptyFull = (isbn: string): RakutenBookFull => ({
+  title: "", isbn, author: "", publisher: "", pubdate: "", caption: "", cover_url: "",
+});
+
+/** One exact-ISBN Rakuten call, returning BOTH the cover and the full book record
+ *  parsed from the SAME response — so a caller resolving a cover gets the author/
+ *  publisher/発行日/あらすじ for free (see covers.ts piggybacking book_meta) instead
+ *  of paying a second call.
+ *   - cover: the cover URL, "" when Rakuten definitively has none, or `null` when the
+ *     lookup was *not made* (rate-limit budget exhausted / HTTP error). Never cache
+ *     `null` as "no cover".
+ *   - meta: the book record, or `null` when the lookup was not made. An all-empty
+ *     record (title==="") means Rakuten responded but has no entry for the ISBN —
+ *     determinate, safe to cache.
+ *  `priority` picks the rate-limit lane; `maxWaitMs` caps the slot wait. */
+export async function rakutenResolveFull(
   env: Env,
   isbn: string,
   priority: Priority = "low",
   maxWaitMs?: number,
-): Promise<string | null> {
-  if (!rakutenReady(env) || !isbn) return "";
+): Promise<{ cover: string | null; meta: RakutenBookFull | null }> {
+  if (!rakutenReady(env) || !isbn) return { cover: "", meta: null };
   const data = await call(env, { isbn }, priority, maxWaitMs);
-  if (data === null) return null; // lookup skipped/failed — undetermined, don't cache
+  if (data === null) return { cover: null, meta: null }; // undetermined
   const item = data?.Items?.[0]?.Item;
-  return item ? upsize(String(item.largeImageUrl ?? "")) : "";
+  if (!item) return { cover: "", meta: emptyFull(isbn) };
+  const meta = toFull(item, isbn);
+  const cover = meta.cover_url && (await isRealCover(meta.cover_url)) ? meta.cover_url : "";
+  return { cover, meta };
 }
 
 /** Title search. Used to rescue volumes whose stored ISBN is an edition Rakuten
@@ -152,7 +202,7 @@ export async function rakutenSearchTitle(
   if (opts.genre !== false) params.booksGenreId = COMICS_GENRE;
   const data = await call(env, params, opts.priority ?? "low");
   const items: any[] = data?.Items ?? [];
-  return items
-    .map((x) => toBook(x?.Item))
-    .filter((b) => b.cover_url);
+  const books = items.map((x) => toBook(x?.Item)).filter((b) => b.cover_url);
+  const real = await Promise.all(books.map((b) => isRealCover(b.cover_url)));
+  return books.filter((_, i) => real[i]); // drop noimage placeholders
 }

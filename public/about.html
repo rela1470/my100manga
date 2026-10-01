@@ -3,20 +3,22 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>利用ソース・アフィリエイトについて | my100manga</title>
-  <meta name="description" content="my100manga が利用しているデータソース（メディア芸術データベース・楽天ブックスAPI 等）と、アフィリエイトプログラムについての説明ページです。">
+  <title>利用ソース・アフィリエイトについて | My 100 Manga</title>
+  <meta name="description" content="My 100 Manga が利用しているデータソース（メディア芸術データベース・楽天ブックスAPI 等）と、アフィリエイトプログラムについての説明ページです。">
+  <!--ANALYTICS-->
   <link rel="stylesheet" href="/styles.css">
 </head>
 <body>
+  <!--GTM_BODY-->
   <header class="site">
-    <h1><a href="/" style="text-decoration:none;color:inherit">my<span class="accent">100</span>manga</a></h1>
+    <h1><a href="/" style="text-decoration:none;color:inherit">My <span class="accent">100</span> Manga</a></h1>
     <p class="tagline">利用ソース・アフィリエイトについて</p>
   </header>
 
   <div class="wrap">
     <article class="prose">
       <p class="lead">
-        my100manga は「私を構成する100の漫画」を選んでカードにし、URLで共有できるサイトです。
+        My 100 Manga は「私を構成する100の漫画」を選んでカードにし、URLで共有できるサイトです。
         作品データや表紙画像は外部の公開データベース・APIから取得しています。また、購入リンクにアフィリエイトを利用しています。
         このページではその利用ソースとアフィリエイトについて説明します。
       </p>
@@ -32,6 +34,7 @@
         <li>提供: 文化庁「メディア芸術データベース」</li>
         <li>サイト: <a href="https://mediaarts-db.artmuseums.go.jp/" target="_blank" rel="noopener">https://mediaarts-db.artmuseums.go.jp/</a></li>
         <li>データセット: <a href="https://github.com/mediaarts-db/dataset" target="_blank" rel="noopener">mediaarts-db/dataset</a>（マンガ単行本・シリーズの JSON-LD）</li>
+        <li id="madb-meta" class="src-meta" hidden></li>
       </ul>
       <p>
         また、月次ダンプに未収録の新しい巻は、MADB のライブ SPARQL エンドポイント
@@ -40,19 +43,23 @@
       </p>
 
       <h3>表紙画像（書影）</h3>
-      <p>ISBN で以下の順に書影を解決し、どちらにも無い場合はグレーの「No Image」プレースホルダを表示します。</p>
+      <p>ISBN で以下の順に書影を解決し、いずれにも無い場合はグレーの「No Image」プレースホルダを表示します。</p>
       <ul>
         <li>
           <span class="src-name">楽天ブックス書籍検索API（楽天ウェブサービス）</span> ― ISBN 完全一致で書影を取得（第一候補）。
           <br>提供: <a href="https://webservice.rakuten.co.jp/" target="_blank" rel="noopener">楽天ウェブサービス（Rakuten Developers）</a>
         </li>
         <li>
-          <span class="src-name">Google ブックス（Google Books）</span> ― 楽天で取得できなかった ISBN を補助的に補完。
+          <span class="src-name">Yahoo!ショッピング（Yahoo!デベロッパーネットワーク）</span> ― 楽天で取得できなかった ISBN を JAN コードで補完（第二候補）。
+          <br>提供: <a href="https://developer.yahoo.co.jp/" target="_blank" rel="noopener">Yahoo!デベロッパーネットワーク</a>
+        </li>
+        <li>
+          <span class="src-name">Google ブックス（Google Books）</span> ― 上記で取得できなかった ISBN を補助的に補完。
         </li>
       </ul>
 
       <p class="note">
-        各データ・画像の権利は、それぞれの提供元に帰属します。my100manga はこれらを検索・表示の目的で参照しており、
+        各データ・画像の権利は、それぞれの提供元に帰属します。My 100 Manga はこれらを検索・表示の目的で参照しており、
         内容の正確性・完全性を保証するものではありません。データの誤りや表紙の不一致は、サイト内の修正機能や提供元の情報に基づいて随時見直しています。
       </p>
 
@@ -93,10 +100,32 @@
     </div>
   </div>
 
-  <footer class="site">
-    <p>データ提供: メディア芸術データベース（文化庁）／ 書影: 楽天ブックス・Google Books ｜ my100manga</p>
-    <p class="aff-disclosure">当サイトは Amazon アソシエイト・楽天アフィリエイト等を利用しており、リンク経由の購入で収益を得ることがあります。</p>
-    <p class="foot-links"><a href="/ranking">人気ランキング</a> ｜ <a href="/about">利用ソース・アフィリエイトについて</a></p>
-  </footer>
+  <!--FOOTER-->
+
+  <script>
+    // Show the MADB dump version + when this site last imported it.
+    (function () {
+      var el = document.getElementById("madb-meta");
+      if (!el) return;
+      var fmt = function (ms) {
+        var d = new Date(ms);
+        if (isNaN(d)) return "";
+        return d.getFullYear() + "年" + (d.getMonth() + 1) + "月" + d.getDate() + "日";
+      };
+      fetch("/api/master-info")
+        .then(function (r) { return r.ok ? r.json() : null; })
+        .then(function (m) {
+          if (!m) return;
+          var parts = [];
+          if (m.released_at) parts.push("データ版: " + fmt(m.released_at) + " 公開分");
+          if (m.tag) parts.push("バージョン " + m.tag);
+          if (m.imported_at) parts.push("当サイト取込: " + fmt(m.imported_at));
+          if (!parts.length) return;
+          el.textContent = parts.join("／");
+          el.hidden = false;
+        })
+        .catch(function () {});
+    })();
+  </script>
 </body>
 </html>

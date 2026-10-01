@@ -1,0 +1,87 @@
+import { Env } from "./types";
+import { footerHtml } from "./footer";
+
+// 全 HTML ページの <head> の <!--ANALYTICS--> に差し込む Google タグを組み立てる。
+// AdSense ローダ（ADSENSE_CLIENT）と GTM のヘッダスニペット（GTM_CONTAINER_ID）。
+// どちらも公開値なので secret ではなく wrangler.jsonc の vars に集約。空/未設定なら
+// そのタグは出力しない。admin.html にはプレースホルダを置いていないので自動で素通り。
+export function analyticsTags(env: Env): string {
+  let out = "";
+  const ads = (env.ADSENSE_CLIENT ?? "").trim();
+  if (ads) {
+    out +=
+      `<script async src="https://pagead2.googlesyndication.com/pagead/js/adsbygoogle.js?client=${encodeURIComponent(ads)}" crossorigin="anonymous"></script>`;
+  }
+  const gtm = (env.GTM_CONTAINER_ID ?? "").trim();
+  if (gtm) {
+    const id = JSON.stringify(gtm);
+    out +=
+      `<script>(function(w,d,s,l,i){w[l]=w[l]||[];w[l].push({'gtm.start':new Date().getTime(),event:'gtm.js'});var f=d.getElementsByTagName(s)[0],j=d.createElement(s),dl=l!='dataLayer'?'&l='+l:'';j.async=true;j.src='https://www.googletagmanager.com/gtm.js?id='+i+dl;f.parentNode.insertBefore(j,f);})(window,document,'script','dataLayer',${id});</script>`;
+  }
+  return out;
+}
+
+// <body> 直後の <!--GTM_BODY--> に差し込む GTM の noscript フォールバック（iframe）。
+// JS 無効時でも計測できるよう GTM が <body> 冒頭に置くことを要求する。
+export function gtmBody(env: Env): string {
+  const gtm = (env.GTM_CONTAINER_ID ?? "").trim();
+  if (!gtm) return "";
+  return (
+    `<noscript><iframe src="https://www.googletagmanager.com/ns.html?id=${encodeURIComponent(gtm)}" height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>`
+  );
+}
+
+// 編集ページ（index.html）の <!--AFF_DATA--> に差し込む affiliate id。閲覧ページと同じ
+// affiliate.js / buildBuyLinks が購入リンクにタグを付けられるようにする。公開値なので
+// secret ではなく env の vars。view ページは renderViewPage 側で __AFF__ を注入するため
+// このプレースホルダを持たず、素通りする。
+export function affData(env: Env): string {
+  const aff = {
+    amazon: env.AMAZON_ASSOCIATE_TAG ?? "",
+    rakuten: env.RAKUTEN_AFFILIATE_ID ?? "",
+    mercari: env.MERCARI_AFID ?? "",
+  };
+  const safe = JSON.stringify(aff).replace(/</g, "\\u003c").replace(/>/g, "\\u003e").replace(/&/g, "\\u0026");
+  return `<script>window.__AFF__=${safe};</script>`;
+}
+
+// 毎デプロイで変わるバージョン文字列。Cloudflare の version_metadata バインディングの
+// id（UUID）の先頭 8 桁を使う。未バインド（ローカル等）なら "dev"。script の ?v= と
+// <meta app-version> / /api/version で共通に使い、開きっぱなしのタブに新デプロイを気付かせる。
+export function appVersion(env: Env): string {
+  const id = env.CF_VERSION?.id;
+  return id ? id.slice(0, 8) : "dev";
+}
+
+// HTML に SPA のバージョン印を差し込む。<meta name="app-version"> を <head> に、そして
+// app.js / admin.js の読み込みに ?v= を付けてデプロイごとにブラウザキャッシュを破棄する。
+function injectVersion(html: string, v: string): string {
+  let out = html
+    .replace('src="/app.js"', `src="/app.js?v=${v}"`)
+    .replace('src="/admin.js"', `src="/admin.js?v=${v}"`);
+  if (out.includes("</head>")) {
+    out = out.replace("</head>", `<meta name="app-version" content="${v}"></head>`);
+  }
+  return out;
+}
+
+// 静的配信（ASSETS.fetch）の HTML レスポンスを加工する。全 HTML にバージョン印（script の
+// ?v= と <meta app-version>）を付け、プレースホルダがあれば Google タグ／affiliate id も差す。
+// HTML 以外（css/js/画像）は素通り。
+export async function injectAnalytics(res: Response, env: Env): Promise<Response> {
+  const ct = res.headers.get("content-type") ?? "";
+  if (!ct.includes("text/html")) return res;
+  const html = await res.text();
+  const replaced = injectVersion(html, appVersion(env))
+    .replace("<!--ANALYTICS-->", analyticsTags(env))
+    .replace("<!--GTM_BODY-->", gtmBody(env))
+    .replace("<!--AFF_DATA-->", affData(env))
+    .replace("<!--FOOTER_AFF-->", footerHtml(true))
+    .replace("<!--FOOTER-->", footerHtml());
+  const headers = new Headers(res.headers);
+  headers.delete("content-length");
+  // 本文を書き換えたので、資産の強い ETag は本文と一致しなくなる。残すと再検証で
+  // 古い本文の 304 を招きうるので落とす（HTML は max-age=0 で毎回取り直す前提）。
+  headers.delete("etag");
+  return new Response(replaced, { status: res.status, headers });
+}

@@ -1,15 +1,16 @@
 import { Env } from "./types";
-import { badRequest, json, normTitle, escapeLikeClamped, LIKE_MAX_BYTES, toIsbn13 } from "./util";
+import { badRequest, json, normTitle, searchKey, escapeLikeClamped, LIKE_MAX_BYTES, toIsbn13 } from "./util";
 import { readCachedCovers } from "./covers";
 import { liveSearchByKeyword, SupplementVolume } from "./madbLive";
 import { rakutenComicByIsbn } from "./rakuten";
 import { mergeTargetsFor } from "./merge";
-import { attributeTitles, buildGroup, resolveGroup, GroupRow, GroupVolume, UnlinkedGroup } from "./groups";
+import { attributeTitles, buildGroup, groupKey, resolveGroup, GroupRow, GroupVolume, UnlinkedGroup } from "./groups";
 
 interface SeriesResult {
   series_id: string;
   title: string;
   creator: string;
+  creators: string; // all authors with roles for display; falls back to creator
   publisher: string;
   label: string;
   volume_count: number;
@@ -25,6 +26,7 @@ interface SeriesRow {
   id: string;
   name: string;
   creator: string | null;
+  creators: string | null;
   publisher: string | null;
   label: string | null;
   first_isbn: string | null;
@@ -48,6 +50,8 @@ const MEMBERS = `(SELECT s.id UNION ALL SELECT m.absorbed_id FROM series_merge m
 const SERIES_COLS = `s.id, COALESCE(o.name, s.name) AS name, s.publisher, s.label,
         COALESCE((SELECT v.creator FROM volumes v WHERE v.series_id IN ${MEMBERS} AND v.creator != ''
            ORDER BY v.vol_sort, v.pubdate LIMIT 1), s.creator) AS creator,
+        COALESCE((SELECT v.creators FROM volumes v WHERE v.series_id IN ${MEMBERS} AND v.creators != ''
+           ORDER BY v.vol_sort, v.pubdate LIMIT 1), s.creators) AS creators,
         (SELECT v.isbn FROM volumes v WHERE v.series_id IN ${MEMBERS}
            ORDER BY v.vol_sort, v.pubdate LIMIT 1) AS first_isbn,
         ((SELECT COUNT(DISTINCT CASE WHEN v.volume_number IS NULL OR v.volume_number = ''
@@ -62,12 +66,20 @@ const SERIES_COLS = `s.id, COALESCE(o.name, s.name) AS name, s.publisher, s.labe
                  AND ((v.volume_number GLOB '[0-9]*' AND NOT v.volume_number GLOB '*[^0-9]*')
                       OR v.volume_number GLOB '巻[0-9]*')) AS numbered`;
 
+// Search column for author matching on series/volumes (prefix = table alias + "."):
+// creators_norm (all names, pre-normalized at ingest) or, where absent, the single creator
+// normalized inline the same way.
+function creatorsMatchCol(prefix: string): string {
+  return `COALESCE(${prefix}creators_norm, REPLACE(REPLACE(LOWER(COALESCE(${prefix}creator, '')), ' ', ''), '　', ''))`;
+}
+
 function toSeriesResult(r: SeriesRow, covers: Map<string, string>): SeriesResult {
   const isbn = r.first_isbn ?? "";
   return {
     series_id: r.id,
     title: r.name,
     creator: r.creator ?? "",
+    creators: r.creators || r.creator || "",
     publisher: r.publisher ?? "",
     label: r.label ?? "",
     volume_count: r.vol_count,
@@ -101,32 +113,42 @@ export async function handleSearch(request: Request, env: Env): Promise<Response
 
   const like = "%" + esc + "%";
   const prefix = esc + "%";
+  // 記号・全角半角を無視した照合（searchKey）。name_search は ingest が埋める検索専用列で、
+  // まだ無い行（列追加直後・独自シリーズ）は name_norm で照合する。記号だけの検索語で
+  // キーが 2 文字未満になるときは、ふつうの正規化（nq）のまま探す。
+  const sqRaw = searchKey(q);
+  const sq = sqRaw.length >= 2 ? sqRaw : nq;
+  const escS = escapeLikeClamped(sq, LIKE_MAX_BYTES - 2);
+  const likeS = "%" + escS + "%";
+  const prefixS = escS + "%";
+  const nameSearch = "COALESCE(s.name_search, s.name_norm)";
   // name_kana_norm packs several readings joined by "|" (e.g. "onepiece|ワンピース").
   // Wrapping with "|" lets us detect a whole-reading exact/prefix match inside the blob,
   // so the canonical series exact-matches カナ queries and — tied at the same tier — the
   // one with the most volumes wins (vol_count DESC) instead of a small re-release.
   const kanaExact = "%|" + esc + "|%";
   const kanaPrefix = "%|" + esc + "%";
-  // Match the author too. series.creator has no normalized column, so normalize it
-  // inline the same way normTitle() does the query (lowercase + strip both ASCII and
-  // full-width spaces) so "尾田 栄一郎" and "尾田栄一郎" both hit. Creator-only matches
-  // sit in the lowest tier (mt=1) so a title hit always outranks an author hit.
-  const creatorNorm = "REPLACE(REPLACE(LOWER(s.creator), ' ', ''), '　', '')";
+  // Match the author too, against creators_norm: every credited name (not just the
+  // displayed series.creator) normalized like normTitle() and "|"-joined at ingest, so a
+  // co-author such as 原作 丸戸史明 behind 作画 よむ still hits. Rows without it (custom
+  // series) fall back to normalizing creator inline. Creator-only matches sit in the
+  // lowest tier (mt=1) so a title hit always outranks an author hit.
+  const creatorNorm = creatorsMatchCol("s.");
   const res = await env.DB.prepare(
     `SELECT ${SERIES_COLS},
-            CASE WHEN s.name_norm = ? OR ('|' || s.name_kana_norm || '|') LIKE ? ESCAPE '\\' THEN 4
-                 WHEN s.name_norm LIKE ? ESCAPE '\\' OR ('|' || s.name_kana_norm) LIKE ? ESCAPE '\\' THEN 3
-                 WHEN s.name_norm LIKE ? ESCAPE '\\' OR s.name_kana_norm LIKE ? ESCAPE '\\' THEN 2
+            CASE WHEN s.name_norm = ? OR ${nameSearch} = ? OR ('|' || s.name_kana_norm || '|') LIKE ? ESCAPE '\\' THEN 4
+                 WHEN s.name_norm LIKE ? ESCAPE '\\' OR ${nameSearch} LIKE ? ESCAPE '\\' OR ('|' || s.name_kana_norm) LIKE ? ESCAPE '\\' THEN 3
+                 WHEN s.name_norm LIKE ? ESCAPE '\\' OR ${nameSearch} LIKE ? ESCAPE '\\' OR s.name_kana_norm LIKE ? ESCAPE '\\' THEN 2
                  ELSE 1 END AS mt
      FROM series s
      LEFT JOIN series_name_override o ON o.series_id = s.id
-     WHERE (s.name_norm LIKE ? ESCAPE '\\' OR s.name_kana_norm LIKE ? ESCAPE '\\'
+     WHERE (s.name_norm LIKE ? ESCAPE '\\' OR ${nameSearch} LIKE ? ESCAPE '\\' OR s.name_kana_norm LIKE ? ESCAPE '\\'
             OR ${creatorNorm} LIKE ? ESCAPE '\\')
        AND EXISTS (SELECT 1 FROM volumes v WHERE v.series_id = s.id)
      ORDER BY mt DESC, vol_count DESC, s.num_items DESC
      LIMIT 30`
   )
-    .bind(nq, kanaExact, prefix, kanaPrefix, like, like, like, like, like)
+    .bind(nq, sq, kanaExact, prefix, prefixS, kanaPrefix, like, likeS, like, like, likeS, like, like)
     .all<SeriesRow & { mt: number }>();
 
   // Series an admin merged away (series_merge) never show as their own card: drop them and
@@ -151,6 +173,7 @@ export async function handleSearch(request: Request, env: Env): Promise<Response
   const { promoteIds: discovered, standalone } = await discoverUnlinked(
     env,
     like,
+    likeS,
     seriesTitles,
     existingIds,
     30 - rows.length - mergedTargets.length
@@ -196,6 +219,7 @@ interface UnlinkedCard {
   series_id: string; // "G<ISBN>" (see src/groups.ts)
   title: string;
   creator: string;
+  creators: string;
   publisher: string;
   label: string;
   volume_count: number;
@@ -212,6 +236,7 @@ function toUnlinkedCard(g: UnlinkedGroup): UnlinkedCard {
     series_id: g.id,
     title: g.title,
     creator: g.creator,
+    creators: g.creators,
     publisher: g.publisher,
     label: "",
     volume_count: g.volumes.length,
@@ -282,6 +307,7 @@ async function rakutenCard(env: Env, isbn: string) {
     series_id: `rakuten${isbn}`,
     title: b.title,
     creator: b.author,
+    creators: b.author.split("/").map((s) => s.trim()).filter(Boolean).join("、"), // 楽天は "/" 区切り
     publisher: b.publisher,
     label: "",
     volume_count: 1,
@@ -304,11 +330,13 @@ async function rakutenCard(env: Env, isbn: string) {
 //                   client-side card with the volumes embedded, keyed by its group id
 //                   (G<ISBN>) so it can be opened / merged like a series.
 // `like` is the already-escaped "%q%" pattern; matching normalizes title/creator the same
-// way normTitle() does the query. Titles already shown by the keyword query are skipped,
+// way normTitle() does the query. `likeS` is the searchKey() form (symbols / width ignored),
+// matched against title_search. Titles already shown by the keyword query are skipped,
 // and series already in `existingIds` are not promoted again (dedup).
 async function discoverUnlinked(
   env: Env,
   like: string,
+  likeS: string,
   seriesTitles: Set<string>,
   existingIds: Set<string>,
   limit: number
@@ -319,23 +347,25 @@ async function discoverUnlinked(
   // Cap the scan so a prolific unlinked author can't pull unbounded rows; a single
   // work rarely exceeds ~100 volumes, so 2000 comfortably covers the cards we keep.
   const res = await env.DB.prepare(
-    `SELECT isbn, volume_number, vol_sort, title, creator, publisher, label, pubdate
+    `SELECT isbn, volume_number, vol_sort, title, creator, creators, publisher, label, pubdate
      FROM volumes
      WHERE series_id IS NULL
-       AND (${norm("title")} LIKE ? ESCAPE '\\' OR ${norm("COALESCE(creator, '')")} LIKE ? ESCAPE '\\')
+       AND (${norm("title")} LIKE ? ESCAPE '\\' OR COALESCE(title_search, ${norm("title")}) LIKE ? ESCAPE '\\'
+            OR ${creatorsMatchCol("")} LIKE ? ESCAPE '\\')
      ORDER BY vol_sort, pubdate, isbn
      LIMIT 2000`
   )
-    .bind(like, like)
+    .bind(like, likeS, like)
     .all<GroupRow>();
 
-  // Group matched volumes into works keyed on normalized title + creator (same title,
-  // different author = different work) — the same unit as groups.loadGroup.
+  // Group matched volumes into works keyed on normalized title + creator + label (same
+  // title, different author = different work; different label = different edition such as
+  // 愛蔵版) — the same unit as groups.loadGroup (see groups.groupKey).
   const groups = new Map<string, GroupRow[]>();
   for (const v of res.results ?? []) {
     const nt = normTitle(v.title);
     if (seriesTitles.has(nt)) continue; // a real series card already covers this title
-    const gkey = nt + " " + normTitle(v.creator ?? "");
+    const gkey = groupKey(v);
     const g = groups.get(gkey);
     if (g) g.push(v);
     else groups.set(gkey, [v]);

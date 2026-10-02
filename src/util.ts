@@ -14,6 +14,15 @@ export function normTitle(s: string): string {
   return s.replace(/[\s　]+/g, "").toLowerCase();
 }
 
+/** 検索専用のキー（series.name_search / volumes.title_search）。normTitle に加えて全角半角を
+ *  寄せ（NFKC）、記号・句読点を落とす（「ぼっち・ざ・ろっく！」↔「ぼっちざろっく」、「あさドラ！」↔
+ *  「あさドラ!」）。長音「ー」は文字扱いで残る（ワールドトリガー）。記号の違いだけの別作品
+ *  （「もやしもん」「もやしもん+」）も同じキーになるので、検索の照合にだけ使い、シリーズへの寄せや
+ *  まとまりの判定（normTitle の一致）には使わない。scripts/ingest.mjs の searchKey と揃える。 */
+export function searchKey(s: string): string {
+  return s.normalize("NFKC").toLowerCase().replace(/[\s\p{P}\p{S}]+/gu, "");
+}
+
 /** Escape LIKE wildcards so a value containing % or _ matches literally (ESCAPE '\'). */
 export function escapeLike(s: string): string {
   return s.replace(/[\\%_]/g, (m) => "\\" + m);

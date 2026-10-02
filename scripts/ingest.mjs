@@ -46,10 +46,10 @@ const ID_PREFIX = "https://mediaarts-db.artmuseums.go.jp/id/";
 // tables deliberately omit indexes — they're added post-swap (see SWAP_SQL).
 const SERIES_COLS =
   "id TEXT PRIMARY KEY, name TEXT NOT NULL, name_norm TEXT NOT NULL, name_kana TEXT, " +
-  "name_kana_norm TEXT, creator TEXT, publisher TEXT, label TEXT, num_items INTEGER";
+  "name_kana_norm TEXT, name_search TEXT, creator TEXT, creators TEXT, creators_norm TEXT, publisher TEXT, label TEXT, num_items INTEGER";
 const VOLUMES_COLS =
   "isbn TEXT PRIMARY KEY, series_id TEXT, volume_number TEXT, vol_sort INTEGER, " +
-  "title TEXT NOT NULL, creator TEXT, publisher TEXT, label TEXT, pubdate TEXT";
+  "title TEXT NOT NULL, title_search TEXT, creator TEXT, creators TEXT, creators_norm TEXT, publisher TEXT, label TEXT, pubdate TEXT";
 
 const DROP_AND_CREATE_SHADOW_SQL =
   "DROP TABLE IF EXISTS series_new; DROP TABLE IF EXISTS volumes_new; " +
@@ -229,6 +229,13 @@ function normTitle(s) {
   return s.replace(/[\s　]+/g, "").toLowerCase();
 }
 
+// Search-only key (series.name_search / volumes.title_search): normTitle plus NFKC
+// width folding and punctuation/symbols dropped, so 「ぼっちざろっく」 finds
+// 「ぼっち・ざ・ろっく！」. Keep in sync with src/util.ts searchKey.
+function searchKey(s) {
+  return s.normalize("NFKC").toLowerCase().replace(/[\s\p{P}\p{S}]+/gu, "");
+}
+
 // MADB packs alternate readings/variants after "∥" (kana) or "／" (alt spelling):
 //   "講談社　∥　コウダンシャ" / "フラワーコミックス　／　少コミ..." → take the first.
 function firstVariant(s) {
@@ -241,12 +248,160 @@ function firstVariant(s) {
 // ONE PIECE volumes list ["[編]ホーム社","[著]尾田栄一郎",...] — taking the first
 // would credit the editor "ホーム社" as the author. Prefer authorship roles
 // (著/作画/まんが/漫画/作/原作/画) over editor/supervisor roles (編/編集/監修/…).
+const EDITOR_ROLE = /\[(編|編集|監修|企画|協力|訳|翻訳)\]/;
 function pickCreator(v) {
   const arr = Array.isArray(v) ? v : [v];
   const strs = arr.filter((x) => typeof x === "string" && x.trim());
   if (strs.length === 0) return "";
-  const nonEditor = strs.filter((s) => !/\[(編|編集|監修|企画|協力|訳|翻訳)\]/.test(s));
+  const nonEditor = strs.filter((s) => !EDITOR_ROLE.test(s));
   return nonEditor[0] ?? strs[0];
+}
+
+// pickCreator keeps ONE name for display, but co-authored works list the rest after it
+// (e.g. ["よむ","丸戸史明", …]), so a search for the 2nd author would miss. Store every
+// non-editor name — normalized like normTitle() and "|"-joined — for search only.
+function creatorsNorm(v) {
+  const arr = Array.isArray(v) ? v : [v];
+  const strs = arr.filter((x) => typeof x === "string" && x.trim());
+  const names = strs
+    .filter((s) => !EDITOR_ROLE.test(s))
+    .map((s) => normTitle(cleanCreator(s)))
+    .filter(Boolean);
+  return [...new Set(names)].join("|");
+}
+
+// Display credit line for every author-type contributor, with roles when they tell the
+// contributors apart: "原作：丸戸史明、作画：よむ". A single author, or co-authors who all
+// share one role (e.g. 2 × [著]), get names only: "ゆでたまご" / "A、B". MADB literals
+// are messy — several credits in one string ("[原作]A [作画]B"), a bracketed name
+// ("[作画][司敬]"), stacked roles ("[原作][著]X"), dangling roles ("[著]X[監修]") — see
+// parseCredits. Editor/design/translation credits are dropped; story roles sort first.
+// A bracket that reads as a role: known role words, optionally joined ("原作・監修", "作並構成",
+// "キャラクター原案"). Whole words, so katakana names ("[作画][カシバ]") aren't mistaken for roles.
+const ROLE_WORDS =
+  "キャラクター|デザイン|カバー|イラスト|シナリオ|ライター|アーティスト|まんが|マンガ|ほか|" +
+  "著|作|画|原|案|編|集|監|修|訳|翻|脚|本|文|絵|装|丁|幀|構|成|漫|劇|共|述|他|え|協|力|企|制|製|色|彩|同|立|指|導|挿|口|表|紙|題|字|箱|背|景";
+const ROLE_CHARS = new RegExp(`^(?:${ROLE_WORDS})(?:[・･並及び]*(?:${ROLE_WORDS}))*$`);
+const AUTHOR_ROLE = /著|作|画|絵|漫|まんが|マンガ|案|脚|シナリオ|文|構成|劇|述|^え$|story|art|script|original|illust|comic|manga|writ/i;
+const NON_AUTHOR_ROLE = /編|監修|制作|製作|企画|デザイン|解説|協力|訳|装|作曲|作詞/;
+const CORE_AUTHOR_ROLE = /著|原作|原案|画|漫|まんが|マンガ|脚本|シナリオ/;
+// Cover/illustration and assistant credits read like author roles (装画, 作画協力) but never are.
+const NEVER_AUTHOR_ROLE = /装|カバー|口絵|挿|協力|表紙|題字|箱絵|背景|仕上|アシスタント/;
+const OTHERS_ROLE = /^(ほか|他)共?[・･]?/; // "and others" prefix on a role, not worth showing
+const ORIGINAL_ROLE = /原作|原案|original/i;
+const CHARACTER_ROLE = /キャラクター/; // キャラクター原案/デザイン credit after the manga artist
+const STORY_ROLE = /^作$|脚|シナリオ|^文$|構成|story|script|writ/i;
+const MAX_CREDITS = 4;
+
+/** One MADB creator literal → [{ role, name }]. role is "" when untagged. */
+function parseCredits(s) {
+  const toks = [];
+  const re = /\[+([^\[\]]*)\]|([^\[\]]+)/g;
+  // Repair dropped brackets: "[ほか]原作]富野由悠季" → "[ほか][原作]富野由悠季",
+  // "解説]野坂昭如" → "[解説]野坂昭如", a lone "[著" → "[著]" (dangling, dropped).
+  s = s
+    .replace(/\]([^\[\]]+)\]/g, "][$1]")
+    .replace(/^([^\[\]]+)\]/, "[$1]")
+    .replace(/\[([^\[\]]*)$/, "[$1]");
+  let m;
+  while ((m = re.exec(s))) {
+    if (m[1] !== undefined) toks.push({ br: true, v: m[1].trim().replace(/^[(（](.*)[)）]$/, "$1") }); // "[(漫画)]"
+    // glued: no whitespace before the next token, so "若木書房[編]" reads as name+role.
+    // Bare separators between bracketed names ("[原作][A], [B]") aren't names.
+    else if (!/^[\s,，、・]*$/.test(m[2])) toks.push({ br: false, v: m[2].trim(), glued: !/\s$/.test(m[2]) });
+  }
+  const out = [];
+  let roles = [];
+  let lastBrName = null; // role of the previous bracketed name: "[原作][A], [B]" credits B too
+  for (let i = 0; i < toks.length; i++) {
+    const t = toks[i];
+    const next = toks[i + 1];
+    if (t.br) {
+      // A bracket right before text is a role tag ("[原作]A", "[STORY]B"). One after a
+      // role tag that doesn't read as a role is a bracketed name ("[作画][司敬]"); any
+      // other bracket is a role, or dangling when nothing follows ("X[監修]", "X[ほか]").
+      if (!roles.length && lastBrName !== null && !ROLE_CHARS.test(t.v)) roles = [lastBrName];
+      const isName = !(next && !next.br) && roles.length > 0 && !ROLE_CHARS.test(t.v);
+      if (!isName) {
+        if (next) roles.push(t.v);
+        lastBrName = null;
+        continue;
+      }
+      lastBrName = roles.join("・");
+    } else {
+      lastBrName = null;
+    }
+    // A role tag glued AFTER an untagged name belongs to it ("若木書房[編]",
+    // "A[原作] B[作画]"), not to the next name. Only when no prefix role is pending:
+    // "[著]上田美和[監修]" keeps 著 and drops the dangling 監修.
+    if (!t.br && t.glued && !roles.length) {
+      while (toks[i + 1]?.br && ROLE_CHARS.test(toks[i + 1].v)) roles.push(toks[++i].v);
+    }
+    // A name: plain text, or a bracketed name. Cataloging-style text gives each ";"
+    // segment its own trailing role word and leaves the tag for the rest
+    // ("[作画]石ノ森章太郎 原作 ; 辻真先 脚本 ; 尾瀬あきら"); a trailing " ほか"/" 他" only
+    // means "and others". A tagged credit may pack several names ("[著]A, B, C"; untagged
+    // western "Cash, Megan" stays whole). Authority dates ("ラズウェル細木1956-") are dropped.
+    const role = roles.join("・");
+    const segs = t.v.split(/\s*[;；]\s*/);
+    for (let seg of segs) {
+      seg = seg.replace(/\s+(ほか|他)$/, "");
+      let segRole = role;
+      const w = seg.match(/^(.+?)\s+(\S+)$/);
+      // One-kanji words (文, 画) are only roles in ";" text; elsewhere they may be a given name.
+      if (w && ROLE_CHARS.test(w[2]) && (segs.length > 1 || w[2].length > 1 || w[2] === "著")) {
+        seg = w[1];
+        segRole = w[2];
+      }
+      const names = segRole ? seg.split(/\s*[,，、]\s*/) : [seg];
+      for (const n of names) {
+        const name = n.replace(/\s*\d{4}-(\d{4})?$/, "").replace(/[\s　]+/g, " ").trim();
+        if (name && !/^(ほか|他)$/.test(name)) out.push({ role: segRole, name });
+      }
+    }
+    roles = [];
+  }
+  return out;
+}
+
+// "編著" / "原作・監修" still credit an author; "編集・制作" / "キャラクターデザイン" / "装画" don't.
+function isAuthorRole(role) {
+  if (!AUTHOR_ROLE.test(role) || NEVER_AUTHOR_ROLE.test(role)) return false;
+  return !NON_AUTHOR_ROLE.test(role) || CORE_AUTHOR_ROLE.test(role);
+}
+
+function creatorsDisplay(v) {
+  const arr = Array.isArray(v) ? v : [v];
+  const credits = [];
+  const seen = new Set();
+  let others = false; // "A ほか" / "[ほか著]A" / "A[他]": the source lists only some names
+  for (const s of arr) {
+    if (typeof s !== "string" || !s.trim()) continue;
+    if (/(?:^|[\s\[\]])(?:ほか|他)(?:共?著)?(?:\]|\s|$)/.test(s)) others = true;
+    for (const c of parseCredits(s)) {
+      c.role = c.role.replace(OTHERS_ROLE, ""); // "[他]" → untagged, "[ほか著]" → 著, "[ほか監修]" → 監修
+      if (c.role && !isAuthorRole(c.role)) continue;
+      const key = c.name.replace(/\s/g, "");
+      if (seen.has(key)) continue;
+      seen.add(key);
+      credits.push(c);
+    }
+  }
+  if (!credits.length) return "";
+  // Story roles first (キャラクター原案 last, as books credit it); credits sharing a role
+  // sit together and print the role once ("原作：富野由悠季、矢立肇、作画：…").
+  const firstSeen = new Map();
+  credits.forEach((c, i) => firstSeen.has(c.role) || firstSeen.set(c.role, i));
+  const rank = (c) =>
+    CHARACTER_ROLE.test(c.role) ? 3 : ORIGINAL_ROLE.test(c.role) ? 0 : STORY_ROLE.test(c.role) ? 1 : 2;
+  credits.sort((a, b) => rank(a) - rank(b) || firstSeen.get(a.role) - firstSeen.get(b.role));
+  const shown = credits.slice(0, MAX_CREDITS);
+  const roles = new Set(credits.map((c) => (c.role === "著" ? "" : c.role)));
+  const withRoles = roles.size > 1;
+  const text = shown
+    .map((c, i) => (withRoles && c.role && c.role !== shown[i - 1]?.role ? `${c.role}：${c.name}` : c.name))
+    .join("、");
+  return credits.length > MAX_CREDITS || others ? `${text} ほか` : text;
 }
 
 // Creator strings carry role tags like "[著]尾玉なみえ" / "[原作]A [作画]B".
@@ -427,7 +582,7 @@ async function main() {
   const seriesWriter = new SqlChunkWriter(
     a.out,
     "series_new",
-    ["id", "name", "name_norm", "name_kana", "name_kana_norm", "creator", "publisher", "label", "num_items"],
+    ["id", "name", "name_norm", "name_kana", "name_kana_norm", "name_search", "creator", "creators", "creators_norm", "publisher", "label", "num_items"],
     a.chunk
   );
   let seriesCount = 0;
@@ -449,7 +604,10 @@ async function main() {
       sqlStr(normTitle(name)),
       sqlStr(nameKana),
       sqlStr(kanaNorm),
+      sqlStr(searchKey(name)),
       sqlStr(cleanCreator(pickCreator(node["schema:creator"]))),
+      sqlStr(creatorsDisplay(node["schema:creator"])),
+      sqlStr(creatorsNorm(node["schema:creator"])),
       sqlStr(firstVariant(primary(node["schema:publisher"]))),
       sqlStr(firstVariant(primary(node["schema:brand"]))),
       sqlInt(node["schema:numberOfItems"] ? parseInt(node["schema:numberOfItems"], 10) : null),
@@ -463,7 +621,7 @@ async function main() {
   const volumesWriter = new SqlChunkWriter(
     a.out,
     "volumes_new",
-    ["isbn", "series_id", "volume_number", "vol_sort", "title", "creator", "publisher", "label", "pubdate"],
+    ["isbn", "series_id", "volume_number", "vol_sort", "title", "title_search", "creator", "creators", "creators_norm", "publisher", "label", "pubdate"],
     a.chunk
   );
   const seen = new Set();
@@ -485,7 +643,10 @@ async function main() {
       sqlStr(vnum),
       sqlInt(volSort(vnum)),
       sqlStr(title),
+      sqlStr(searchKey(title)),
       sqlStr(cleanCreator(pickCreator(node["schema:creator"]))),
+      sqlStr(creatorsDisplay(node["schema:creator"])),
+      sqlStr(creatorsNorm(node["schema:creator"])),
       sqlStr(firstVariant(primary(node["schema:publisher"]))),
       sqlStr(firstVariant(primary(node["schema:brand"]))),
       sqlStr(primary(node["schema:datePublished"])),

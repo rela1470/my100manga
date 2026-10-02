@@ -87,7 +87,10 @@ CREATE TABLE IF NOT EXISTS series (
   name_norm      TEXT NOT NULL,  -- normalized title for search (no spaces, lower)
   name_kana      TEXT,           -- kana reading (schema:name ja-hrkt)
   name_kana_norm TEXT,           -- normalized kana (lets カナ queries hit roman-titled series)
-  creator        TEXT,
+  name_search    TEXT,           -- searchKey(name): width-folded, symbols dropped (search only; NULL → name_norm)
+  creator        TEXT,           -- representative author (display / grouping)
+  creators       TEXT,           -- display credit line, all authors with roles ("原作：A、作画：B")
+  creators_norm  TEXT,           -- every credited name, normalized and "|"-joined (search only)
   publisher      TEXT,
   label          TEXT,           -- schema:brand (レーベル)
   num_items      INTEGER         -- schema:numberOfItems
@@ -101,7 +104,10 @@ CREATE TABLE IF NOT EXISTS volumes (
   volume_number TEXT,              -- schema:volumeNumber (kept as text: "1","上",...)
   vol_sort      INTEGER,           -- numeric sort key derived from volume_number
   title         TEXT NOT NULL,     -- schema:name (series title on the volume)
-  creator       TEXT,
+  title_search  TEXT,              -- searchKey(title) (search only; NULL → normalized title)
+  creator       TEXT,              -- representative author (display / grouping)
+  creators      TEXT,              -- display credit line, all authors with roles ("原作：A、作画：B")
+  creators_norm TEXT,              -- every credited name, normalized and "|"-joined (search only)
   publisher     TEXT,
   label         TEXT,
   pubdate       TEXT

@@ -29,6 +29,7 @@ interface VolumeRow {
   vol_sort: number | null;
   title: string;
   creator: string | null;
+  creators?: string | null; // only the series' own volumes select it (byline fallback)
   publisher: string | null;
   label: string | null;
   pubdate: string | null;
@@ -64,7 +65,7 @@ export async function getSeriesVolumes(
   const members = await mergeMembers(env, targetId);
   const inMembers = members.map(() => "?").join(",");
   const meta = await env.DB.prepare(
-    `SELECT s.id, s.name, s.creator, s.publisher, s.label, o.name AS override_name
+    `SELECT s.id, s.name, s.creator, s.creators, s.publisher, s.label, o.name AS override_name
        FROM series s LEFT JOIN series_name_override o ON o.series_id = s.id
       WHERE s.id = ?`
   )
@@ -73,6 +74,7 @@ export async function getSeriesVolumes(
       id: string;
       name: string;
       creator: string | null;
+      creators: string | null;
       publisher: string | null;
       label: string | null;
       override_name: string | null;
@@ -85,7 +87,7 @@ export async function getSeriesVolumes(
   const displayName = meta.override_name || meta.name;
 
   const res = await env.DB.prepare(
-    `SELECT isbn, volume_number, vol_sort, title, creator, publisher, label, pubdate
+    `SELECT isbn, volume_number, vol_sort, title, creator, creators, publisher, label, pubdate
      FROM volumes WHERE series_id IN (${inMembers}) ORDER BY vol_sort, pubdate, isbn`
   )
     .bind(...members)
@@ -416,6 +418,9 @@ export async function getSeriesVolumes(
       series_id: meta.id,
       title: displayName,
       creator: meta.creator ?? "",
+      // 役割付きの全作者表記（"原作：A、作画：B"）。検索カード（search.ts SERIES_COLS）と同じく
+      // 先頭巻のものを優先し、無ければシリーズ側。
+      creators: (res.results ?? []).find((v) => v.creators)?.creators || meta.creators || meta.creator || "",
       supplement_probed: probed,
       supplement_checked_at: checkedAt,
       master_updated_at: await getMasterUpdatedAt(env),

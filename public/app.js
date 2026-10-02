@@ -1232,7 +1232,8 @@ function buildResultCard(r, pending) {
   }
   const a = document.createElement("div");
   a.className = "a";
-  a.textContent = [r.creator, r.publisher].filter(Boolean).join(" / ");
+  // creators = 役割付きの全作者（"原作：A、作画：B"）。最新DB検索など無いものは代表作者で。
+  a.textContent = [r.creators || r.creator, r.publisher].filter(Boolean).join(" / ");
   info.appendChild(t);
   info.appendChild(a);
   if (r.volume_count) {
@@ -1464,6 +1465,8 @@ async function openSeries(series) {
       series.series_id = data.series_id;
       series.title = data.title || series.title;
     }
+    // 巻ページから開いた場合など、カードに作者表記が無くてもサーバの creators で補う。
+    if (data.creators) series.creators = data.creators;
     if (data.group) {
       renderVolumes(series, data.volumes || [], { probed: true, live: true });
       return;

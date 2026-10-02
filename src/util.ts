@@ -127,15 +127,23 @@ export function escapeHtml(input: string): string {
 const VOLUME_LABEL_TEMPLATES = ["{n}", "巻{n}", "第{n}巻", "{n}巻"];
 
 /** The volume number in a plain volume label, or null for anything else. Accepts
- *  "12" / "巻12" / "第12巻" / "12巻" and MADB's doubled form "170　／　第170巻"
- *  (only when both numbers agree). */
+ *  "12" / "巻12" / "第12巻" / "12巻", the Latin forms MADB mixes in within one series
+ *  (名探偵コナン: "v.15" / "volume 9" / "Volume77" / "VOLUME26") and the doubled form
+ *  "170　／　第170巻" / "51　／　VOLUME51" (only when both numbers agree). */
 export function plainVolumeNumber(label: string): number | null {
   const s = (label ?? "").trim();
   const m =
-    /^(\d+)$/.exec(s) || /^巻(\d+)$/.exec(s) || /^第(\d+)巻$/.exec(s) || /^(\d+)巻$/.exec(s);
+    /^(\d+)$/.exec(s) ||
+    /^巻(\d+)$/.exec(s) ||
+    /^第(\d+)巻$/.exec(s) ||
+    /^(\d+)巻$/.exec(s) ||
+    /^v(?:ol(?:ume)?)?\.?[\s　]*(\d+)$/i.exec(s);
   if (m) return parseInt(m[1], 10);
-  const d = /^(\d+)[\s　]*[／/][\s　]*第(\d+)巻$/.exec(s);
-  if (d && d[1] === d[2]) return parseInt(d[1], 10);
+  const parts = s.split(/[\s　]*[／/][\s　]*/);
+  if (parts.length === 2 && !/[／/]/.test(parts[0] + parts[1])) {
+    const a = plainVolumeNumber(parts[0]);
+    if (a !== null && a === plainVolumeNumber(parts[1])) return a;
+  }
   return null;
 }
 

@@ -63,7 +63,7 @@ export async function getSeriesVolumes(
   const members = await mergeMembers(env, targetId);
   const inMembers = members.map(() => "?").join(",");
   const meta = await env.DB.prepare(
-    `SELECT s.id, s.name, s.creator, s.publisher, o.name AS override_name
+    `SELECT s.id, s.name, s.creator, s.publisher, s.label, o.name AS override_name
        FROM series s LEFT JOIN series_name_override o ON o.series_id = s.id
       WHERE s.id = ?`
   )
@@ -73,6 +73,7 @@ export async function getSeriesVolumes(
       name: string;
       creator: string | null;
       publisher: string | null;
+      label: string | null;
       override_name: string | null;
     }>();
   if (!meta) return notFound("シリーズが見つかりません");
@@ -92,10 +93,16 @@ export async function getSeriesVolumes(
   // MADB lists the same volume under several ISBNs (通常版/重版/特装版). Group them
   // by volume_number (volumes with no number key on their isbn so single-volume
   // works are never collapsed) so each volume appears once. Keep every sibling
-  // ISBN so we can pick whichever one has a cover.
+  // ISBN so we can pick whichever one has a cover. Plain labels key on their number,
+  // so one volume spelled "volume 84" / "Volume84" (名探偵コナン) still groups.
+  const groupKey = (v: VolumeRow): string => {
+    if (!v.volume_number) return `i:${v.isbn}`;
+    const p = plainVolumeNumber(v.volume_number);
+    return p !== null ? `p:${p}` : `n:${v.volume_number}`;
+  };
   const groups = new Map<string, { rep: VolumeRow; isbns: string[] }>();
   for (const v of res.results ?? []) {
-    const key = v.volume_number ? `n:${v.volume_number}` : `i:${v.isbn}`;
+    const key = groupKey(v);
     const g = groups.get(key);
     if (g) g.isbns.push(v.isbn);
     else groups.set(key, { rep: v, isbns: [v.isbn] });
@@ -111,19 +118,31 @@ export async function getSeriesVolumes(
   // sibling ISBNs of the volume already present, so no volume is double-counted.
   const foldUnlinked = (rows: VolumeRow[]) => {
     for (const v of rows) {
-      const key = v.volume_number ? `n:${v.volume_number}` : `i:${v.isbn}`;
+      const key = groupKey(v);
       const g = groups.get(key);
       if (g) g.isbns.push(v.isbn);
       else groups.set(key, { rep: v, isbns: [v.isbn] });
     }
   };
 
+  // When other editions share the name (名探偵コナン: 少年サンデーコミックス 本編 vs My first
+  // big / スペシャル), fall back to name + label: loose volumes carrying this series' label
+  // are still attributable as long as no sibling shares that label too.
   if (await isSoleSeriesForName(env, members, meta.name)) {
     const unlinked = await env.DB.prepare(
       `SELECT isbn, volume_number, vol_sort, title, creator, publisher, label, pubdate
        FROM volumes WHERE series_id IS NULL AND title = ? ORDER BY vol_sort, pubdate, isbn`
     )
       .bind(meta.name)
+      .all<VolumeRow>();
+    foldUnlinked(unlinked.results ?? []);
+  } else if (meta.label && (await isSoleSeriesForNameLabel(env, members, meta.name, meta.label))) {
+    const unlinked = await env.DB.prepare(
+      `SELECT isbn, volume_number, vol_sort, title, creator, publisher, label, pubdate
+       FROM volumes WHERE series_id IS NULL AND title = ? AND label = ?
+       ORDER BY vol_sort, pubdate, isbn`
+    )
+      .bind(meta.name, meta.label)
       .all<VolumeRow>();
     foldUnlinked(unlinked.results ?? []);
   }
@@ -467,6 +486,23 @@ async function isSoleSeriesForName(env: Env, members: string[], name: string): P
     `SELECT COUNT(*) AS n FROM series WHERE name = ? AND id NOT IN (${members.map(() => "?").join(",")})`
   )
     .bind(name, ...members)
+    .first<{ n: number }>();
+  return (row?.n ?? 0) === 0;
+}
+
+/** True when no OTHER series (outside this merge group) shares both this exact name and
+ *  label — the narrower guard for the name+label fold in getSeriesVolumes. */
+async function isSoleSeriesForNameLabel(
+  env: Env,
+  members: string[],
+  name: string,
+  label: string
+): Promise<boolean> {
+  const row = await env.DB.prepare(
+    `SELECT COUNT(*) AS n FROM series
+      WHERE name = ? AND label = ? AND id NOT IN (${members.map(() => "?").join(",")})`
+  )
+    .bind(name, label, ...members)
     .first<{ n: number }>();
   return (row?.n ?? 0) === 0;
 }

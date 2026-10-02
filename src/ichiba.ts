@@ -6,17 +6,19 @@ import { awaitSlot, headers, rakutenReady } from "./rakuten";
 // Mainly rescues ムック / 絶版 volumes no new-book store lists anymore, via used-book
 // shops (もったいない本舗, ブックオフ) and the odd new-book shop. There's no JAN
 // parameter, but those shops put the ISBN in the item text, so `keyword=<ISBN-13>`
-// is a near-exact lookup. Images are shop-made (logo frames, wrong edition, ...),
-// so a hit is never applied unreviewed — see resolveCovers / coverCandidates.
+// is a near-exact lookup. Most images are shop-made (logo frames, wrong edition,
+// ...), so only the used-book shops' scans (ブックオフ / 駿河屋 / もったいない本舗,
+// whose frame /cover crops off) apply unreviewed — see isTrustedCoverUrl.
 // Same applicationId (and gateway) as 楽天ブックス, so it shares the Rakuten limiter.
 const ICHIBA_SEARCH = "https://openapi.rakuten.co.jp/ichibams/api/IchibaItem/Search/20260701";
 
 // Shop preference, best first. Unlisted shops (bookfan, booxstore, Kobo, ...) mostly
-// carry the publisher's clean cover image. ブックオフ is clean but only 150×223 at
-// source. もったいない本舗 (three storefronts sharing one image cabinet) is 700px but
+// carry the publisher's clean cover image. ブックオフ / 駿河屋 are clean but only
+// ~150px wide at source. もったいない本舗 (three storefronts sharing one image cabinet) is 700px but
 // framed with its logo band and mascot.
 const SHOP_RANK: Record<string, number> = {
   bookoffonline: 1,
+  "surugaya-a-too": 1, // 駿河屋: clean scans, ~137×192 at source
   comicset: 2,
   mottainaihonpo: 2,
   "mottainaihonpo-omatome": 2,
@@ -35,8 +37,12 @@ function upsize(url: string): string {
 // Below this it's a broken/placeholder image (ブックオフ's 150×223 covers are ~10KB).
 const COVER_MIN_BYTES = 4000;
 
+// Shop "no image" placeholders by filename: noimage_01.gif, ブックオフ's r_noimg.gif
+// (5.5KB once upsized — past COVER_MIN_BYTES, so the byte check alone misses it).
+const NO_IMAGE_RE = /no[_-]?im(?:age|g)/i;
+
 async function isRealCover(url: string): Promise<boolean> {
-  if (!url || /noimage/i.test(url)) return false;
+  if (!url || NO_IMAGE_RE.test(url)) return false;
   try {
     const res = await fetch(url, { method: "HEAD", cf: { cacheEverything: true, cacheTtl: 86400 } });
     if (!res.ok) return false;

@@ -21,6 +21,7 @@ import {
 } from "./madbLive";
 import { getCorrectionVolumes } from "./corrections";
 import { resolveMergeTarget, mergeMembers } from "./merge";
+import { isCustomSeriesId } from "./groups";
 
 interface VolumeRow {
   isbn: string;
@@ -95,10 +96,13 @@ export async function getSeriesVolumes(
   // works are never collapsed) so each volume appears once. Keep every sibling
   // ISBN so we can pick whichever one has a cover. Plain labels key on their number,
   // so one volume spelled "volume 84" / "Volume84" (名探偵コナン) still groups.
+  // 独自シリーズは別々の本を束ねたものなので、同じ巻番号でも書名が違えば別の巻にする。
+  const custom = isCustomSeriesId(targetId);
   const groupKey = (v: VolumeRow): string => {
     if (!v.volume_number) return `i:${v.isbn}`;
     const p = plainVolumeNumber(v.volume_number);
-    return p !== null ? `p:${p}` : `n:${v.volume_number}`;
+    const k = p !== null ? `p:${p}` : `n:${v.volume_number}`;
+    return custom ? `${normTitle(v.title)}|${k}` : k;
   };
   const groups = new Map<string, { rep: VolumeRow; isbns: string[] }>();
   for (const v of res.results ?? []) {
@@ -357,8 +361,11 @@ export async function getSeriesVolumes(
   // それ(displayName)を、無ければマスタ巻タイトルの最多(canonical)を全巻の表示タイトルに
   // する。個別 ISBN に管理者修正(volume_title_override)があれば最優先。巻番号は volLabel 側
   // で付くので、ここで title をシリーズ共通に揃えても巻は区別される。
+  // 巻番号の無い巻（総集編「THE 4TH LOG …」・特別編など）は書名が唯一の区別なので揃えず、
+  // 最多タイトルの集計にも入れない（全部が別名だと最長の 1 冊の名前が全巻に付いてしまう）。
   const titleCounts = new Map<string, number>();
   for (const v of res.results ?? []) {
+    if (!v.volume_number) continue;
     const t = (v.title ?? "").trim();
     if (t) titleCounts.set(t, (titleCounts.get(t) ?? 0) + 1);
   }
@@ -381,7 +388,8 @@ export async function getSeriesVolumes(
       const ov = titleOverrides.get(i);
       if (ov) return ov;
     }
-    return seriesTitle || e.title;
+    // 独自シリーズの巻は書名そのものが本の区別（ルフィ / ゾロ …）なので揃えない。
+    return custom || !e.volume_number ? e.title : seriesTitle || e.title;
   };
 
   const volumes: OutVolume[] = shown.map((e) => ({
@@ -444,7 +452,7 @@ export async function handleMasterInfo(env: Env): Promise<Response> {
 
 /** Epoch-ms the MADB master was last refreshed: the dump's release date if the
  *  ingest recorded one, else the import time. 0 when never ingested / no meta table. */
-async function getMasterUpdatedAt(env: Env): Promise<number> {
+export async function getMasterUpdatedAt(env: Env): Promise<number> {
   try {
     const res = await env.DB.prepare(
       `SELECT key, value FROM meta WHERE key IN ('madb_released_at', 'imported_at')`
@@ -459,7 +467,8 @@ async function getMasterUpdatedAt(env: Env): Promise<number> {
 /** 収録巻の schema:name のうち最も多いタイトル（最頻値）を返す。MADB は同一作品を複数の
  *  title 文字列で登録することがあり（英題別名・サブタイトル付き等）、series.name がその中の
  *  少数派バリアントになっていることがある。巻側の多数派タイトルが実質的な正しい表示名なので、
- *  シリーズ名の修正候補として使う。空タイトルは除外。同数なら長い（情報量が多い）方を優先。
+ *  シリーズ名の修正候補として使う。空タイトルと巻番号の無い巻（総集編など書名が本の区別に
+ *  なっている巻）は除外。同数なら長い（情報量が多い）方を優先。
  *  収録巻が無ければ null。 */
 export async function getMostCommonVolumeTitle(
   env: Env,
@@ -467,7 +476,7 @@ export async function getMostCommonVolumeTitle(
 ): Promise<{ title: string; count: number; total: number } | null> {
   const res = await env.DB.prepare(
     `SELECT title, COUNT(*) AS n FROM volumes
-       WHERE series_id = ? AND title <> ''
+       WHERE series_id = ? AND title <> '' AND volume_number IS NOT NULL
        GROUP BY title
        ORDER BY n DESC, LENGTH(title) DESC, title`
   )

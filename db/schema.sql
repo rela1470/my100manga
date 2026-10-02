@@ -253,6 +253,29 @@ CREATE TABLE IF NOT EXISTS series_merge (
 );
 CREATE INDEX IF NOT EXISTS idx_series_merge_target ON series_merge (target_id);
 
+-- 独自シリーズと巻の紐付け（シリーズに属さない巻のまとまりの結合）。MADB の巻の ~20% は
+-- schema:isPartOf を持たない。検索はこれを「書名 + 著者」のまとまり（G<ISBN>）として出し、
+-- 閲覧者の依頼 → 管理者の確定で既存シリーズや別のまとまりと結合できる（src/groups.ts,
+-- src/merge.ts）。確定すると巻を ISBN 単位で volume_series_link に記録し volumes.series_id を
+-- 書き換える。結合先にシリーズが無いとき（まとまり同士）は custom_series に独自シリーズ
+-- （ID「U000001」）を作り series にも載せる。series / volumes は月次の取り込みで作り直すので、
+-- 取り込み後にこの 2 表から載せ直す（scripts/ingest.mjs の SWAP_SQL）。
+CREATE TABLE IF NOT EXISTS custom_series (
+  id         TEXT PRIMARY KEY,   -- "U" + 6 桁の連番
+  name       TEXT NOT NULL,      -- 作成元のまとまりの書名（表示名は series_name_override で直せる）
+  name_norm  TEXT NOT NULL,      -- normTitle(name)
+  creator    TEXT,
+  publisher  TEXT,
+  label      TEXT,
+  created_at INTEGER NOT NULL
+);
+CREATE TABLE IF NOT EXISTS volume_series_link (
+  isbn       TEXT PRIMARY KEY,   -- シリーズの無いマスタ巻の ISBN13
+  series_id  TEXT NOT NULL,      -- 紐付け先（C-id か U-id）
+  created_at INTEGER NOT NULL    -- 1 回の結合で紐付けた巻は同じ値（解除の単位）
+);
+CREATE INDEX IF NOT EXISTS idx_volume_series_link_series ON volume_series_link (series_id);
+
 -- 閲覧者の「シリーズが分かれている？」依頼。series_report と同じ collect-only 方針で、
 -- 全体反映は管理者の確定まで行わない。ペアは (series_a < series_b) に正規化して 1 行、
 -- 繰り返しの依頼は report_count を増やす。管理者は 結合（series_merge を書いて行を消す）

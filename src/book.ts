@@ -2,6 +2,10 @@ import { Env } from "./types";
 import { badRequest, json } from "./util";
 import { rakutenResolveFull, RakutenBookFull } from "./rakuten";
 import { redactedCoverUrls } from "./covers";
+import { resolveBooks } from "./listItems";
+import { toIsbn13 } from "./util";
+import { attributeTitles } from "./groups";
+import { resolveMergeTarget } from "./merge";
 
 interface VolumeRow {
   title: string;
@@ -41,9 +45,18 @@ export async function handleBook(request: Request, env: Env): Promise<Response> 
   // 外部 API を叩くので index.ts 側で RL_COVERS によるレート制限をかけている。
   const refresh = (url.searchParams.get("refresh") ?? "") === "1";
 
+  // The series this ISBN belongs to (merge-aware, admin name override applied), so the
+  // detail popups can link to its volume list. Not cached in book_meta — it follows
+  // series merges / renames live.
+  const seriesP = bookSeries(env, isbn);
+
   if (!refresh) {
     const cached = await readBookMeta(env, isbn);
-    if (cached) return json({ ...cached, status: "ok" }, 200, { "cache-control": "no-store" });
+    if (cached) {
+      return json({ ...cached, series: await seriesP, status: "ok" }, 200, {
+        "cache-control": "no-store",
+      });
+    }
   }
 
   const [row, res] = await Promise.all([
@@ -86,7 +99,30 @@ export async function handleBook(request: Request, env: Env): Promise<Response> 
   // "Rakuten was rate-limited so we never got an answer" — the latter is retryable and
   // mustn't be shown as 見つかりませんでした. rk === null is the undetermined (skipped) case.
   const status = rk === null ? "unavailable" : "ok";
-  return json({ ...result, status }, 200, { "cache-control": "no-store" });
+  return json({ ...result, series: await seriesP, status }, 200, { "cache-control": "no-store" });
+}
+
+async function bookSeries(env: Env, isbn: string): Promise<{ id: string; title: string } | null> {
+  const isbn13 = toIsbn13(isbn);
+  const b = (await resolveBooks(env, [isbn13])).get(isbn13);
+  if (b?.series_id && b.series_title) return { id: b.series_id, title: b.series_title };
+
+  // シリーズの無いマスタ巻: 既存シリーズに寄せられればそのシリーズ（巻一覧にもその条件で
+  // 混ざる）、無ければ書名+著者のまとまり（G<ISBN>, src/groups.ts）へリンクする。
+  const v = await env.DB.prepare(`SELECT title FROM volumes WHERE isbn = ? AND series_id IS NULL`)
+    .bind(isbn13)
+    .first<{ title: string }>();
+  if (!v) return null;
+  const owner = (await attributeTitles(env, [v.title])).get(v.title);
+  if (!owner) return { id: "G" + isbn13, title: v.title };
+  const id = await resolveMergeTarget(env, owner);
+  const s = await env.DB.prepare(
+    `SELECT COALESCE(o.name, s.name) AS name FROM series s
+       LEFT JOIN series_name_override o ON o.series_id = s.id WHERE s.id = ?`
+  )
+    .bind(id)
+    .first<{ name: string }>();
+  return { id, title: s?.name || v.title };
 }
 
 async function readBookMeta(env: Env, isbn: string): Promise<BookMeta | null> {

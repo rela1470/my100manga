@@ -1,6 +1,7 @@
 // Route Yahoo!ショッピング covers through our /cover endpoint, which trims the
 // white bars baked into 正方形 seller images (notably netoff) server-side and
-// persists the result in R2. We can't trim in the browser: Yahoo's CDN sends no
+// persists the result in R2. もったいない本舗 (楽天市場) covers go the same way to
+// have their logo frame cropped off. We can't trim in the browser: Yahoo's CDN sends no
 // CORS headers, so a canvas read would taint. And object-fit alone can't remove
 // bars this wide (~30% a side) on a 3:4 frame.
 //
@@ -23,10 +24,16 @@
     return false;
   }
 
-  function isYahoo(src) {
-    var host;
-    try { host = new URL(src, location.href).hostname; } catch (e) { return false; }
-    return /(^|\.)yimg\.jp$/.test(host);
+  // もったいない本舗's 楽天 storefronts frame the cover with a logo band + mascot; /cover
+  // crops it out (src/covertrim.ts trimShopFrame). Same list as MOTTAINAI_PATH in src/index.ts.
+  var MOTTAINAI_RE = /^\/@0_mall\/(comicset|mottainaihonpo|mottainaihonpo-omatome)\/cabinet\//;
+
+  // Covers served through /cover: Yahoo (white bars) and もったいない本舗 (logo frame).
+  function needsTrim(src) {
+    var u;
+    try { u = new URL(src, location.href); } catch (e) { return false; }
+    if (/(^|\.)yimg\.jp$/.test(u.hostname)) return true;
+    return u.hostname === "thumbnail.image.rakuten.co.jp" && MOTTAINAI_RE.test(u.pathname);
   }
 
   // Primary path: renderers call this instead of `img.src = url` so a Yahoo cover
@@ -36,7 +43,7 @@
   // CDN on every view — enough of those looks like abuse and risks a block.
   // Marking cfDone lets the observer skip elements already handled here.
   window.applyCover = function (img, url) {
-    if (url && isYahoo(url)) {
+    if (url && needsTrim(url)) {
       img.dataset.cfDone = "1";
       img.src = "/cover?u=" + encodeURIComponent(url);
     } else {
@@ -47,7 +54,7 @@
   function consider(img) {
     if (!isCoverImg(img) || img.dataset.cfDone) return;
     var src = img.currentSrc || img.src;
-    if (!src || !isYahoo(src)) return;
+    if (!src || !needsTrim(src)) return;
     img.dataset.cfDone = "1";
     var trimmed = "/cover?u=" + encodeURIComponent(src);
     var probe = new Image();

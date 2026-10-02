@@ -149,6 +149,43 @@ export async function adminStats(env: Env): Promise<Response> {
   );
 }
 
+/** 管理画面上部の「やること」用に、未処理キューの件数だけを返す。adminStats は処理済みも
+ *  含む総数なので別に持つ。処理時に行を消すキュー（巻/シリーズ名/タイトルの通報・結合依頼）は
+ *  全件、ソフトデリートのキューは未処理条件（resolved_at / reviewed_at = 0）で数える。 */
+export async function adminTodo(env: Env): Promise<Response> {
+  const count = async (sql: string): Promise<number> => {
+    const row = await env.DB.prepare(sql).first<{ n: number }>();
+    return row?.n ?? 0;
+  };
+
+  const [reports, volume_reports, series_reports, merge_requests, volume_title_reports, corrections, cover_suggestions] =
+    await Promise.all([
+      count(`SELECT COUNT(*) AS n FROM reports WHERE resolved_at = 0`),
+      count(`SELECT COUNT(*) AS n FROM volume_report`),
+      count(`SELECT COUNT(*) AS n FROM series_report`),
+      count(`SELECT COUNT(*) AS n FROM series_merge_request`),
+      count(`SELECT COUNT(*) AS n FROM volume_title_report`),
+      count(`SELECT COUNT(*) AS n FROM series_correction WHERE reviewed_at = 0`),
+      count(`SELECT COUNT(*) AS n FROM cover_suggestion WHERE resolved_at = 0`),
+    ]);
+
+  return json(
+    {
+      todo: {
+        reports,
+        volume_reports,
+        series_reports,
+        merge_requests,
+        volume_title_reports,
+        corrections,
+        cover_suggestions,
+      },
+    },
+    200,
+    { "cache-control": "no-store" }
+  );
+}
+
 // 開発ツールが有効か。DEV_TOOLS="true"（開発期間中は本番 vars にも置ける）か、ローカル
 // dev の ADMIN_DEV_BYPASS="true" のどちらかで有効。ADMIN_DEV_BYPASS と違い DEV_TOOLS は
 // 認証をバイパスしない（この関数は requireAdmin の配下）ので、本番でも管理者だけが使える。

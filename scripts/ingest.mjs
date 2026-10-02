@@ -69,6 +69,19 @@ const PRUNE_SUPPLEMENT_SQL =
   "OR (v.series_id = series_supplement.series_id AND v.vol_sort = json_extract(j.value, '$.vol_sort')))" +
   "), '[]');";
 
+// Re-apply admin-confirmed links for volumes the master leaves series-less (see
+// src/groups.ts APPLY_LINKS_SQL — keep in sync): custom series go back into `series`,
+// linked ISBNs get their series_id again. Volumes the new master links itself are left
+// alone (series_id IS NULL guard).
+const APPLY_LINKS_SQL = [
+  "CREATE TABLE IF NOT EXISTS custom_series (id TEXT PRIMARY KEY, name TEXT NOT NULL, name_norm TEXT NOT NULL, creator TEXT, publisher TEXT, label TEXT, created_at INTEGER NOT NULL);",
+  "CREATE TABLE IF NOT EXISTS volume_series_link (isbn TEXT PRIMARY KEY, series_id TEXT NOT NULL, created_at INTEGER NOT NULL);",
+  "INSERT OR REPLACE INTO series (id, name, name_norm, name_kana, name_kana_norm, creator, publisher, label, num_items) " +
+    "SELECT id, name, name_norm, NULL, NULL, creator, publisher, label, NULL FROM custom_series;",
+  "UPDATE volumes SET series_id = (SELECT l.series_id FROM volume_series_link l WHERE l.isbn = volumes.isbn) " +
+    "WHERE series_id IS NULL AND isbn IN (SELECT isbn FROM volume_series_link);",
+];
+
 // Blue-green cutover. RENAMEs are instant metadata ops, so the window where the live
 // `series`/`volumes` names point at anything other than a fully-loaded table is
 // negligible. Old tables are dropped first to free the global index names, then the
@@ -89,6 +102,7 @@ const SWAP_SQL = [
   "CREATE INDEX IF NOT EXISTS idx_volumes_series ON volumes (series_id, vol_sort);",
   "CREATE TABLE IF NOT EXISTS series_supplement (series_id TEXT PRIMARY KEY, volumes_json TEXT NOT NULL, checked_at INTEGER NOT NULL);",
   PRUNE_SUPPLEMENT_SQL,
+  ...APPLY_LINKS_SQL,
 ].join(" ");
 
 function parseArgs(argv) {

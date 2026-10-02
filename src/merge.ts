@@ -1,6 +1,15 @@
 import { Env } from "./types";
-import { badRequest, json, notFound, readJsonObject } from "./util";
+import { badRequest, json, notFound, normTitle, readJsonObject } from "./util";
 import type { PageOpts } from "./admin";
+import {
+  isGroupId,
+  loadGroup,
+  resolveGroup,
+  nextCustomSeriesId,
+  createCustomSeriesStmts,
+  linkStmts,
+  UnlinkedGroup,
+} from "./groups";
 
 // シリーズの結合（分裂したシリーズを 1 つにまとめる）。上流 MADB は同一作品を複数の C-id に
 // 分けて持つことがある（例: 「One piece」SJR 版が C451457 = 1巻 / C451211 = 2〜5巻）。
@@ -8,6 +17,10 @@ import type { PageOpts } from "./admin";
 // 閲覧者の依頼か管理画面の候補一覧から管理者が確定する。確定した結合は series_merge に残し
 // READ 時に適用する（getSeriesVolumes / 検索 / listItems）。target は常に「どこにも吸収されて
 // いない」シリーズに保つ（連鎖させない）ので、読み替えは 1 段で済む。See db/schema.sql。
+//
+// シリーズに属さない巻のまとまり（G<ISBN>, src/groups.ts）も結合の相手にできる。依頼には
+// G-id のまま記録し、確定時にグループの巻を残す側へ ISBN 単位で紐付ける（volume_series_link）。
+// 残す側がグループなら、そこから独自シリーズ（U…）を作って残す側にする。
 
 // D1 の bind パラメータ上限を避けるための IN 句チャンク（readCachedCovers と同じ）。
 const CHUNK = 90;
@@ -22,6 +35,15 @@ export async function resolveMergeTarget(env: Env, seriesId: string): Promise<st
     .bind(seriesId)
     .first<{ target_id: string }>();
   return row?.target_id ?? seriesId;
+}
+
+/** 結合の単位。C-id/U-id は結合済みなら残す側、G-id は今の所属（既存シリーズに寄せられる・
+ *  紐付け済みならそのシリーズ、そうでなければグループの正規 ID）。巻が無い G-id は null。 */
+export async function resolveUnit(env: Env, id: string): Promise<string | null> {
+  if (!isGroupId(id)) return resolveMergeTarget(env, id);
+  const r = await resolveGroup(env, id);
+  if (!r) return null;
+  return "seriesId" in r ? resolveMergeTarget(env, r.seriesId) : r.group.id;
 }
 
 /** target と、そこに吸収された全シリーズの C-id（target が先頭）。 */
@@ -66,7 +88,13 @@ export interface SeriesInfo {
  *  巻は member 横断でまとめるので、結合済み target は結合後の姿で見える。 */
 export async function seriesInfos(env: Env, ids: string[]): Promise<Map<string, SeriesInfo>> {
   const out = new Map<string, SeriesInfo>();
-  const uniq = [...new Set(ids.filter(Boolean))];
+  const all = [...new Set(ids.filter(Boolean))];
+  // グループ（G-id）は巻をその場で集めて同じ形にする。紐付け済みで巻が残っていなければ載せない。
+  for (const id of all.filter(isGroupId)) {
+    const g = await loadGroup(env, id.slice(1));
+    if (g) out.set(id, groupInfo(id, g));
+  }
+  const uniq = all.filter((id) => !isGroupId(id));
   if (!uniq.length) return out;
 
   // member → 表示単位（自身 or target として渡された id）
@@ -140,6 +168,19 @@ export async function seriesInfos(env: Env, ids: string[]): Promise<Map<string, 
   return out;
 }
 
+function groupInfo(id: string, g: UnlinkedGroup): SeriesInfo {
+  return {
+    series_id: id,
+    title: g.title,
+    creator: g.creator,
+    publisher: g.publisher,
+    label: g.label,
+    volume_count: g.volumes.length,
+    labels: g.volumes.map((v) => v.volume_number || "(番号なし)").slice(0, MAX_LABELS),
+    sorts: [...new Set(g.volumes.filter((v) => v.volume_number && v.vol_sort > 0).map((v) => v.vol_sort))],
+  };
+}
+
 const publicInfo = (i: SeriesInfo) => ({
   series_id: i.series_id,
   title: i.title,
@@ -154,7 +195,9 @@ const publicInfo = (i: SeriesInfo) => ({
  *  タイトル（name_norm）で同じ著者のシリーズを、結合済みは target に読み替えて返す。
  *  出版社/レーベル違いも候補に含める（判断は閲覧者と管理者に委ねる）。 */
 export async function getMergeCandidates(env: Env, seriesId: string): Promise<Response> {
-  const self = await resolveMergeTarget(env, seriesId);
+  const self = await resolveUnit(env, seriesId);
+  if (!self) return notFound("シリーズが見つかりません");
+  if (isGroupId(self)) return getGroupMergeCandidates(env, self);
   const meta = await env.DB.prepare(`SELECT id, name_norm, creator FROM series WHERE id = ?`)
     .bind(self)
     .first<{ id: string; name_norm: string; creator: string | null }>();
@@ -183,34 +226,89 @@ export async function getMergeCandidates(env: Env, seriesId: string): Promise<Re
   );
 }
 
+/** グループの結合候補: 同じ正規化書名のシリーズ（同名が複数あってどれにも寄せられなかった
+ *  ものが主。著者は問わない）。 */
+async function getGroupMergeCandidates(env: Env, groupId: string): Promise<Response> {
+  const g = await loadGroup(env, groupId.slice(1));
+  if (!g) return notFound("シリーズが見つかりません");
+  const res = await env.DB.prepare(`SELECT id FROM series WHERE name_norm = ? LIMIT 50`)
+    .bind(normTitle(g.title))
+    .all<{ id: string }>();
+  const raw = (res.results ?? []).map((r) => r.id);
+  const targets = await mergeTargetsFor(env, raw);
+  const ids = [...new Set(raw.map((id) => targets.get(id) ?? id))];
+  const infos = await seriesInfos(env, ids);
+  const candidates = ids
+    .map((id) => infos.get(id))
+    .filter((i): i is SeriesInfo => !!i && i.volume_count > 0)
+    .sort((a, b) => b.volume_count - a.volume_count)
+    .map(publicInfo);
+  return json(
+    { series: publicInfo(groupInfo(groupId, g)), candidates },
+    200,
+    { "cache-control": "no-store" }
+  );
+}
+
+/** 1 回の依頼でまとめて指定できる相手シリーズの上限。 */
+const MERGE_REQUEST_MAX = 10;
+
 /** POST /api/series/:id/merge-request — 「このシリーズと同じ作品」と結合を依頼する。
  *  series_report と同じ collect-only 方針で、件数だけ記録し全体反映は管理者の確定まで
- *  行わない。body: { other_id }。両方とも結合済みなら target に読み替えて記録する。 */
+ *  行わない。body: { other_ids: [] }（旧形式の { other_id } も可）。相手は複数まとめて
+ *  指定でき、1 つでも不正なら何も記録しない。結合済みは target に読み替えて記録する。 */
 export async function requestSeriesMerge(request: Request, env: Env, seriesId: string): Promise<Response> {
-  const body = (await readJsonObject(request)) as { other_id?: unknown };
-  const otherRaw = typeof body.other_id === "string" ? body.other_id.trim().toUpperCase() : "";
-  if (!ID_RE.test(otherRaw)) return badRequest("シリーズIDの形式が正しくありません（例: C451211）");
+  const body = (await readJsonObject(request)) as { other_id?: unknown; other_ids?: unknown };
+  const rawList = Array.isArray(body.other_ids) ? body.other_ids : [body.other_id];
+  const others = [
+    ...new Set(rawList.map((v) => (typeof v === "string" ? v.trim().toUpperCase() : ""))),
+  ];
+  if (!others.length || others.some((id) => !ID_RE.test(id))) {
+    return badRequest("シリーズIDの形式が正しくありません（例: C451211）");
+  }
+  if (others.length > MERGE_REQUEST_MAX) {
+    return badRequest(`一度に依頼できるのは ${MERGE_REQUEST_MAX} 件までです`);
+  }
 
-  const a = await resolveMergeTarget(env, seriesId);
-  const b = await resolveMergeTarget(env, otherRaw);
-  if (a === b) return badRequest("同じシリーズです（既に結合済みの場合も含みます）");
-  const found = await env.DB.prepare(`SELECT COUNT(*) AS n FROM series WHERE id IN (?, ?)`)
-    .bind(a, b)
-    .first<{ n: number }>();
-  if ((found?.n ?? 0) < 2) return notFound("シリーズが見つかりません");
+  const a = await resolveUnit(env, seriesId.toUpperCase());
+  if (!a) return notFound(`シリーズが見つかりません: ${seriesId}`);
+  const resolved = await Promise.all(others.map((id) => resolveUnit(env, id)));
+  const gone = others.filter((_, i) => !resolved[i]);
+  if (gone.length) return notFound(`シリーズが見つかりません: ${gone.join(", ")}`);
+  // 自分自身・既に自分へ結合済みの相手は、どれが該当するか分かるよう ID を挙げて弾く。
+  const same = others.filter((_, i) => resolved[i] === a);
+  if (same.length) {
+    return badRequest(`${same.join(", ")} は既にこのシリーズと同じ（結合済み）です。選択から外してください`);
+  }
+  const bs = [...new Set(resolved as string[])];
+  // グループは resolveUnit が巻の存在を確かめ済み。シリーズは series にあるかを見る。
+  const ids = [a, ...bs].filter((id) => !isGroupId(id));
+  if (ids.length) {
+    const found = await env.DB.prepare(
+      `SELECT id FROM series WHERE id IN (${ids.map(() => "?").join(",")})`
+    )
+      .bind(...ids)
+      .all<{ id: string }>();
+    const have = new Set((found.results ?? []).map((r) => r.id));
+    const missing = ids.filter((id) => !have.has(id));
+    if (missing.length) return notFound(`シリーズが見つかりません: ${missing.join(", ")}`);
+  }
 
-  const [lo, hi] = a < b ? [a, b] : [b, a];
   const now = Date.now();
-  await env.DB.prepare(
+  const stmt = env.DB.prepare(
     `INSERT INTO series_merge_request (series_a, series_b, report_count, first_reported_at, last_reported_at)
      VALUES (?, ?, 1, ?, ?)
      ON CONFLICT (series_a, series_b) DO UPDATE SET
        report_count = report_count + 1,
        last_reported_at = excluded.last_reported_at`
-  )
-    .bind(lo, hi, now, now)
-    .run();
-  return json({ ok: true }, 200, { "cache-control": "no-store" });
+  );
+  await env.DB.batch(
+    bs.map((b) => {
+      const [lo, hi] = a < b ? [a, b] : [b, a];
+      return stmt.bind(lo, hi, now, now);
+    })
+  );
+  return json({ ok: true, count: bs.length }, 200, { "cache-control": "no-store" });
 }
 
 // ── 管理画面 ──────────────────────────────────────────────────────────────
@@ -218,31 +316,74 @@ export async function requestSeriesMerge(request: Request, env: Env, seriesId: s
 const adminInfo = (i: SeriesInfo | undefined, id: string) =>
   i
     ? publicInfo(i)
-    : { series_id: id, title: "(マスターに無いシリーズ)", creator: "", publisher: "", label: "", volume_count: 0, labels: [] };
+    : {
+        series_id: id,
+        title: isGroupId(id) ? "(紐付け済み・巻の無いまとまり)" : "(マスターに無いシリーズ)",
+        creator: "",
+        publisher: "",
+        label: "",
+        volume_count: 0,
+        labels: [],
+      };
 
-/** 結合依頼の一覧。件数の多い順。各シリーズの巻構成を併記して管理者が判断できるようにする。 */
+/** 結合依頼の一覧。依頼は 2 シリーズの組で記録されるが、1 回でまとめて依頼されたもの
+ *  （A–B, A–C）や別々の依頼でつながるものは、組のつながり（連結成分）で 1 グループに
+ *  まとめて返す。グループは合計件数の多い順。各シリーズの巻構成を併記して管理者が判断
+ *  できるようにする。依頼の行数は小さいので全件読んでから in-memory でページングする。 */
 export async function adminListMergeRequests(env: Env, opts: PageOpts): Promise<Response> {
-  const total =
-    (await env.DB.prepare(`SELECT COUNT(*) AS n FROM series_merge_request`).first<{ n: number }>())?.n ?? 0;
   const res = await env.DB.prepare(
-    `SELECT series_a, series_b, report_count, first_reported_at, last_reported_at
-       FROM series_merge_request
-      ORDER BY report_count DESC, last_reported_at DESC LIMIT ? OFFSET ?`
-  )
-    .bind(opts.per, opts.offset)
-    .all<{ series_a: string; series_b: string; report_count: number; first_reported_at: number; last_reported_at: number }>();
+    `SELECT series_a, series_b, report_count, first_reported_at, last_reported_at FROM series_merge_request`
+  ).all<{ series_a: string; series_b: string; report_count: number; first_reported_at: number; last_reported_at: number }>();
   const rows = res.results ?? [];
-  const infos = await seriesInfos(env, rows.flatMap((r) => [r.series_a, r.series_b]));
-  const requests = rows.map((r) => ({
-    series_a: r.series_a,
-    series_b: r.series_b,
-    report_count: r.report_count,
-    first_reported_at: r.first_reported_at,
-    last_reported_at: r.last_reported_at,
-    overlap: overlaps(infos.get(r.series_a), infos.get(r.series_b)),
-    series: [adminInfo(infos.get(r.series_a), r.series_a), adminInfo(infos.get(r.series_b), r.series_b)],
-  }));
-  return json({ requests, total, page: opts.page, per: opts.per }, 200, { "cache-control": "no-store" });
+
+  const parent = new Map<string, string>();
+  const find = (x: string): string => {
+    let r = x;
+    while (parent.has(r) && parent.get(r) !== r) r = parent.get(r)!;
+    parent.set(x, r);
+    return r;
+  };
+  for (const r of rows) {
+    const a = find(r.series_a);
+    const b = find(r.series_b);
+    if (a !== b) parent.set(a, b);
+  }
+  const byRoot = new Map<string, typeof rows>();
+  for (const r of rows) {
+    const root = find(r.series_a);
+    byRoot.set(root, [...(byRoot.get(root) ?? []), r]);
+  }
+
+  const groups = [...byRoot.values()]
+    .map((pairs) => ({
+      pairs,
+      report_count: pairs.reduce((n, p) => n + p.report_count, 0),
+      last_reported_at: Math.max(...pairs.map((p) => p.last_reported_at)),
+    }))
+    .sort((a, b) => b.report_count - a.report_count || b.last_reported_at - a.last_reported_at);
+  const page = groups.slice(opts.offset, opts.offset + opts.per);
+  const infos = await seriesInfos(env, page.flatMap((g) => g.pairs.flatMap((p) => [p.series_a, p.series_b])));
+
+  const requests = page.map((g) => {
+    const ids = [...new Set(g.pairs.flatMap((p) => [p.series_a, p.series_b]))];
+    const series = ids
+      .map((id) => adminInfo(infos.get(id), id))
+      .sort((a, b) => b.volume_count - a.volume_count || a.series_id.localeCompare(b.series_id));
+    return {
+      group_key: ids.sort().join(","),
+      report_count: g.report_count,
+      last_reported_at: g.last_reported_at,
+      pairs: g.pairs.map((p) => ({
+        series_a: p.series_a,
+        series_b: p.series_b,
+        report_count: p.report_count,
+        overlap: overlaps(infos.get(p.series_a), infos.get(p.series_b)),
+      })),
+      overlap: g.pairs.some((p) => overlaps(infos.get(p.series_a), infos.get(p.series_b))),
+      series,
+    };
+  });
+  return json({ requests, total: groups.length, page: opts.page, per: opts.per }, 200, { "cache-control": "no-store" });
 }
 
 /** 2 シリーズで巻番号（vol_sort）が重なるか。重なるなら別の版の可能性が高い。 */
@@ -338,12 +479,25 @@ export async function adminDismissMergeCandidate(request: Request, env: Env): Pr
   return json({ ok: true });
 }
 
-/** シリーズを結合する。body: { target_id, absorbed_ids: [] }。target が吸収済みならその
+/** 結合で片付いた依頼（両側が同じ単位に入ったもの）を消す文。G-id は紐付け先、結合済みは
+ *  残す側に読み替えて比べる。scripts/dump-series-merge.mjs にも同じ SQL がある。 */
+export const CLEANUP_MERGE_REQUESTS_SQL = (() => {
+  const unit = (col: string) =>
+    `(CASE WHEN ${col} GLOB 'G[0-9]*' THEN COALESCE((SELECT l.series_id FROM volume_series_link l WHERE l.isbn = SUBSTR(${col}, 2)), ${col}) ELSE ${col} END)`;
+  const target = (col: string) =>
+    `COALESCE((SELECT m.target_id FROM series_merge m WHERE m.absorbed_id = ${unit(col)}), ${unit(col)})`;
+  return `DELETE FROM series_merge_request WHERE ${target("series_a")} = ${target("series_b")}`;
+})();
+
+/** シリーズを結合する。body: { target_id, absorbed_ids: [], name? }。target が吸収済みならその
  *  target に、absorbed に吸収済みの member があればそれごと付け替えて、連鎖のない形に保つ。
- *  対応する結合依頼（両方が結合後の同じ target に入るもの）は片付ける。 */
+ *  グループ（G-id）は巻を target に紐付ける。target がグループなら独自シリーズを作って残す側に
+ *  する。対応する結合依頼（両方が結合後の同じ target に入るもの）は片付ける。 */
 export async function adminMergeSeries(request: Request, env: Env): Promise<Response> {
-  const body = (await readJsonObject(request)) as { target_id?: unknown; absorbed_ids?: unknown };
+  const body = (await readJsonObject(request)) as { target_id?: unknown; absorbed_ids?: unknown; name?: unknown };
   const targetRaw = typeof body.target_id === "string" ? body.target_id : "";
+  // 残す側がグループのときに作る独自シリーズの名前（省略時はグループの書名）。
+  const name = typeof body.name === "string" ? body.name.trim().slice(0, 200) : "";
   const absorbedRaw = Array.isArray(body.absorbed_ids)
     ? body.absorbed_ids.filter((x): x is string => typeof x === "string")
     : [];
@@ -351,22 +505,48 @@ export async function adminMergeSeries(request: Request, env: Env): Promise<Resp
     return badRequest("target_id / absorbed_ids が不正です");
   }
 
-  const target = await resolveMergeTarget(env, targetRaw);
-  const ids = [...new Set([target, ...absorbedRaw])];
-  const found = await env.DB.prepare(
-    `SELECT COUNT(*) AS n FROM series WHERE id IN (${ids.map(() => "?").join(",")})`
-  )
-    .bind(...ids)
-    .first<{ n: number }>();
-  if ((found?.n ?? 0) !== ids.length) return notFound("シリーズが見つかりません");
+  // 各 ID を結合の単位に読み替える（グループは今の所属。巻の無いグループは弾く）。
+  const units = new Map<string, string>();
+  for (const raw of [targetRaw, ...absorbedRaw]) {
+    const u = await resolveUnit(env, raw);
+    if (!u) return notFound(`シリーズが見つかりません: ${raw}`);
+    units.set(raw, u);
+  }
+  const seriesIds = [...new Set(units.values())].filter((id) => !isGroupId(id));
+  if (seriesIds.length) {
+    const found = await env.DB.prepare(
+      `SELECT COUNT(*) AS n FROM series WHERE id IN (${seriesIds.map(() => "?").join(",")})`
+    )
+      .bind(...seriesIds)
+      .first<{ n: number }>();
+    if ((found?.n ?? 0) !== seriesIds.length) return notFound("シリーズが見つかりません");
+  }
 
   const now = Date.now();
   const stmts: D1PreparedStatement[] = [];
   const merged: string[] = [];
+  let target = units.get(targetRaw)!;
+  let created: string | null = null;
+  if (isGroupId(target)) {
+    const g = await loadGroup(env, target.slice(1));
+    if (!g) return notFound(`シリーズが見つかりません: ${targetRaw}`);
+    created = await nextCustomSeriesId(env);
+    stmts.push(
+      ...createCustomSeriesStmts(env, created, name ? { ...g, title: name } : g, now),
+      ...linkStmts(env, g.isbns, created, now)
+    );
+    merged.push(target);
+    target = created;
+  }
   for (const raw of absorbedRaw) {
-    const a = await resolveMergeTarget(env, raw);
-    if (a === target || merged.includes(a)) continue;
+    const a = units.get(raw)!;
+    if (a === target || a === units.get(targetRaw) || merged.includes(a)) continue;
     merged.push(a);
+    if (isGroupId(a)) {
+      const g = await loadGroup(env, a.slice(1));
+      if (g) stmts.push(...linkStmts(env, g.isbns, target, now));
+      continue;
+    }
     stmts.push(env.DB.prepare(`UPDATE series_merge SET target_id = ? WHERE target_id = ?`).bind(target, a));
     stmts.push(
       env.DB.prepare(
@@ -375,16 +555,10 @@ export async function adminMergeSeries(request: Request, env: Env): Promise<Resp
       ).bind(a, target, now)
     );
   }
-  if (!stmts.length) return badRequest("既に結合済みです");
-  stmts.push(
-    env.DB.prepare(
-      `DELETE FROM series_merge_request
-        WHERE COALESCE((SELECT target_id FROM series_merge WHERE absorbed_id = series_a), series_a) = ?1
-          AND COALESCE((SELECT target_id FROM series_merge WHERE absorbed_id = series_b), series_b) = ?1`
-    ).bind(target)
-  );
+  if (!stmts.length || (created && merged.length < 2)) return badRequest("既に結合済みです");
+  stmts.push(env.DB.prepare(CLEANUP_MERGE_REQUESTS_SQL));
   await env.DB.batch(stmts);
-  return json({ ok: true, target_id: target, absorbed_ids: merged });
+  return json({ ok: true, target_id: target, absorbed_ids: merged, created_series: created });
 }
 
 /** 確定済みの結合の一覧（新しい順）。解除の導線用。 */
@@ -417,4 +591,90 @@ export async function adminUnmergeSeries(env: Env, absorbedId: string): Promise<
   const res = await env.DB.prepare(`DELETE FROM series_merge WHERE absorbed_id = ?`).bind(absorbedId).run();
   if (!(res.meta?.changes ?? 0)) return notFound("結合が見つかりません");
   return json({ ok: true, absorbed_id: absorbedId });
+}
+
+/** 巻の紐付け（グループを結合したもの）の一覧。1 回の結合で紐付けた ISBN を
+ *  (series_id, created_at) でまとめて新しい順に返す。解除の導線用。 */
+export async function adminListLinks(env: Env, opts: PageOpts): Promise<Response> {
+  const total =
+    (
+      await env.DB.prepare(
+        `SELECT COUNT(*) AS n FROM (SELECT 1 FROM volume_series_link GROUP BY series_id, created_at)`
+      ).first<{ n: number }>()
+    )?.n ?? 0;
+  const res = await env.DB.prepare(
+    `SELECT l.series_id, l.created_at, COUNT(*) AS isbn_count,
+            json_group_array(DISTINCT v.title) AS titles,
+            COALESCE(o.name, s.name) AS series_name,
+            EXISTS(SELECT 1 FROM custom_series cs WHERE cs.id = l.series_id) AS custom
+       FROM volume_series_link l
+       LEFT JOIN volumes v ON v.isbn = l.isbn
+       LEFT JOIN series s ON s.id = l.series_id
+       LEFT JOIN series_name_override o ON o.series_id = l.series_id
+      GROUP BY l.series_id, l.created_at
+      ORDER BY l.created_at DESC LIMIT ? OFFSET ?`
+  )
+    .bind(opts.per, opts.offset)
+    .all<{
+      series_id: string;
+      created_at: number;
+      isbn_count: number;
+      titles: string | null;
+      series_name: string | null;
+      custom: number;
+    }>();
+  const links = (res.results ?? []).map((r) => ({
+    series_id: r.series_id,
+    created_at: r.created_at,
+    isbn_count: r.isbn_count,
+    // 書名に「,」を含むことがあるので JSON 配列で受ける（巻が消えた ISBN は null）。
+    titles: (JSON.parse(r.titles ?? "[]") as (string | null)[]).filter((t): t is string => !!t),
+    series_name: r.series_name ?? "",
+    custom: !!r.custom,
+  }));
+  return json({ links, total, page: opts.page, per: opts.per }, 200, { "cache-control": "no-store" });
+}
+
+/** 紐付けを解除する（その回に紐付けた巻をシリーズ無しに戻す）。独自シリーズに巻も結合も
+ *  残らなければ独自シリーズごと消す。 */
+export async function adminUnlinkVolumes(env: Env, seriesId: string, createdAt: number): Promise<Response> {
+  const res = await env.DB.prepare(
+    `SELECT isbn FROM volume_series_link WHERE series_id = ? AND created_at = ?`
+  )
+    .bind(seriesId, createdAt)
+    .all<{ isbn: string }>();
+  const isbns = (res.results ?? []).map((r) => r.isbn);
+  if (!isbns.length) return notFound("紐付けが見つかりません");
+
+  const stmts: D1PreparedStatement[] = [
+    env.DB.prepare(`DELETE FROM volume_series_link WHERE series_id = ? AND created_at = ?`).bind(seriesId, createdAt),
+  ];
+  for (let i = 0; i < isbns.length; i += CHUNK) {
+    const chunk = isbns.slice(i, i + CHUNK);
+    stmts.push(
+      env.DB.prepare(
+        `UPDATE volumes SET series_id = NULL WHERE series_id = ? AND isbn IN (${chunk.map(() => "?").join(",")})`
+      ).bind(seriesId, ...chunk)
+    );
+  }
+  await env.DB.batch(stmts);
+
+  let removedSeries = false;
+  const orphan = await env.DB.prepare(
+    `SELECT 1 AS x FROM custom_series cs
+      WHERE cs.id = ?1
+        AND NOT EXISTS (SELECT 1 FROM volumes v WHERE v.series_id = ?1)
+        AND NOT EXISTS (SELECT 1 FROM series_merge m WHERE m.target_id = ?1 OR m.absorbed_id = ?1)`
+  )
+    .bind(seriesId)
+    .first();
+  if (orphan) {
+    await env.DB.batch([
+      env.DB.prepare(`DELETE FROM custom_series WHERE id = ?`).bind(seriesId),
+      env.DB.prepare(`DELETE FROM series WHERE id = ?`).bind(seriesId),
+      env.DB.prepare(`DELETE FROM series_name_override WHERE series_id = ?`).bind(seriesId),
+    ]);
+    removedSeries = true;
+  }
+  return json({ ok: true, isbns: isbns.length, removed_series: removedSeries });
 }

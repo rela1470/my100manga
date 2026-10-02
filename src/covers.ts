@@ -63,7 +63,7 @@ export async function readCachedCovers(env: Env, isbns: string[]): Promise<Map<s
 
 /** Resolve the best cover URL for each ISBN: the Rakuten Books cover (exact-ISBN)
  *  if one exists, else a Yahoo!ショッピング cover (exact-ISBN via jan_code), else a
- *  楽天市場 cover (ISBN keyword — only a 楽天ブックス-cabinet image applies directly;
+ *  楽天市場 cover (ISBN keyword — only a 楽天ブックス/used-book-shop image applies directly;
  *  a shop image is queued for admin review and the ISBN stays coverless), else a
  *  real Google Books cover, else "". Results (including "no cover") are cached
  *  permanently in the `covers` table; only cache misses hit the network, so each
@@ -137,10 +137,10 @@ export async function resolveCovers(env: Env, isbns: string[]): Promise<Map<stri
   }
 
   // Tier 3: 楽天市場 (ISBN keyword) for Yahoo misses — same Rakuten limiter and
-  // deadline. Shop images (used-book logo frames, wrong editions) are never applied
-  // unreviewed: the best one is queued into cover_suggestion for the admin and the
-  // ISBN is cached as "no cover" meanwhile (approve writes `covers`). An image from
-  // the 楽天ブックス cabinet is as trusted as Tier 1 and applies directly.
+  // deadline. A trusted image (楽天ブックス / used-book shop cabinet, see isTrustedCoverUrl)
+  // applies directly. Other shop images (used-book logo frames, wrong editions) are
+  // never applied unreviewed: the best one is queued into cover_suggestion for the
+  // admin and the ISBN is cached as "no cover" meanwhile (approve writes `covers`).
   const needGoogle: string[] = [];
   const queued: { isbn: string; url: string }[] = [];
   if (needIchiba.length && rakutenReady(env)) {
@@ -220,16 +220,30 @@ async function queueReview(
 }
 
 /** Whether a picked image may fill an empty global cover without review: a book image
- *  from 楽天ブックス (its thumbnail host serves every Rakuten product, so only the
- *  books cabinet path counts) or Google Books (book covers only). Yahoo!ショッピング
- *  and 楽天市場 shop images can be any product, so they go through review. An
- *  unreviewed fill can then at worst be a different book's cover, never an
- *  arbitrary image. */
+ *  from 楽天ブックス or the used-book shops ブックオフ / 駿河屋 / もったいない本舗 (the
+ *  thumbnail host serves every 楽天 product, so only those shops' cabinet paths
+ *  count; their images are cover scans, もったいない本舗's after the frame crop) or Google Books (book covers only). Yahoo!ショッピング
+ *  and other 楽天市場 shop images can be anything (logo frames, set photos), so they
+ *  go through review. An unreviewed fill can then at worst be a different product's
+ *  cover, never an arbitrary image. */
+const TRUSTED_RAKUTEN_CABINETS = [
+  "/@0_mall/book/cabinet/",
+  "/@0_mall/bookoffonline/cabinet/",
+  "/@0_mall/surugaya-a-too/cabinet/",
+  // もったいない本舗: framed with a logo band + mascot, but /cover crops that off
+  // (src/covertrim.ts trimShopFrame) so what's shown is the plain scan.
+  "/@0_mall/comicset/cabinet/",
+  "/@0_mall/mottainaihonpo/cabinet/",
+  "/@0_mall/mottainaihonpo-omatome/cabinet/",
+];
+
 export function isTrustedCoverUrl(url: string): boolean {
   try {
     const u = new URL(url);
     if (u.protocol !== "https:") return false;
-    if (u.hostname === "thumbnail.image.rakuten.co.jp") return u.pathname.startsWith("/@0_mall/book/cabinet/");
+    if (u.hostname === "thumbnail.image.rakuten.co.jp") {
+      return TRUSTED_RAKUTEN_CABINETS.some((p) => u.pathname.startsWith(p));
+    }
     return u.hostname === "books.google.com";
   } catch {
     return false;

@@ -14,6 +14,9 @@
   </header>
 
   <div class="wrap">
+    <!-- やること（未処理キュー）。リンクで該当ページへ飛ぶ -->
+    <div class="admin-todo" id="todoBar" hidden></div>
+
     <nav class="admin-nav" id="adminNav">
       <a href="#dashboard" data-page="dashboard">概要</a>
       <a href="#reports" data-page="reports">通報</a>
@@ -249,6 +252,7 @@
         <button data-merge-mode="requests" class="merge-mode">依頼</button>
         <button data-merge-mode="candidates" class="merge-mode">自動検出の候補</button>
         <button data-merge-mode="merges" class="merge-mode">結合済み</button>
+        <button data-merge-mode="links" class="merge-mode">巻の紐付け</button>
         <button id="reloadMerge">再読み込み</button>
       </div>
       <p class="hint">
@@ -258,6 +262,9 @@
         （再取り込みでも維持され、「結合済み」から解除できます）。
         「自動検出の候補」は名前・著者・出版社・レーベルが同じで巻番号が重ならない組です。
         新装版/通常版のような別の版なら「却下」してください。
+        ID が「G…」のものはシリーズに属さない巻のまとまり（書名＋著者）です。結合すると巻を
+        残す側のシリーズに紐付け、残す側が「G…」なら独自シリーズ（「U…」）を作ります
+        （「巻の紐付け」から解除できます。名前は名前修正で直せます）。
       </p>
       <p class="hint" id="mergeHint" style="display:none"></p>
       <div id="mergeList"></div>

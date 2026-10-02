@@ -148,17 +148,24 @@ export function plainVolumeNumber(label: string): number | null {
 }
 
 /** The series' dominant plain volume-label template, e.g. "第{n}巻" for こち亀 (mostly
- *  「第2巻」, with stray "9" / "170　／　第170巻") or "巻{n}" for ONE PIECE. null when
- *  no plain label is present. */
+ *  「第2巻」, with stray "9" / "170　／　第170巻") or "巻{n}" for ONE PIECE. Latin forms
+ *  are only a fallback for series with no Japanese label at all (犯沢さん: "VOLUME1"〜,
+ *  so a correction's "9" becomes "VOLUME9"); where they're mixed in (名探偵コナン) the
+ *  Japanese form still wins. null when no plain label is present. */
 export function volumeLabelTemplate(labels: string[]): string | null {
   const counts = new Map<string, number>();
+  const latin = new Map<string, number>();
   for (const l of labels) {
     const s = (l ?? "").trim();
     if (!/^\D*\d+\D*$/.test(s)) continue;
     const t = s.replace(/\d+/, "{n}");
-    if (!VOLUME_LABEL_TEMPLATES.includes(t)) continue;
-    counts.set(t, (counts.get(t) ?? 0) + 1);
+    if (VOLUME_LABEL_TEMPLATES.includes(t)) counts.set(t, (counts.get(t) ?? 0) + 1);
+    else if (/^v(?:ol(?:ume)?)?\.?[\s　]*\{n\}$/i.test(t)) latin.set(t, (latin.get(t) ?? 0) + 1);
   }
+  return mostCommon(counts) ?? mostCommon(latin);
+}
+
+function mostCommon(counts: Map<string, number>): string | null {
   let best: string | null = null;
   let bestN = 0;
   for (const [t, n] of counts) if (n > bestN) ((best = t), (bestN = n));

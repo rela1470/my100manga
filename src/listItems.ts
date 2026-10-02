@@ -1,5 +1,6 @@
 import { Env, ListItem, StoredListItem } from "./types";
 import { toIsbn13, unifyVolumeLabel, volumeLabelTemplate } from "./util";
+import { isCustomSeriesId } from "./groups";
 
 // One round-trip for any number of ISBNs. They go in as a single JSON-array parameter
 // (expanded with json_each) rather than one "?" each, so a 100-book list never hits
@@ -58,7 +59,7 @@ canon AS (
            ROW_NUMBER() OVER (PARTITION BY serm.series_id
                               ORDER BY COUNT(*) DESC, LENGTH(v.title) DESC, v.title) AS rn
       FROM serm CROSS JOIN volumes v ON v.series_id = serm.member
-     WHERE v.title <> ''
+     WHERE v.title <> '' AND v.volume_number IS NOT NULL
      GROUP BY serm.series_id, v.title
   ) WHERE rn = 1
 ),
@@ -70,7 +71,7 @@ labs AS (
 )
 SELECT w.isbn, b.isbn AS found, b.tid AS series_id, b.volume_number, b.title, b.author,
        vto.title AS title_override, sno.name AS series_override,
-       canon.title AS canonical, labs.labels, s.creator AS series_creator,
+       canon.title AS canonical, labs.labels, s.creator AS series_creator, s.name AS series_name,
        bm.authors AS meta_authors,
        COALESCE(
          NULLIF(cv.cover_url, ''),
@@ -104,6 +105,7 @@ interface Row {
   canonical: string | null;
   labels: string | null; // JSON array of the series' distinct volume labels
   series_creator: string | null;
+  series_name: string | null;
   meta_authors: string | null; // book_meta.authors ("/"-joined)
   cover: string;
 }
@@ -112,6 +114,8 @@ export interface Book {
   title: string; // "" when no site-wide source knows this ISBN
   author: string;
   cover_url: string;
+  series_id: string; // "" for books with no series (live-search-only volumes)
+  series_title: string; // the series' display name (admin override > canonical)
 }
 
 /** Site-wide display data for each ISBN (keys are ISBN13): title rendered exactly like
@@ -127,6 +131,7 @@ export async function resolveBooks(env: Env, isbns: string[]): Promise<Map<strin
   const templates = new Map<string, string | null>();
   for (const r of res.results ?? []) {
     let title = "";
+    let seriesTitle = "";
     let author = r.meta_authors ? r.meta_authors.split("/").join("、") : "";
     if (r.found) {
       const sid = r.series_id;
@@ -143,13 +148,25 @@ export async function resolveBooks(env: Env, isbns: string[]): Promise<Map<strin
         }
         template = templates.get(sid) ?? null;
       }
-      const base = r.title_override || r.series_override || r.canonical || r.title || "";
+      // 独自シリーズ（src/groups.ts）は別々の本を束ねるので、本のタイトルは巻の書名のまま、
+      // シリーズ名は独自シリーズの名前にする。
+      const custom = !!sid && isCustomSeriesId(sid);
+      seriesTitle = r.series_override || (custom ? r.series_name : r.canonical) || r.title || "";
+      // 巻番号の無い巻（総集編など）も書名が本の区別なので揃えない（getSeriesVolumes と同じ）。
+      const own = custom || (r.found && !r.volume_number);
+      const base = r.title_override || (own ? r.title || seriesTitle : seriesTitle);
       const raw = r.volume_number ?? "";
       const label = sid ? unifyVolumeLabel(template, raw) : raw;
       title = base && label ? `${base} ${label}` : base;
       author = r.author || r.series_creator || author;
     }
-    out.set(r.isbn, { title, author, cover_url: r.cover || "" });
+    out.set(r.isbn, {
+      title,
+      author,
+      cover_url: r.cover || "",
+      series_id: r.found ? r.series_id || "" : "",
+      series_title: r.found && r.series_id ? seriesTitle : "",
+    });
   }
   return out;
 }

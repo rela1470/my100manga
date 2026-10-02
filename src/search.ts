@@ -1,8 +1,10 @@
 import { Env } from "./types";
-import { badRequest, json, normTitle, escapeLikeClamped, baseTitle, LIKE_MAX_BYTES, toIsbn13 } from "./util";
+import { badRequest, json, normTitle, escapeLikeClamped, LIKE_MAX_BYTES, toIsbn13 } from "./util";
 import { readCachedCovers } from "./covers";
-import { liveSearchByKeyword } from "./madbLive";
+import { liveSearchByKeyword, SupplementVolume } from "./madbLive";
+import { rakutenComicByIsbn } from "./rakuten";
 import { mergeTargetsFor } from "./merge";
+import { attributeTitles, buildGroup, resolveGroup, GroupRow, GroupVolume, UnlinkedGroup } from "./groups";
 
 interface SeriesResult {
   series_id: string;
@@ -88,6 +90,9 @@ export async function handleSearch(request: Request, env: Env): Promise<Response
   const url = new URL(request.url);
   const q = (url.searchParams.get("q") ?? "").trim();
   if (q.length < 2) return badRequest("検索語を2文字以上で入力してください");
+
+  const isbn = isbnQuery(q);
+  if (isbn) return searchByIsbn(env, isbn);
 
   const nq = normTitle(q);
   // Clamp below the D1 LIKE byte cap; the "%|…|%" kana wrappers add up to 4 bytes.
@@ -187,33 +192,8 @@ export async function handleSearch(request: Request, env: Env): Promise<Response
   );
 }
 
-interface UnlinkedRow {
-  isbn: string;
-  volume_number: string | null;
-  vol_sort: number | null;
-  title: string;
-  creator: string | null;
-  publisher: string | null;
-  label: string | null;
-  pubdate: string | null;
-}
-
-interface UnlinkedVolume {
-  isbn: string;
-  isbns: string[];
-  volume_number: string;
-  vol_sort: number;
-  title: string;
-  author: string;
-  publisher: string;
-  label: string;
-  pubdate: string;
-  cover_url: string;
-  correction: boolean;
-}
-
 interface UnlinkedCard {
-  series_id: string;
+  series_id: string; // "G<ISBN>" (see src/groups.ts)
   title: string;
   creator: string;
   publisher: string;
@@ -223,16 +203,106 @@ interface UnlinkedCard {
   unlinked: true;
   first_isbn: string;
   cover_url: string;
-  volumes: UnlinkedVolume[];
+  volumes: GroupVolume[];
+}
+
+function toUnlinkedCard(g: UnlinkedGroup): UnlinkedCard {
+  const first = g.volumes[0];
+  return {
+    series_id: g.id,
+    title: g.title,
+    creator: g.creator,
+    publisher: g.publisher,
+    label: "",
+    volume_count: g.volumes.length,
+    unconfirmed: false,
+    unlinked: true,
+    first_isbn: first?.isbn ?? "",
+    cover_url: first?.cover_url ?? "",
+    volumes: g.volumes,
+  };
+}
+
+// The query as an ISBN13 when it is one (ISBN10/13, hyphens/spaces and full-width digits
+// allowed), else "". 13-digit input must carry a book prefix (978/979) so a numeric title
+// isn't mistaken for an ISBN.
+function isbnQuery(q: string): string {
+  const s = q.normalize("NFKC").replace(/[\s\-‐－ー]/g, "");
+  if (!/^(97[89]\d{10}|\d{9}[\dXx])$/.test(s)) return "";
+  return toIsbn13(s);
+}
+
+// ISBN search: the series (or series-less group) that holds that volume, as a single card.
+// resolveGroup already covers every case — unlinked volume attributable to a series, a
+// standalone group, or a linked volume — and series_merge is applied on top. A volume not in
+// the master falls back to 楽天ブックス (manga genres only, see rakutenComicByIsbn) as a
+// one-volume live card; when that misses too, no results with isbn_miss so the client can
+// say why (live MADB search matches titles only, so it can't help with an ISBN either).
+async function searchByIsbn(env: Env, isbn: string): Promise<Response> {
+  const headers = { "cache-control": "no-store" };
+  const hit = await resolveGroup(env, "G" + isbn);
+  if (!hit) {
+    const card = await rakutenCard(env, isbn);
+    return json(card ? { results: [card] } : { results: [], isbn_miss: true }, 200, headers);
+  }
+  if ("group" in hit) return json({ results: [toUnlinkedCard(hit.group)] }, 200, headers);
+
+  const id = (await mergeTargetsFor(env, [hit.seriesId])).get(hit.seriesId) ?? hit.seriesId;
+  const row = await env.DB.prepare(
+    `SELECT ${SERIES_COLS} FROM series s
+     LEFT JOIN series_name_override o ON o.series_id = s.id
+     WHERE s.id = ?`
+  )
+    .bind(id)
+    .first<SeriesRow>();
+  if (!row) return json({ results: [], isbn_miss: true }, 200, headers);
+  const covers = await readCachedCovers(env, [row.first_isbn ?? ""]);
+  return json({ results: [toSeriesResult(row, covers)] }, 200, headers);
+}
+
+// A one-volume live card for an ISBN only 楽天ブックス knows (コンビニ版・再編集本 etc. that
+// MADB doesn't carry). Opens client-side like live MADB cards; the volume is remembered in
+// live_volumes so a list holding it can still show its title.
+async function rakutenCard(env: Env, isbn: string) {
+  const b = await rakutenComicByIsbn(env, isbn);
+  if (!b) return null;
+  const vol = {
+    isbn,
+    isbns: [isbn],
+    volume_number: b.volume,
+    vol_sort: Number(b.volume) || 0,
+    title: b.title,
+    author: b.author,
+    publisher: b.publisher,
+    pubdate: b.pubdate,
+  };
+  await rememberLiveVolumes(env, [vol]);
+  const cover = (await readCachedCovers(env, [isbn])).get(isbn) || b.cover_url;
+  return {
+    series_id: `rakuten${isbn}`,
+    title: b.title,
+    creator: b.author,
+    publisher: b.publisher,
+    label: "",
+    volume_count: 1,
+    unconfirmed: false,
+    live: true,
+    source: "rakuten",
+    first_isbn: isbn,
+    cover_url: cover,
+    volumes: [{ ...vol, cover_url: cover }],
+  };
 }
 
 // Find works among the unlinked volumes (series_id IS NULL) that match the query, and
 // classify each into one of two buckets:
-//   • promoteIds  — the work's exact title maps to a single existing series, so the match
-//                   really belongs to that series (return its id; the caller renders it as
-//                   a normal card and getSeriesVolumes folds the unlinked volumes back in).
+//   • promoteIds  — the work's title maps to a single existing series (attributeTitles),
+//                   so the match really belongs to that series (return its id; the caller
+//                   renders it as a normal card and getSeriesVolumes folds the unlinked
+//                   volumes back in).
 //   • standalone  — no (or ambiguous) series for the title, so surface a self-contained
-//                   client-side card with the volumes embedded.
+//                   client-side card with the volumes embedded, keyed by its group id
+//                   (G<ISBN>) so it can be opened / merged like a series.
 // `like` is the already-escaped "%q%" pattern; matching normalizes title/creator the same
 // way normTitle() does the query. Titles already shown by the keyword query are skipped,
 // and series already in `existingIds` are not promoted again (dedup).
@@ -257,154 +327,44 @@ async function discoverUnlinked(
      LIMIT 2000`
   )
     .bind(like, like)
-    .all<UnlinkedRow>();
+    .all<GroupRow>();
 
   // Group matched volumes into works keyed on normalized title + creator (same title,
-  // different author = different work). Within a work, collapse sibling ISBNs of the
-  // same volume_number (通常版/特装版) so each volume appears once, keeping every ISBN.
-  interface Group {
-    title: string;
-    creator: string;
-    vols: Map<string, { rep: UnlinkedRow; isbns: string[] }>;
-  }
-  const groups = new Map<string, Group>();
+  // different author = different work) — the same unit as groups.loadGroup.
+  const groups = new Map<string, GroupRow[]>();
   for (const v of res.results ?? []) {
     const nt = normTitle(v.title);
     if (seriesTitles.has(nt)) continue; // a real series card already covers this title
-    const gkey = nt + " " + normTitle(v.creator ?? "");
-    let g = groups.get(gkey);
-    if (!g) {
-      g = { title: v.title, creator: v.creator ?? "", vols: new Map() };
-      groups.set(gkey, g);
-    }
-    const vkey = v.volume_number ? `n:${v.volume_number}` : `i:${v.isbn}`;
-    const slot = g.vols.get(vkey);
-    if (slot) slot.isbns.push(v.isbn);
-    else g.vols.set(vkey, { rep: v, isbns: [v.isbn] });
+    const gkey = nt + " " + normTitle(v.creator ?? "");
+    const g = groups.get(gkey);
+    if (g) g.push(v);
+    else groups.set(gkey, [v]);
   }
 
   // Longest works first, then take the cap. Author searches often return many small
   // works; showing the biggest ones first matches the series ordering (vol_count DESC).
+  // Size is counted in volumes (sibling ISBNs of one volume_number count once).
+  const volCount = (rows: GroupRow[]) =>
+    new Set(rows.map((v) => (v.volume_number ? `n:${v.volume_number}` : `i:${v.isbn}`))).size;
   const picked = [...groups.values()]
-    .sort((a, b) => b.vols.size - a.vols.size)
+    .sort((a, b) => volCount(b) - volCount(a))
     .slice(0, limit);
   if (!picked.length) return { promoteIds: [], standalone: [] };
 
-  // Resolve each work's title to its series in one batched, index-backed lookup
-  // (idx_series_name_norm). A normalized title maps to exactly one series → promote; to
-  // several → ambiguous, can't attribute, so keep standalone; to none → fall through to
-  // the base-title pass below.
-  const norms = [...new Set(picked.map((g) => normTitle(g.title)))];
-  const idsByNorm = new Map<string, string[]>();
-  const nameRes = await env.DB.prepare(
-    `SELECT id, name_norm FROM series WHERE name_norm IN (${norms.map(() => "?").join(",")})`
-  )
-    .bind(...norms)
-    .all<{ id: string; name_norm: string }>();
-  for (const r of nameRes.results ?? []) {
-    const arr = idsByNorm.get(r.name_norm);
-    if (arr) arr.push(r.id);
-    else idsByNorm.set(r.name_norm, [r.id]);
-  }
-
+  const owner = await attributeTitles(env, picked.map((rows) => rows[0].title));
   const promoteIds = new Set<string>();
-  const standaloneGroups: Group[] = [];
-  const needsBasePass: Group[] = [];
-  for (const g of picked) {
-    const ids = idsByNorm.get(normTitle(g.title));
-    if (ids && ids.length === 1) {
-      // Sole series for this EXACT title: the match belongs to it. Drop if already shown.
-      if (!existingIds.has(ids[0])) promoteIds.add(ids[0]);
-    } else if (ids && ids.length > 1) {
-      // Same exact title shared by several series: can't attribute → standalone.
-      standaloneGroups.push(g);
-    } else {
-      // No exact-title series — retry on the BASE title below.
-      needsBasePass.push(g);
-    }
-  }
-
-  // Base-title pass: for groups with no exact-title series, find the series whose base
-  // title equals the group's base, so alt-title/subtitle variants (「Dジェネシス」 /
-  // 「Dジェネシス : …」) attach to the one series that owns the base. name_norm LIKE
-  // base||'%' is index-backed (idx_series_name_norm) and base is always a prefix of
-  // name_norm; we then re-check baseTitle(name) === base in JS so a longer-based sibling
-  // (「…外伝」) is excluded. Promote only when exactly ONE series owns the base —
-  // otherwise (0 or several) the volume can't be attributed and stays a standalone card
-  // (same guard as the exact pass and series.ts's sole-series-for-base fold).
-  const bases = [...new Set(needsBasePass.map((g) => baseTitle(g.title)).filter(Boolean))];
-  const idsByBase = new Map<string, Set<string>>();
-  for (const base of bases) {
-    const r = await env.DB.prepare(
-      `SELECT id, name FROM series WHERE name_norm LIKE ? ESCAPE '\\'`
-    )
-      // A long base would overflow D1's LIKE byte cap; clamp to a shorter prefix
-      // (scans a few more rows) — the baseTitle(name) === base re-check below keeps
-      // the match exact regardless.
-      .bind(escapeLikeClamped(base, LIKE_MAX_BYTES - 1) + "%")
-      .all<{ id: string; name: string }>();
-    const set = new Set<string>();
-    for (const row of r.results ?? []) if (baseTitle(row.name) === base) set.add(row.id);
-    idsByBase.set(base, set);
-  }
-  for (const g of needsBasePass) {
-    const base = baseTitle(g.title);
-    const ids = base ? idsByBase.get(base) : undefined;
-    if (ids && ids.size === 1) {
-      const [id] = ids;
+  const standaloneGroups: GroupRow[][] = [];
+  for (const rows of picked) {
+    const id = owner.get(rows[0].title);
+    if (id) {
       if (!existingIds.has(id)) promoteIds.add(id);
     } else {
-      standaloneGroups.push(g);
+      standaloneGroups.push(rows);
     }
   }
 
-  const allIsbns: string[] = [];
-  for (const g of standaloneGroups) for (const s of g.vols.values()) allIsbns.push(...s.isbns);
-  const covers = await readCachedCovers(env, allIsbns);
-  const pickCover = (isbns: string[]) => {
-    for (const i of isbns) {
-      const c = covers.get(i);
-      if (c) return c;
-    }
-    return "";
-  };
-
-  const standalone: UnlinkedCard[] = standaloneGroups.map((g, i) => {
-    const volumes: UnlinkedVolume[] = [...g.vols.values()]
-      .map(({ rep, isbns }) => ({
-        isbn: rep.isbn,
-        isbns,
-        volume_number: rep.volume_number ?? "",
-        vol_sort: rep.vol_sort ?? 0,
-        title: rep.title,
-        author: rep.creator ?? g.creator,
-        publisher: rep.publisher ?? "",
-        label: rep.label ?? "",
-        pubdate: rep.pubdate ?? "",
-        cover_url: pickCover(isbns),
-        correction: false,
-      }))
-      .sort(
-        (a, b) =>
-          a.vol_sort - b.vol_sort ||
-          a.pubdate.localeCompare(b.pubdate) ||
-          a.isbn.localeCompare(b.isbn)
-      );
-    const first = volumes[0];
-    return {
-      series_id: `unlinked${i}`,
-      title: g.title,
-      creator: g.creator,
-      publisher: first?.publisher ?? "",
-      label: "",
-      volume_count: volumes.length,
-      unconfirmed: false,
-      unlinked: true as const,
-      first_isbn: first?.isbn ?? "",
-      cover_url: first?.cover_url ?? "",
-      volumes,
-    };
-  });
+  const covers = await readCachedCovers(env, standaloneGroups.flat().map((r) => r.isbn));
+  const standalone = standaloneGroups.map((rows) => toUnlinkedCard(buildGroup(rows, covers)));
 
   return { promoteIds: [...promoteIds], standalone };
 }
@@ -427,7 +387,7 @@ export async function handleLiveSearch(request: Request, env: Env): Promise<Resp
     return json({ error: "最新データベースに接続できませんでした。時間をおいて再試行してください。" }, 502);
   }
 
-  await rememberLiveVolumes(env, series);
+  await rememberLiveVolumes(env, series.flatMap((s) => s.volumes));
 
   const allIsbns: string[] = [];
   for (const s of series) for (const v of s.volumes) allIsbns.push(...v.isbns);
@@ -460,19 +420,14 @@ export async function handleLiveSearch(request: Request, env: Env): Promise<Resp
 /** Persist live-search volumes the master lacks into live_volumes, so a book picked
  *  from these results can still resolve its title/author by ISBN once it's in a list
  *  (lists store only the ISBN — see src/listItems.ts). The data is what this server
- *  just fetched from MADB, never client input. One statement: the rows go in as one
+ *  just fetched from MADB / 楽天ブックス, never client input. One statement: the rows go in as one
  *  JSON parameter. Failures are logged and ignored — search results still render. */
-async function rememberLiveVolumes(
-  env: Env,
-  series: Awaited<ReturnType<typeof liveSearchByKeyword>>
-): Promise<void> {
+async function rememberLiveVolumes(env: Env, volumes: SupplementVolume[]): Promise<void> {
   const rows: { isbn: string; title: string; volume_number: string; author: string }[] = [];
-  for (const s of series) {
-    for (const v of s.volumes) {
-      for (const raw of v.isbns) {
-        const isbn = toIsbn13(raw);
-        if (isbn) rows.push({ isbn, title: v.title, volume_number: v.volume_number, author: v.author });
-      }
+  for (const v of volumes) {
+    for (const raw of v.isbns) {
+      const isbn = toIsbn13(raw);
+      if (isbn) rows.push({ isbn, title: v.title, volume_number: v.volume_number, author: v.author });
     }
   }
   if (!rows.length) return;

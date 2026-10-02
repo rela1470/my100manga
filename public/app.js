@@ -48,9 +48,11 @@ async function init() {
     loadDraft();
   }
   render();
+  syncCovers();
   renderMyLists();
   loadSiteStats();
   wireEvents();
+  openSeriesFromUrl(params);
   // /l/:slug が見つからなかったときはサーバがここへリダイレクトしてくる。
   if (params.get("notfound") === "list") {
     params.delete("notfound");
@@ -58,6 +60,19 @@ async function init() {
     history.replaceState(null, "", location.pathname + (qs ? `?${qs}` : "") + location.hash);
     uiAlert("リストが見つかりませんでした。削除されたか、URLが間違っている可能性があります。");
   }
+}
+
+// 閲覧画面の本の詳細の「シリーズ」リンク（/?series=<C-id>&st=<シリーズ名>）。巻一覧を開き、
+// リロードで開き直さないようパラメータは消しておく。
+function openSeriesFromUrl(params) {
+  const sid = params.get("series");
+  if (!sid) return;
+  const title = params.get("st") || "";
+  params.delete("series");
+  params.delete("st");
+  const qs = params.toString();
+  history.replaceState(null, "", location.pathname + (qs ? `?${qs}` : "") + location.hash);
+  openSeriesFromBook(sid, title);
 }
 
 /* ---------- site stats (収録シリーズ / 巻 / 公開リスト数) ---------- */
@@ -297,6 +312,45 @@ function saveDraft() {
     localStorage.setItem(DRAFT_KEY, JSON.stringify({ owner: state.owner, bio: state.bio, items: state.items }));
   } catch (e) {}
 }
+// ISBN のある本の表紙はサイト共通（covers）なので、下書きに残った表紙は古いことがある
+// （提案が管理者に承認されて差し替わった等）。開いた時にサーバの値で揃える。サーバに
+// 無い ISBN は下書きの値を残す。編集モードで下書きが無い時は、公開データ自体がサーバ
+// 側で表紙を引き直しているので下書きを新しく作らない。
+async function syncCovers() {
+  const isbns = [...new Set(state.items.map((it) => it.isbn).filter(Boolean))];
+  if (!isbns.length) return;
+  let covers = {};
+  try {
+    const res = await fetch("/api/covers", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ isbns, cache_only: true }),
+    });
+    if (!res.ok) return;
+    covers = (await res.json()).covers || {};
+  } catch {
+    return;
+  }
+  let changed = false;
+  for (const it of state.items) {
+    const url = it.isbn && covers[it.isbn];
+    if (url && url !== it.cover_url) {
+      it.cover_url = url;
+      changed = true;
+    }
+  }
+  if (!changed) return;
+  const hasDraft = (() => {
+    try {
+      return !state.editSlug || localStorage.getItem(editDraftKey(state.editSlug)) !== null;
+    } catch {
+      return false;
+    }
+  })();
+  if (hasDraft) saveDraft();
+  render();
+}
+
 function clearEditDraft(slug) {
   try {
     localStorage.removeItem(editDraftKey(slug));
@@ -608,6 +662,13 @@ function clearResults() {
   return box;
 }
 
+// 本の詳細（編集ポップアップの「シリーズ」リンク、閲覧画面からの /?series=）から巻一覧を開く。
+// 検索を経ていないので「検索結果へ戻る」は出さない（fromBook）。
+function openSeriesFromBook(seriesId, title) {
+  openAdd();
+  openSeries({ series_id: seriesId, title: title || "", fromBook: true });
+}
+
 function closeSearch() {
   $("searchModal").classList.remove("open");
   state.pending = null;
@@ -631,6 +692,7 @@ function openEdit(index) {
   setMetaRow("eIsbnRow", "eIsbn", it.isbn || "");
   setMetaRow("ePublisherRow", "ePublisher", "");
   setMetaRow("ePubdateRow", "ePubdate", "");
+  $("eSeriesRow").style.display = "none";
   $("eSynopsisBox").style.display = "none";
   $("eSynopsis").textContent = "";
   renderEditCover(state.pending);
@@ -698,7 +760,7 @@ function renderEditBuy(it, p = "e") {
 
 function renderEditCover(book) {
   renderCoverInto($("eCoverBox"), book);
-  setMetaRow("eSourceRow", "eSource", coverSource(book.cover_url));
+  setSourceRow("eSourceRow", "eSource", book.cover_url, book.isbn);
 }
 
 function renderCoverInto(box, book) {
@@ -729,19 +791,24 @@ function setMetaRow(rowId, valueId, text) {
   if (has) $(valueId).textContent = text;
 }
 
-// Which site a cover image comes from, inferred from its host.
-function coverSource(url) {
-  if (!url) return "";
-  let host = "";
-  try {
-    host = new URL(url).hostname;
-  } catch {
-    return "";
+// 「画像参考元」の行。出品元が分かればそのページへのリンクにする（public/affiliate.js
+// coverSourceLink）。
+function setSourceRow(rowId, valueId, coverUrl, isbn) {
+  const src = window.coverSourceLink ? window.coverSourceLink(coverUrl, isbn) : null;
+  $(rowId).style.display = src ? "" : "none";
+  if (!src) return;
+  const dd = $(valueId);
+  dd.textContent = "";
+  if (!src.url) {
+    dd.textContent = src.label;
+    return;
   }
-  if (/rakuten|r10s/.test(host)) return "楽天ブックス";
-  if (/yimg|yahoo/.test(host)) return "Yahoo!ショッピング";
-  if (/google/.test(host)) return "Google Books";
-  return host;
+  const a = document.createElement("a");
+  a.href = src.url;
+  a.target = "_blank";
+  a.rel = "noopener sponsored";
+  a.textContent = src.label;
+  dd.appendChild(a);
 }
 
 // Fetch richer metadata (all authors, publisher, 発行日, あらすじ) and fill the
@@ -769,6 +836,15 @@ function applyBookMeta(data, p = "e") {
   }
   setMetaRow(p + "PublisherRow", p + "Publisher", data.publisher || "");
   setMetaRow(p + "PubdateRow", p + "Pubdate", data.pubdate || "");
+  // シリーズへのリンク（編集ポップアップのみ。巻一覧から開く詳細には行が無い）。
+  const seriesRow = $(p + "SeriesRow");
+  if (seriesRow && data.series) {
+    const a = $(p + "Series");
+    a.textContent = data.series.title;
+    a.href = `/?series=${encodeURIComponent(data.series.id)}&st=${encodeURIComponent(data.series.title)}`;
+    a.dataset.seriesId = data.series.id;
+    seriesRow.style.display = "";
+  }
   if (data.caption) {
     $(p + "Synopsis").textContent = data.caption;
     $(p + "SynopsisBox").style.display = "";
@@ -1016,7 +1092,7 @@ async function applyPickedCover(url) {
             : "この画像は確認が必要なため、提案として送りました（管理者が確認して全体に反映します）。"
           : has
             ? "この本にはすでにサイト共通の表紙があるため、ここでは変更できません。"
-            : "この画像はすぐには反映できません。楽天ブックスの画像を選んでください。"
+            : "この画像はすぐには反映できません。楽天ブックス・ブックオフ・駿河屋・もったいない本舗の画像を選んでください。"
       );
     }
   } else {
@@ -1073,7 +1149,7 @@ async function doSearch(q) {
     const res = await fetch(`/api/search?q=${encodeURIComponent(q)}`);
     const data = await res.json();
     if (!res.ok) throw new Error(data.error || "検索に失敗しました");
-    renderResults(data.results || []);
+    renderResults(data.results || [], data.isbn_miss);
   } catch (e) {
     clearResults();
     const p = document.createElement("p");
@@ -1092,14 +1168,17 @@ let lastQuery = "";
 let liveFetchedQuery = "";
 
 // Search returns series-level results. Clicking one drills into its volumes.
-function renderResults(results) {
+function renderResults(results, isbnMiss = false) {
   lastResults = results;
   const box = clearResults();
 
   if (results.length === 0) {
     const p = document.createElement("p");
     p.className = "hint";
-    p.textContent = "見つかりませんでした。別の語か、下の「最新DBから取得」を試してください。";
+    // 最新DBからの取得は書名で探すので、ISBN で見つからないときは書名検索へ誘導する。
+    p.textContent = isbnMiss
+      ? "このISBNはまだ収録されていません。書名で検索して、下の「最新DBから取得」を試してください。"
+      : "見つかりませんでした。別の語か、下の「最新DBから取得」を試してください。";
     box.appendChild(p);
   }
   const pending = [];
@@ -1148,7 +1227,7 @@ function buildResultCard(r, pending) {
   if (r.live) {
     const badge = document.createElement("span");
     badge.className = "live-badge";
-    badge.textContent = "最新DB";
+    badge.textContent = r.source === "rakuten" ? "楽天ブックス" : "最新DB";
     t.appendChild(badge);
   }
   const a = document.createElement("div");
@@ -1358,6 +1437,10 @@ function mountCoverFetch(barEl, entries) {
   });
 }
 
+// シリーズに属さない巻のまとまり（書名+著者）の疑似 ID。シリーズと同じく巻一覧・結合依頼の
+// 対象になるが、C-id 前提の訂正・通報・補完は出さない（src/groups.ts）。
+const isGroupId = (id) => /^G\d{13}$/.test(id || "");
+
 async function openSeries(series) {
   // live 検索の結果、および series に未リンクの巻（マスタで schema:isPartOf 欠落）は
   // ローカルに C-id が無く、巻がカードに埋め込まれている。サーバを叩かずそのまま表示する
@@ -1380,6 +1463,10 @@ async function openSeries(series) {
     if (data.series_id && data.series_id !== series.series_id) {
       series.series_id = data.series_id;
       series.title = data.title || series.title;
+    }
+    if (data.group) {
+      renderVolumes(series, data.volumes || [], { probed: true, live: true });
+      return;
     }
     renderVolumes(series, data.volumes || [], {
       probed: !!data.supplement_probed,
@@ -1489,7 +1576,7 @@ function renderVolumes(series, volumes, opts) {
   back.className = "linkbtn";
   back.textContent = "‹ 検索結果へ戻る";
   back.addEventListener("click", () => renderResults(lastResults));
-  bar.appendChild(back);
+  if (!series.fromBook) bar.appendChild(back);
   if (visible.length > 0) {
     const addAll = document.createElement("button");
     addAll.type = "button";
@@ -1539,7 +1626,8 @@ function renderVolumes(series, volumes, opts) {
     });
     head.appendChild(document.createTextNode(" "));
     head.appendChild(nameFlag);
-
+  }
+  if (series.series_id && (!opts.live || isGroupId(series.series_id))) {
     // 同じ作品がマスタ上で別シリーズに分裂している（例: One piece SJR 版が 1巻だけ別 C-id）
     // ときの結合依頼。名前の通報と同じく collect-only で、結合は管理者が確定してから。
     const mergeFlag = document.createElement("button");
@@ -1563,6 +1651,7 @@ function renderVolumes(series, volumes, opts) {
       }
       openMergeRequest(series, volumes, opts);
     });
+    if (!head.querySelector(".name-report-flag")) head.appendChild(document.createTextNode(" "));
     head.appendChild(mergeFlag);
   }
   // 作者・出版社（検索カードと同じ並び）。シリーズに作者が無ければ先頭巻の著者で補う。
@@ -1630,6 +1719,9 @@ function renderVolumes(series, volumes, opts) {
     // 通報・問い合わせ時に特定しやすいよう、マスタのシリーズID(C-id)を添える。
     // ID 部分だけを選択/コピーできるようにラベルと分け、コピーボタンも付ける。
     if (series.series_id) supBar.appendChild(buildSeriesIdLine(series.series_id));
+  } else if (isGroupId(series.series_id)) {
+    // まとまりも結合依頼の相手として ID で指定できるよう表示する。
+    supBar.appendChild(buildSeriesIdLine(series.series_id));
   }
 
   const pending = [];
@@ -2001,11 +2093,15 @@ async function reportWrongSeriesName(series, btn, textEl) {
   btn.classList.add("reported");
   btn.disabled = false;
   textEl.textContent = "シリーズ名の誤りを通報済み";
+  uiAlert("通報ありがとうございました。管理者が確認して修正します。");
 }
 
-// 「シリーズが分かれている？」: 同じ作品の別シリーズを選んで結合を依頼する画面。候補は
-// サーバが同じタイトル・同じ著者のシリーズから出す。候補に無ければシリーズID（巻一覧の
-// 右上に出している C-id）で直接指定できる。依頼は件数だけ記録され、結合は管理者が確定する。
+// 「シリーズが分かれている？」: 同じ作品の別シリーズを選んで結合を依頼する画面。開いた
+// 時点でサーバの候補（同じタイトル・同じ著者）と、タイトルでの通常検索の結果を並べる。
+// 検索語は変えられ、候補に無ければシリーズID（巻一覧の右上の C-id）でも追加できる。
+// チェックした相手はまとめて 1 回で依頼する（検索し直しても選択は保持）。依頼は件数だけ
+// 記録され、結合は管理者が確定する。
+const MERGE_REQUEST_MAX = 10;
 async function openMergeRequest(series, volumes, opts) {
   const box = clearResults();
   const bar = document.createElement("div");
@@ -2018,14 +2114,38 @@ async function openMergeRequest(series, volumes, opts) {
   bar.appendChild(back);
   box.appendChild(bar);
 
+  const title = document.createElement("h3");
+  title.className = "merge-title";
+  title.textContent = series.title;
+  const selfId = document.createElement("span");
+  selfId.className = "series-id";
+  selfId.textContent = `ID ${series.series_id}`;
+  title.appendChild(selfId);
+  box.appendChild(title);
+
   const head = document.createElement("p");
   head.className = "hint";
-  head.textContent = `「${series.title}」と同じ作品なのに別シリーズに分かれているものを選んで、結合を依頼してください。管理者が確認して1つにまとめます。`;
+  head.textContent = "同じ作品なのに別シリーズに分かれているものにチェックを入れて、結合を依頼してください（複数まとめて依頼できます）。管理者が確認して1つにまとめます。";
   box.appendChild(head);
+
+  // 選択中の相手（series_id → 表示名）。検索し直しても保持する。
+  const selected = new Map();
+
+  const searchRow = document.createElement("div");
+  searchRow.className = "share-url";
+  const qInput = document.createElement("input");
+  qInput.type = "text";
+  qInput.value = series.title;
+  qInput.placeholder = "タイトル・著者で検索";
+  const qBtn = document.createElement("button");
+  qBtn.type = "button";
+  qBtn.textContent = "検索";
+  searchRow.appendChild(qInput);
+  searchRow.appendChild(qBtn);
+  box.appendChild(searchRow);
 
   const status = document.createElement("p");
   status.className = "hint";
-  status.textContent = "候補を検索中...";
   box.appendChild(status);
 
   const list = document.createElement("div");
@@ -2033,7 +2153,7 @@ async function openMergeRequest(series, volumes, opts) {
 
   const idHint = document.createElement("p");
   idHint.className = "hint";
-  idHint.textContent = "候補に無い場合は、相手のシリーズIDで指定できます（巻一覧の右上に「ID C…」と表示されています）。";
+  idHint.textContent = "見つからない場合は、相手のシリーズIDで追加できます（巻一覧の下に「ID C…」「ID G…」などと表示されています）。";
   const idRow = document.createElement("div");
   idRow.className = "share-url";
   const idInput = document.createElement("input");
@@ -2041,93 +2161,239 @@ async function openMergeRequest(series, volumes, opts) {
   idInput.placeholder = "シリーズID（例: C451211）";
   const idBtn = document.createElement("button");
   idBtn.type = "button";
-  idBtn.textContent = "結合を依頼";
-  const submitId = () => {
-    const other = idInput.value.trim().toUpperCase();
-    if (!/^[A-Z0-9]+$/.test(other)) {
-      uiAlert("シリーズIDを入力してください（例: C451211）");
-      return;
-    }
-    if (other === series.series_id) {
-      uiAlert("このシリーズ自身のIDです");
-      return;
-    }
-    sendMergeRequest(series, other, idBtn);
-  };
-  idBtn.addEventListener("click", submitId);
-  idInput.addEventListener("keydown", (e) => {
-    if (e.key === "Enter" && !e.isComposing) submitId();
-  });
+  idBtn.textContent = "選択に追加";
   idRow.appendChild(idInput);
   idRow.appendChild(idBtn);
   box.appendChild(idHint);
   box.appendChild(idRow);
 
+  // 画面下に貼り付く送信欄: 選択中の相手のチップと送信ボタン。
+  const footer = document.createElement("div");
+  footer.className = "merge-submit";
+  const chips = document.createElement("div");
+  chips.className = "merge-chips";
+  const sendBtn = document.createElement("button");
+  sendBtn.type = "button";
+  sendBtn.className = "primary";
+  footer.appendChild(chips);
+  footer.appendChild(sendBtn);
+  box.appendChild(footer);
+
+  const refresh = () => {
+    chips.replaceChildren();
+    for (const [id, name] of selected) {
+      const chip = document.createElement("span");
+      chip.className = "merge-chip";
+      chip.textContent = name;
+      if (name !== `ID ${id}`) {
+        const cid = document.createElement("span");
+        cid.className = "series-id";
+        cid.textContent = id;
+        chip.appendChild(cid);
+      }
+      const x = document.createElement("button");
+      x.type = "button";
+      x.className = "linkbtn";
+      x.textContent = "×";
+      x.setAttribute("aria-label", `${name} を選択から外す`);
+      x.addEventListener("click", () => {
+        selected.delete(id);
+        refresh();
+      });
+      chip.appendChild(x);
+      chips.appendChild(chip);
+    }
+    sendBtn.textContent = selected.size ? `選択した ${selected.size} 件の結合を依頼` : "結合する相手を選んでください";
+    sendBtn.disabled = !selected.size;
+    for (const cb of list.querySelectorAll("input[data-sid]")) cb.checked = selected.has(cb.dataset.sid);
+  };
+
+  // 選択に加える。上限・自分自身・依頼済みはここで弾く。
+  const select = (id, name) => {
+    if (selected.has(id)) return true;
+    if (id === series.series_id) {
+      uiAlert("このシリーズ自身です");
+      return false;
+    }
+    if (isMergeRequested(series.series_id, id)) {
+      uiAlert("このシリーズとの結合は依頼済みです。");
+      return false;
+    }
+    if (selected.size >= MERGE_REQUEST_MAX) {
+      uiAlert(`一度に依頼できるのは ${MERGE_REQUEST_MAX} 件までです`);
+      return false;
+    }
+    selected.set(id, name);
+    return true;
+  };
+
+  const renderList = (items) => {
+    list.replaceChildren();
+    for (const c of items) list.appendChild(buildMergeCandRow(series, c, selected, select, refresh));
+    refresh();
+  };
+
+  const addId = () => {
+    const other = idInput.value.trim().toUpperCase();
+    if (!/^[A-Z0-9]+$/.test(other)) {
+      uiAlert("シリーズIDを入力してください（例: C451211）");
+      return;
+    }
+    const shown = [...list.querySelectorAll(".merge-cand")].find((r) => r._cand.series_id === other);
+    if (select(other, shown ? shown._cand.title : `ID ${other}`)) {
+      idInput.value = "";
+      refresh();
+    }
+  };
+  idBtn.addEventListener("click", addId);
+  idInput.addEventListener("keydown", (e) => {
+    if (e.key === "Enter" && !e.isComposing) addId();
+  });
+
+  sendBtn.addEventListener("click", async () => {
+    const ids = [...selected.keys()];
+    if (!(await sendMergeRequest(series, ids, sendBtn))) return;
+    selected.clear();
+    // 依頼済みの行を無効化して描き直す。
+    for (const row of list.querySelectorAll(".merge-cand")) row.replaceWith(buildMergeCandRow(series, row._cand, selected, select, refresh));
+    for (const p of list.querySelectorAll(".merge-preview")) p.remove();
+    refresh();
+  });
+
+  // 検索結果のうち、結合の相手になれるシリーズとまとまり（自分・最新DB由来は除く）。
+  const usable = (r) =>
+    r.series_id && !r.live && (!r.unlinked || isGroupId(r.series_id)) && r.series_id !== series.series_id;
+  let seq = 0;
+  const search = async (q, extra) => {
+    const my = ++seq;
+    status.textContent = "検索中...";
+    list.replaceChildren();
+    let results = [];
+    try {
+      const res = await fetch(`/api/search?q=${encodeURIComponent(q)}`);
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || "検索に失敗しました");
+      results = data.results || [];
+    } catch (e) {
+      if (my !== seq) return;
+      status.textContent = e.message || "検索に失敗しました";
+      if (extra && extra.length) renderList(extra);
+      return;
+    }
+    if (my !== seq) return;
+    const seen = new Set();
+    const items = [...(extra || []), ...results.filter(usable)].filter((c) => {
+      if (seen.has(c.series_id)) return false;
+      seen.add(c.series_id);
+      return true;
+    });
+    status.textContent = items.length
+      ? `「${q}」の検索結果（行を押すと巻の表紙を確認できます）:`
+      : `「${q}」で別のシリーズは見つかりませんでした。検索語を変えるか、シリーズIDで追加してください。`;
+    renderList(items);
+  };
+  const runSearch = () => {
+    const q = qInput.value.trim();
+    if (q.length < 2) {
+      uiAlert("2文字以上で検索してください");
+      return;
+    }
+    qInput.blur();
+    search(q);
+  };
+  qBtn.addEventListener("click", runSearch);
+  qInput.addEventListener("keydown", (e) => {
+    if (e.key === "Enter" && !e.isComposing) runSearch();
+  });
+
+  refresh();
+  // 初回: 同じタイトル・同じ著者の候補（巻ラベル付き）を先頭に、タイトル検索の結果を続ける。
+  status.textContent = "候補を検索中...";
   let candidates = [];
   try {
     const res = await fetch(`/api/series/${encodeURIComponent(series.series_id)}/merge-candidates`);
     const data = await res.json();
-    if (!res.ok) throw new Error(data.error || "候補の取得に失敗しました");
-    candidates = data.candidates || [];
-  } catch (e) {
-    status.textContent = e.message || "候補の取得に失敗しました";
-    return;
+    if (res.ok) candidates = data.candidates || [];
+  } catch {
+    // 候補が取れなくても検索結果だけで続ける
   }
-  if (!candidates.length) {
-    status.textContent = "同じタイトル・同じ著者の別シリーズは見つかりませんでした。";
-    return;
+  if (series.title.trim().length >= 2) await search(series.title.trim(), candidates);
+  else {
+    status.textContent = candidates.length ? "同じタイトル・同じ著者の別シリーズ:" : "検索語を入力して検索してください。";
+    renderList(candidates);
   }
-  status.textContent = "同じタイトル・同じ著者の別シリーズ:";
-  for (const c of candidates) {
-    const row = document.createElement("div");
-    row.className = "result merge-cand";
-    const info = document.createElement("div");
-    info.className = "info";
-    const t = document.createElement("div");
-    t.className = "t";
-    t.textContent = c.title;
-    const sid = document.createElement("span");
-    sid.className = "series-id";
-    sid.textContent = ` ID ${c.series_id}`;
-    t.appendChild(sid);
-    const a = document.createElement("div");
-    a.className = "a";
-    a.textContent = [c.creator, c.publisher, c.label].filter(Boolean).join(" / ");
-    const v = document.createElement("div");
-    v.className = "a merge-vols";
+}
+
+// 結合依頼画面の 1 行。左のチェックで選択、行そのものを押すと巻のプレビューを開閉する。
+function buildMergeCandRow(series, c, selected, select, refresh) {
+  const row = document.createElement("div");
+  row.className = "result merge-cand";
+  row._cand = c;
+  const requested = isMergeRequested(series.series_id, c.series_id);
+  const check = document.createElement("label");
+  check.className = "merge-check";
+  const cb = document.createElement("input");
+  cb.type = "checkbox";
+  cb.dataset.sid = c.series_id;
+  cb.checked = selected.has(c.series_id);
+  cb.disabled = requested;
+  cb.setAttribute("aria-label", `${c.title} を選択`);
+  cb.addEventListener("change", () => {
+    if (cb.checked) {
+      if (!select(c.series_id, c.title)) cb.checked = false;
+    } else {
+      selected.delete(c.series_id);
+    }
+    refresh();
+  });
+  check.appendChild(cb);
+  check.addEventListener("click", (e) => e.stopPropagation());
+  row.appendChild(check);
+
+  const info = document.createElement("div");
+  info.className = "info";
+  const t = document.createElement("div");
+  t.className = "t";
+  t.textContent = c.title;
+  const sid = document.createElement("span");
+  sid.className = "series-id";
+  sid.textContent = ` ID ${c.series_id}`;
+  t.appendChild(sid);
+  const a = document.createElement("div");
+  a.className = "a";
+  a.textContent = [c.creator, c.publisher, c.label].filter(Boolean).join(" / ");
+  const v = document.createElement("div");
+  v.className = "a merge-vols";
+  if (c.labels && c.labels.length) {
     const more = c.volume_count > c.labels.length ? " …" : "";
     v.textContent = `全${c.volume_count}巻: ${c.labels.join(", ")}${more}`;
-    info.appendChild(t);
-    info.appendChild(a);
-    info.appendChild(v);
-    row.appendChild(info);
-    const btn = document.createElement("button");
-    btn.type = "button";
-    btn.className = "merge-btn";
-    if (isMergeRequested(series.series_id, c.series_id)) {
-      btn.textContent = "依頼済み";
-      btn.disabled = true;
-    } else {
-      btn.textContent = "結合を依頼";
-      btn.addEventListener("click", () => sendMergeRequest(series, c.series_id, btn));
-    }
-    row.appendChild(btn);
-    btn.addEventListener("click", (e) => e.stopPropagation());
-    // 行を押すと、その候補の巻（表紙）をすぐ下にプレビューする。もう一度押すと閉じる。
-    let preview = null;
-    row.addEventListener("click", () => {
-      if (preview) {
-        preview.remove();
-        preview = null;
-        row.classList.remove("open");
-        return;
-      }
-      preview = buildMergePreview(c.series_id);
-      row.classList.add("open");
-      row.after(preview);
-    });
-    list.appendChild(row);
+  } else {
+    v.textContent = `全${c.volume_count}巻`;
   }
+  info.appendChild(t);
+  info.appendChild(a);
+  info.appendChild(v);
+  row.appendChild(info);
+  if (requested) {
+    const done = document.createElement("span");
+    done.className = "merge-done";
+    done.textContent = "依頼済み";
+    row.appendChild(done);
+  }
+  // 行を押すと、その候補の巻（表紙）をすぐ下にプレビューする。もう一度押すと閉じる。
+  let preview = null;
+  row.addEventListener("click", () => {
+    if (preview) {
+      preview.remove();
+      preview = null;
+      row.classList.remove("open");
+      return;
+    }
+    preview = buildMergePreview(c.series_id);
+    row.classList.add("open");
+    row.after(preview);
+  });
+  return row;
 }
 
 // 結合候補のプレビュー: 巻一覧 API から巻を取り、表紙と巻ラベルを横並びで見せる。表紙は
@@ -2193,28 +2459,29 @@ function buildMergePreview(seriesId) {
   return box;
 }
 
-async function sendMergeRequest(series, otherId, btn) {
-  if (isMergeRequested(series.series_id, otherId)) {
-    uiAlert("このシリーズとの結合は依頼済みです。");
-    return;
-  }
+// 選んだ相手をまとめて 1 リクエストで依頼する。成功したら true。
+async function sendMergeRequest(series, otherIds, btn) {
+  if (!otherIds.length) return false;
   btn.disabled = true;
+  const orig = btn.textContent;
+  btn.textContent = "送信中…";
   try {
     const res = await fetch(`/api/series/${encodeURIComponent(series.series_id)}/merge-request`, {
       method: "POST",
       headers: { "content-type": "application/json" },
-      body: JSON.stringify({ other_id: otherId }),
+      body: JSON.stringify({ other_ids: otherIds }),
     });
     const data = await res.json().catch(() => ({}));
     if (!res.ok) throw new Error(data.error || "依頼に失敗しました");
   } catch (e) {
     uiAlert(e.message || "依頼に失敗しました");
+    btn.textContent = orig;
     btn.disabled = false;
-    return;
+    return false;
   }
-  markMergeRequested(series.series_id, otherId);
-  btn.textContent = "依頼済み";
-  uiAlert("結合を依頼しました。管理者が確認して反映します。");
+  for (const id of otherIds) markMergeRequested(series.series_id, id);
+  uiAlert(`${otherIds.length} 件の結合を依頼しました。管理者が確認して反映します。`);
+  return true;
 }
 
 // 結合を依頼したシリーズの組の端末ローカル台帳（localStorage）。二重依頼を防ぐ。
@@ -2751,6 +3018,13 @@ function wireEvents() {
 
   $("changeCoverBtn").addEventListener("click", openCoverPicker);
   $("refetchBook").addEventListener("click", (e) => refetchBook(e.currentTarget));
+  // 同じページ内で巻一覧を開く（遷移すると ?edit= の編集セッションが外れるため）。
+  $("eSeries").addEventListener("click", (e) => {
+    e.preventDefault();
+    const a = e.currentTarget;
+    closeEdit();
+    openSeriesFromBook(a.dataset.seriesId, a.textContent);
+  });
   $("cancelPick").addEventListener("click", closeCoverPicker);
   $("useUrl").addEventListener("click", () => {
     if (!urlSubmitEnabled) return; // input is hidden when disabled; guard the bypass too

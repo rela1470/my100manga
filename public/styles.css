@@ -247,6 +247,47 @@ button.danger:hover { background: rgba(239, 68, 68, .12); filter: none; }
 }
 
 /* ── 管理画面 (admin.html) ─────────────────────────────────────────── */
+.admin-todo {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 14px;
+  padding: 12px 14px;
+  border: 1.5px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--panel-2);
+}
+.admin-todo[hidden] { display: none; }
+.admin-todo-title { font-size: 14px; margin-right: 4px; }
+.admin-todo-empty { color: var(--muted); font-size: 13px; }
+.admin-todo a {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 8px 6px 14px;
+  border-radius: var(--radius-pill);
+  border: 1.5px solid var(--accent);
+  background: var(--panel);
+  color: var(--text);
+  font-size: 14px;
+  font-weight: 600;
+  text-decoration: none;
+  white-space: nowrap;
+  transition: transform var(--dur) var(--ease-bounce), box-shadow var(--dur) var(--ease);
+}
+.admin-todo a:hover { transform: translateY(-1px); box-shadow: var(--shadow-sm); }
+.admin-todo-n {
+  min-width: 22px;
+  padding: 1px 8px;
+  border-radius: var(--radius-pill);
+  background: var(--accent);
+  color: #fff;
+  font-size: 12px;
+  font-weight: 800;
+  text-align: center;
+  font-variant-numeric: tabular-nums;
+}
 .admin-nav {
   display: flex;
   flex-wrap: wrap;
@@ -563,8 +604,33 @@ button.danger:hover { background: rgba(239, 68, 68, .12); filter: none; }
 .name-report-flag.revealed .flag-text { max-width: 220px; }
 .name-report-flag.reported { opacity: .45; color: var(--muted); cursor: default; }
 
-/* 「シリーズが分かれている？」の候補行。クリックではなく右端のボタンで依頼する。 */
+/* 「シリーズが分かれている？」の画面。対象のタイトルは大きく出す。 */
+.merge-title { font-size: 22px; font-weight: 800; line-height: 1.3; margin: 8px 0 4px; overflow-wrap: anywhere; }
+.merge-title .series-id { font-size: 12px; font-weight: normal; color: var(--muted); margin-left: 8px; }
+/* 候補行。左のチェックで選び、行を押すと巻のプレビュー。 */
 .merge-cand:hover { transform: none; }
+.merge-check { flex: none; display: flex; align-items: center; padding: 6px; margin: -6px 0 -6px -4px; cursor: pointer; }
+.merge-check input { width: 20px; height: 20px; margin: 0; cursor: pointer; }
+.merge-done { flex: none; margin-left: auto; font-size: 12px; color: var(--muted); white-space: nowrap; }
+/* 選択中の相手と送信ボタン。結果欄（.results）の下端に貼り付ける。 */
+.merge-submit {
+  position: sticky; bottom: 0;
+  display: flex; flex-wrap: wrap; align-items: center; gap: 8px;
+  margin-top: 12px; padding: 10px 0 4px;
+  background: var(--panel);
+  border-top: 1px solid var(--border);
+}
+.merge-chips { display: flex; flex-wrap: wrap; gap: 6px; flex: 1 1 100%; }
+.merge-chips:empty { display: none; }
+.merge-chip {
+  display: inline-flex; align-items: center; gap: 2px;
+  max-width: 100%; padding: 2px 4px 2px 10px;
+  border: 1px solid var(--accent); border-radius: 999px;
+  font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.merge-chip .series-id { margin-left: 4px; font-size: 11px; color: var(--muted); }
+.merge-chip .linkbtn { padding: 0 4px; font-size: 14px; line-height: 1; }
+.merge-submit button.primary { flex: 1; }
 .merge-cand .series-id { font-size: 11px; font-weight: normal; color: var(--muted); }
 .merge-cand .merge-vols { display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
 .merge-cand.open { border-color: var(--accent); margin-bottom: 0; border-bottom-left-radius: 0; border-bottom-right-radius: 0; }
@@ -586,7 +652,6 @@ button.danger:hover { background: rgba(239, 68, 68, .12); filter: none; }
   background: var(--panel-2); color: var(--muted); font-size: 10px;
 }
 .merge-preview-label { font-size: 11px; color: var(--muted); margin-top: 2px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.merge-cand .merge-btn { flex: none; margin-left: auto; white-space: nowrap; }
 
 /* 「間違っています」で非表示にした巻を本人が戻す導線。折りたたみ（<details>）で普段は邪魔せず、
    開くと巻ごとに「戻す」を出す。 */
@@ -1243,6 +1308,8 @@ footer.site .foot-reset button:hover { opacity: 1; }
 .dmeta-row { display: flex; gap: 8px; font-size: 12px; line-height: 1.5; }
 .dmeta-row dt { flex: none; width: 68px; color: var(--muted); }
 .dmeta-row dd { margin: 0; min-width: 0; word-break: break-word; }
+.series-link { color: var(--accent-2); font-weight: 600; text-decoration: none; cursor: pointer; }
+.series-link:hover { text-decoration: underline; }
 
 /* view detail modal — synopsis */
 .dsynopsis { margin-top: 14px; border-top: 1px solid var(--border); padding-top: 12px; }

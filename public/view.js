@@ -213,9 +213,10 @@ function openDetail(it, index) {
 
   // Fill what the stored item already knows; /api/book upgrades these below.
   setMetaRow("dIsbnRow", "dIsbn", it.isbn || "");
-  setMetaRow("dSourceRow", "dSource", coverSource(it.cover_url));
+  setSourceRow("dSourceRow", "dSource", it.cover_url, it.isbn);
   setMetaRow("dPublisherRow", "dPublisher", "");
   setMetaRow("dPubdateRow", "dPubdate", "");
+  $("dSeriesRow").style.display = "none";
   $("dSynopsisBox").style.display = "none";
   $("dSynopsis").textContent = "";
   loadBookMeta(it, seq);
@@ -274,20 +275,24 @@ function setMetaRow(rowId, valueId, text) {
   if (has) $(valueId).textContent = text;
 }
 
-// Which site a cover image comes from, inferred from its host (covers can be
-// Rakuten, Google, or an owner-picked URL). "" when there's no cover.
-function coverSource(url) {
-  if (!url) return "";
-  let host = "";
-  try {
-    host = new URL(url).hostname;
-  } catch {
-    return "";
+// 「画像参考元」の行。出品元が分かればそのページへのリンクにする（public/affiliate.js
+// coverSourceLink）。
+function setSourceRow(rowId, valueId, coverUrl, isbn) {
+  const src = window.coverSourceLink ? window.coverSourceLink(coverUrl, isbn) : null;
+  $(rowId).style.display = src ? "" : "none";
+  if (!src) return;
+  const dd = $(valueId);
+  dd.textContent = "";
+  if (!src.url) {
+    dd.textContent = src.label;
+    return;
   }
-  if (/rakuten|r10s/.test(host)) return "楽天ブックス";
-  if (/yimg|yahoo/.test(host)) return "Yahoo!ショッピング";
-  if (/google/.test(host)) return "Google Books";
-  return host;
+  const a = document.createElement("a");
+  a.href = src.url;
+  a.target = "_blank";
+  a.rel = "noopener sponsored";
+  a.textContent = src.label;
+  dd.appendChild(a);
 }
 
 // Fetch richer metadata (all authors, publisher, 発行日, あらすじ) for a book and
@@ -311,6 +316,14 @@ async function loadBookMeta(it, seq) {
   }
   setMetaRow("dPublisherRow", "dPublisher", data.publisher || "");
   setMetaRow("dPubdateRow", "dPubdate", data.pubdate || "");
+  // シリーズの巻一覧へ。巻一覧はトップ（編集画面）の検索モーダルにしか無いので、
+  // そこを ?series= 付きで開く（public/app.js openSeriesFromUrl）。
+  if (data.series) {
+    const a = $("dSeries");
+    a.textContent = data.series.title;
+    a.href = `/?series=${encodeURIComponent(data.series.id)}&st=${encodeURIComponent(data.series.title)}`;
+    $("dSeriesRow").style.display = "";
+  }
   if (data.caption) {
     $("dSynopsis").textContent = data.caption;
     $("dSynopsisBox").style.display = "";

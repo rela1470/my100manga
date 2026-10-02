@@ -1,5 +1,6 @@
 #!/usr/bin/env node
-// ローカル D1 で管理者が確定したシリーズ結合（series_merge / series_merge_dismissed）を
+// ローカル D1 で管理者が確定したシリーズ結合（series_merge / series_merge_dismissed、
+// シリーズに属さない巻の紐付け custom_series / volume_series_link）を
 // SQL にダンプし、本番へいつでもリストアできるようにする。結合はローカルの管理画面で
 // まとめて判断し、結果だけを本番に流す運用のためのもの。
 //
@@ -40,12 +41,20 @@ const merges = query(
 const dismissed = query(
   "SELECT group_key, created_at FROM series_merge_dismissed ORDER BY group_key"
 );
+const customs = query(
+  "SELECT id, name, name_norm, creator, publisher, label, created_at FROM custom_series ORDER BY id"
+);
+const links = query(
+  "SELECT isbn, series_id, created_at FROM volume_series_link ORDER BY series_id, isbn"
+);
+const qn = (v) => (v == null ? "NULL" : q(v));
 
 const lines = [
   "-- シリーズ結合のダンプ（scripts/dump-series-merge.mjs で生成。手で編集しない）。",
-  `-- 生成: ${new Date().toISOString()}  series_merge ${merges.length} 件 / series_merge_dismissed ${dismissed.length} 件`,
+  `-- 生成: ${new Date().toISOString()}  series_merge ${merges.length} 件 / series_merge_dismissed ${dismissed.length} 件` +
+    ` / custom_series ${customs.length} 件 / volume_series_link ${links.length} 件`,
   "-- リストア: npx wrangler d1 execute DB --remote --file db/series-merge-data.sql",
-  "-- 前提: db/add-series-merge.sql 適用済み。upsert なので何度流しても安全。",
+  "-- 前提: db/add-series-merge.sql・db/add-custom-series.sql 適用済み。upsert なので何度流しても安全。",
   "",
 ];
 for (const m of merges) {
@@ -60,13 +69,37 @@ for (const d of dismissed) {
       " ON CONFLICT (group_key) DO NOTHING;"
   );
 }
-// 結合で片付いた依頼（両方が同じ target に入ったもの）を消す。adminMergeSeries と同じ条件。
+for (const c of customs) {
+  lines.push(
+    "INSERT INTO custom_series (id, name, name_norm, creator, publisher, label, created_at) VALUES " +
+      `(${q(c.id)}, ${q(c.name)}, ${q(c.name_norm)}, ${qn(c.creator)}, ${qn(c.publisher)}, ${qn(c.label)}, ${Number(c.created_at)})` +
+      " ON CONFLICT (id) DO UPDATE SET name = excluded.name, name_norm = excluded.name_norm, creator = excluded.creator," +
+      " publisher = excluded.publisher, label = excluded.label;"
+  );
+}
+for (const l of links) {
+  lines.push(
+    `INSERT INTO volume_series_link (isbn, series_id, created_at) VALUES (${q(l.isbn)}, ${q(l.series_id)}, ${Number(l.created_at)})` +
+      " ON CONFLICT (isbn) DO UPDATE SET series_id = excluded.series_id, created_at = excluded.created_at;"
+  );
+}
+// 独自シリーズを series に、紐付けを volumes に反映する（src/groups.ts APPLY_LINKS_SQL と同じ）。
 lines.push(
-  "DELETE FROM series_merge_request",
-  "  WHERE COALESCE((SELECT target_id FROM series_merge WHERE absorbed_id = series_a), series_a)",
-  "      = COALESCE((SELECT target_id FROM series_merge WHERE absorbed_id = series_b), series_b);",
-  ""
+  "INSERT OR REPLACE INTO series (id, name, name_norm, name_kana, name_kana_norm, creator, publisher, label, num_items)",
+  "  SELECT id, name, name_norm, NULL, NULL, creator, publisher, label, NULL FROM custom_series;",
+  "UPDATE volumes SET series_id = (SELECT l.series_id FROM volume_series_link l WHERE l.isbn = volumes.isbn)",
+  "  WHERE series_id IS NULL AND isbn IN (SELECT isbn FROM volume_series_link);"
 );
+// 結合で片付いた依頼（両方が同じ単位に入ったもの）を消す。src/merge.ts
+// CLEANUP_MERGE_REQUESTS_SQL と同じ条件（G-id は紐付け先、結合済みは残す側に読み替える）。
+const unit = (col) =>
+  `(CASE WHEN ${col} GLOB 'G[0-9]*' THEN COALESCE((SELECT l.series_id FROM volume_series_link l WHERE l.isbn = SUBSTR(${col}, 2)), ${col}) ELSE ${col} END)`;
+const target = (col) =>
+  `COALESCE((SELECT m.target_id FROM series_merge m WHERE m.absorbed_id = ${unit(col)}), ${unit(col)})`;
+lines.push(`DELETE FROM series_merge_request WHERE ${target("series_a")} = ${target("series_b")};`, "");
 
 fs.writeFileSync(OUT, lines.join("\n"));
-console.log(`wrote ${OUT}: series_merge ${merges.length}, series_merge_dismissed ${dismissed.length}`);
+console.log(
+  `wrote ${OUT}: series_merge ${merges.length}, series_merge_dismissed ${dismissed.length}, ` +
+    `custom_series ${customs.length}, volume_series_link ${links.length}`
+);

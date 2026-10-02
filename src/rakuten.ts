@@ -188,6 +188,27 @@ export async function rakutenResolveFull(
   return { cover, meta };
 }
 
+// Genres accepted for ISBN search's fallback card (rakutenComicByIsbn): 漫画（コミック）and its
+// children, plus 文庫 > 漫画. Rakuten Books has no adult genre under these; the regex below
+// is a second net over title / series / publisher in case something slips in anyway.
+const COMIC_GENRES = /^(001001|001019011)/;
+const ADULT = /アダルト|成人|成年|18禁|R-?18|官能/i;
+
+/** The book for an ISBN the master lacks, for ISBN search — only when Rakuten files it
+ *  under a manga genre and nothing in its names looks adult; otherwise null. Rakuten
+ *  Books only (never 楽天市場 / Yahoo: their marketplace listings include adult items). */
+export async function rakutenComicByIsbn(env: Env, isbn: string): Promise<RakutenBook | null> {
+  if (!rakutenReady(env) || !isbn) return null;
+  const item = (await call(env, { isbn }, "high"))?.Items?.[0]?.Item;
+  if (!item?.title) return null;
+  const genres = String(item.booksGenreId ?? "").split("/");
+  if (!genres.some((g) => COMIC_GENRES.test(g))) return null;
+  if (ADULT.test(`${item.title} ${item.seriesName ?? ""} ${item.publisherName ?? ""}`)) return null;
+  const book = toBook(item);
+  if (/noimage/i.test(book.cover_url)) book.cover_url = "";
+  return book;
+}
+
 /** Title search. Used to rescue volumes whose stored ISBN is an edition Rakuten
  *  no longer indexes. Defaults to the comics genre for automatic rescue (avoids
  *  auto-applying non-manga covers); pass { genre: false } for the manual picker,

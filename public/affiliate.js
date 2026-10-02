@@ -120,6 +120,71 @@
     return "https://jp.mercari.com/search?" + p.toString();
   }
 
+  // 楽天市場の表紙候補に出てくる主な店舗（src/ichiba.ts SHOP_RANK と同じ顔ぶれ）。
+  var RAKUTEN_SHOPS = {
+    bookoffonline: "ブックオフ 楽天市場店",
+    "surugaya-a-too": "駿河屋 楽天市場店",
+    comicset: "もったいない本舗 楽天市場店",
+    mottainaihonpo: "もったいない本舗 楽天市場店",
+    "mottainaihonpo-omatome": "もったいない本舗 楽天市場店",
+  };
+  var MOTTAINAI = { comicset: 1, mottainaihonpo: 1, "mottainaihonpo-omatome": 1 };
+
+  // 楽天市場の出品ページ。画像 URL から商品ページを組み立てられる店はそこへ、他は ISBN 検索へ。
+  //   ブックオフ: 画像ファイル名 0016309421l.jpg の末尾 l を除いたものが商品番号
+  //   もったいない本舗: 商品番号が ISBN-10
+  function rakutenShopUrl(shop, path, isbn) {
+    if (shop === "bookoffonline") {
+      var m = path.match(/\/(\d+)l\.jpg$/i);
+      if (m) return "https://item.rakuten.co.jp/bookoffonline/" + m[1] + "/";
+    }
+    var i10 = toIsbn10(isbn);
+    if (MOTTAINAI[shop] && i10) return "https://item.rakuten.co.jp/" + shop + "/" + i10 + "/";
+    var s = cleanIsbn(isbn);
+    return s ? "https://search.rakuten.co.jp/search/mall/" + encodeURIComponent(s) + "/" : "";
+  }
+
+  // 「画像参考元」: which site a cover image comes from, inferred from its URL, plus a
+  // link to where it's listed (affiliate-wrapped like the buy links when ids are set).
+  // { label, url } — url "" when there's nothing sensible to link to; null when no cover.
+  window.coverSourceLink = function (coverUrl, isbn) {
+    if (!coverUrl) return null;
+    var u;
+    try { u = new URL(coverUrl, location.href); } catch (e) { return null; }
+    var host = u.hostname, path = u.pathname;
+    var s = cleanIsbn(isbn);
+    if (/rakuten|r10s/.test(host)) {
+      // 楽天の画像ホストは全ショップ共通。パスの /@0_mall/<店舗コード>/ で出品元を見分ける。
+      var shop = (path.match(/^\/@0_mall\/([^/]+)\//) || [])[1] || "";
+      if (shop === "book") {
+        return {
+          label: "楽天ブックス",
+          url: s ? rakutenWrap("https://books.rakuten.co.jp/search?sitem=" + encodeURIComponent(s)) : "",
+        };
+      }
+      var target = rakutenShopUrl(shop, path, isbn);
+      return { label: RAKUTEN_SHOPS[shop] || "楽天市場", url: target ? rakutenWrap(target) : "" };
+    }
+    if (/yimg|yahoo/.test(host)) {
+      // 画像 ID は "<ストアID>_<商品コード>"（/i/l/ggking_9784081150625）→ ストアの商品ページ。
+      var id = (path.match(/\/i\/[a-z]\/([a-z0-9-]+)_([^/]+)$/i) || []);
+      var page = id[1]
+        ? "https://store.shopping.yahoo.co.jp/" + id[1] + "/" + id[2] + ".html"
+        : s ? "https://shopping.yahoo.co.jp/search?p=" + encodeURIComponent(s) : "";
+      var vc = yahooVc();
+      return {
+        label: "Yahoo!ショッピング",
+        url: page && vc
+          ? "https://ck.jp.ap.valuecommerce.com/servlet/referral?" + vc + "&vc_url=" + encodeURIComponent(page)
+          : page,
+      };
+    }
+    if (/google/.test(host)) {
+      return { label: "Google Books", url: s ? "https://books.google.com/books?vid=ISBN" + s : "" };
+    }
+    return { label: host, url: "" };
+  };
+
   // Returns the buy links for an item, grouped by format. Print entries are
   // omitted when there's nothing to search (no isbn and no title).
   window.buildBuyLinks = function (item) {

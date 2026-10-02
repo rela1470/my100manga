@@ -1,5 +1,6 @@
 import { handleSearch, handleLiveSearch } from "./search";
-import { getSeriesVolumes, handleMasterInfo } from "./series";
+import { getSeriesVolumes, getMasterUpdatedAt, handleMasterInfo } from "./series";
+import { getGroupVolumes } from "./groups";
 import { addCorrection, reportVolume, reportSeriesName, reportVolumeTitle, suggestCover } from "./corrections";
 import { coverCandidates, volumeCandidates } from "./candidates";
 import {
@@ -12,9 +13,11 @@ import {
   adminMergeSeries,
   adminListMerges,
   adminUnmergeSeries,
+  adminListLinks,
+  adminUnlinkVolumes,
 } from "./merge";
 import { handleBook } from "./book";
-import { resolveCovers } from "./covers";
+import { readCachedCovers, resolveCovers } from "./covers";
 import { createList, getList, getListData, updateList } from "./lists";
 import {
   adminCoverSummary,
@@ -57,6 +60,7 @@ import {
   adminRedactReport,
   adminSupplementSummary,
   adminStats,
+  adminTodo,
   adminDevReset,
   parsePage,
 } from "./admin";
@@ -69,8 +73,8 @@ import { footerHtml } from "./footer";
 import { bumpPopularity } from "./popularity";
 import { Env, MangaList } from "./types";
 import { rateLimit } from "./ratelimit";
-import { trimWhitespace } from "./covertrim";
-import { escapeHtml, json, readJsonObject } from "./util";
+import { trimShopFrame, trimWhitespace } from "./covertrim";
+import { badRequest, escapeHtml, json, readJsonObject } from "./util";
 
 export { RakutenRateLimiter } from "./ratelimiter";
 
@@ -89,11 +93,17 @@ async function sha256Hex(s: string): Promise<string> {
   return [...new Uint8Array(digest)].map((b) => b.toString(16).padStart(2, "0")).join("");
 }
 
-// Serve a Yahoo cover with its baked-in white bars trimmed. First hit decodes +
-// trims (src/covertrim.ts) and persists the result to R2 keyed by a hash of the
-// source URL; every later hit streams straight from R2. Whitelisted to *.yimg.jp
-// so it can't be used as an open proxy. If trimming yields nothing (not square /
-// no content), the original image is stored and served unchanged.
+// もったいない本舗's 楽天 storefronts — their listing images frame the cover with a
+// logo band and mascot (src/covertrim.ts trimShopFrame). Kept in sync with
+// MOTTAINAI_RE in public/cover-fit.js.
+const MOTTAINAI_PATH = /^\/@0_mall\/(comicset|mottainaihonpo|mottainaihonpo-omatome)\/cabinet\//;
+
+// Serve a store cover with its baked-in framing trimmed: Yahoo's white bars
+// (trimWhitespace) or もったいない本舗's logo frame (trimShopFrame). First hit decodes
+// + trims (src/covertrim.ts) and persists the result to R2 keyed by a hash of the
+// source URL; every later hit streams straight from R2. Whitelisted to *.yimg.jp and
+// those shops' 楽天 cabinets so it can't be used as an open proxy. If trimming yields
+// nothing, the original image is stored and served unchanged.
 async function handleCover(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
   const u = new URL(request.url).searchParams.get("u") || "";
   let target: URL;
@@ -102,11 +112,14 @@ async function handleCover(request: Request, env: Env, ctx: ExecutionContext): P
   } catch {
     return new Response("bad url", { status: 400 });
   }
-  if (target.protocol !== "https:" || !/(^|\.)yimg\.jp$/.test(target.hostname)) {
+  const yahoo = /(^|\.)yimg\.jp$/.test(target.hostname);
+  const mottainai =
+    target.hostname === "thumbnail.image.rakuten.co.jp" && MOTTAINAI_PATH.test(target.pathname);
+  if (target.protocol !== "https:" || !(yahoo || mottainai)) {
     return new Response("forbidden host", { status: 403 });
   }
 
-  const key = "yahoo/" + (await sha256Hex(target.toString())) + ".jpg";
+  const key = (yahoo ? "yahoo/" : "mottainai/") + (await sha256Hex(target.toString())) + ".jpg";
 
   if (env.COVERS) {
     const hit = await env.COVERS.get(key);
@@ -121,7 +134,7 @@ async function handleCover(request: Request, env: Env, ctx: ExecutionContext): P
 
   let out: ArrayBuffer = original;
   try {
-    const trimmed = await trimWhitespace(original);
+    const trimmed = yahoo ? await trimWhitespace(original) : await trimShopFrame(original);
     if (trimmed) out = trimmed;
   } catch {
     // decode/encode failure: fall back to the original bytes.
@@ -195,6 +208,16 @@ export default {
       // handleCover: strips the white bars baked into 正方形 seller images.
       if (path === "/cover" && request.method === "GET") {
         return await handleCover(request, env, ctx);
+      }
+      // シリーズに属さない巻のまとまり（G<ISBN>, see src/groups.ts）。巻一覧・取得ボタンは
+      // グループの巻を返し、訂正/通報は C-id 前提なので受け付けない（結合依頼は merge.ts 側で対応）。
+      const groupMatch = path.match(/^\/api\/series\/(G\d{13})\/(volumes|supplement|corrections|corrections\/report|report)$/);
+      if (groupMatch) {
+        if ((groupMatch[2] === "volumes" && request.method === "GET") ||
+            (groupMatch[2] === "supplement" && request.method === "POST")) {
+          return await getGroupVolumes(env, groupMatch[1], (id) => getSeriesVolumes(env, id), () => getMasterUpdatedAt(env));
+        }
+        return badRequest("このまとまりはシリーズに属していないため、この操作はできません");
       }
       const seriesMatch = path.match(/^\/api\/series\/([A-Za-z0-9]+)\/volumes$/);
       if (seriesMatch && request.method === "GET") {
@@ -284,6 +307,9 @@ export default {
       if (path === "/api/admin/stats" && request.method === "GET") {
         return await adminStats(env);
       }
+      if (path === "/api/admin/todo" && request.method === "GET") {
+        return await adminTodo(env);
+      }
       // 開発用: マスターデータ以外を全削除して DB を初期化。dev（ADMIN_DEV_BYPASS）限定。
       if (path === "/api/admin/dev/reset" && request.method === "POST") {
         return await adminDevReset(env);
@@ -369,6 +395,14 @@ export default {
       }
       if (path === "/api/admin/series-merges" && request.method === "POST") {
         return await adminMergeSeries(request, env);
+      }
+      // シリーズに属さない巻の紐付け（グループの結合）の一覧と解除。
+      if (path === "/api/admin/series-links" && request.method === "GET") {
+        return await adminListLinks(env, parsePage(url));
+      }
+      const adminLinkMatch = path.match(/^\/api\/admin\/series-links\/([A-Za-z0-9]+)\/(\d+)$/);
+      if (adminLinkMatch && request.method === "DELETE") {
+        return await adminUnlinkVolumes(env, adminLinkMatch[1], Number(adminLinkMatch[2]));
       }
       const adminMergeMatch = path.match(/^\/api\/admin\/series-merges\/([A-Za-z0-9]+)$/);
       if (adminMergeMatch && request.method === "DELETE") {
@@ -500,12 +534,14 @@ export default {
 // endpoints return cache-only covers so they're instant; the client calls this
 // to fill the gaps lazily. Returns isbn → cover URL for the ones that resolved.
 async function resolveCoversApi(request: Request, env: Env): Promise<Response> {
-  const body = (await readJsonObject(request)) as { isbns?: unknown };
+  const body = (await readJsonObject(request)) as { isbns?: unknown; cache_only?: unknown };
   const isbns = Array.isArray(body.isbns)
     ? body.isbns.filter((x): x is string => typeof x === "string").slice(0, 400)
     : [];
   if (isbns.length === 0) return json({ covers: {} }, 200, { "cache-control": "no-store" });
-  const map = await resolveCovers(env, isbns);
+  // cache_only: just read the site-wide covers (no store lookups) — the editor uses it
+  // on load to pick up covers that changed since its draft was saved (admin approvals).
+  const map = body.cache_only === true ? await readCachedCovers(env, isbns) : await resolveCovers(env, isbns);
   const covers: Record<string, string> = {};
   for (const [isbn, url] of map) if (url) covers[isbn] = url;
   return json({ covers }, 200, { "cache-control": "no-store" });

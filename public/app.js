@@ -1389,22 +1389,58 @@ function noimg() {
   return d;
 }
 
+// 表紙取得の待ち状況。取得ループ（表紙を取得ボタン）は POST ごとにこのタブの ID と残り件数を
+// 送り、サーバはサイト全体の「取得中の人数・待ち件数」を返す（src/ratelimiter.ts report）。
+// ID はページを開くたびに作るランダム値で、保存しない。
+const COVER_CLIENT_ID =
+  (crypto.randomUUID && crypto.randomUUID()) || Math.random().toString(36).slice(2) + Date.now().toString(36);
+let coverQueue = null; // { users, pending } — 最新の POST で返った値
+
 // Lists come back with cache-only covers (instant). Uncached covers are resolved
 // here in one background call so the list renders immediately and images fill in.
-async function fetchCovers(isbns) {
+// `pending` (このタブの残り件数) を渡すと待ち状況の報告も兼ねる。
+async function fetchCovers(isbns, pending) {
   const uniq = [...new Set((isbns || []).filter(Boolean))];
   if (!uniq.length) return {};
+  const body = { isbns: uniq };
+  if (typeof pending === "number") Object.assign(body, { client: COVER_CLIENT_ID, pending });
   try {
     const res = await fetch("/api/covers", {
       method: "POST",
       headers: { "content-type": "application/json" },
-      body: JSON.stringify({ isbns: uniq }),
+      body: JSON.stringify(body),
     });
     if (!res.ok) return {};
-    return (await res.json()).covers || {};
+    const data = await res.json();
+    if (data.queue) coverQueue = data.queue;
+    return data.covers || {};
   } catch {
     return {};
   }
+}
+
+// 取得ループの終わりに、待ち人数からすぐ抜ける（送らなくても 20 秒で自然に抜ける）。
+function leaveCoverQueue() {
+  coverQueue = null;
+  fetch("/api/covers", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ isbns: [], client: COVER_CLIENT_ID, pending: 0 }),
+  }).catch(() => {});
+}
+
+// 楽天の 1 秒 1 回の枠で 1 件あたり約 1.1 秒。取得中の人どうしで枠を分け合うので、自分の残りは
+// 「残り件数 × 人数」ぶん（ただしサイト全体の待ち件数を超えない）かかる目安にする。
+const COVER_SEC_PER_ITEM = 1.1;
+function coverStatusText(left) {
+  const q = coverQueue;
+  const users = Math.max(1, q ? q.users : 1);
+  const work = q ? Math.min(left * users, Math.max(q.pending, left)) : left;
+  const sec = Math.max(1, Math.round(work * COVER_SEC_PER_ITEM));
+  const eta = sec < 60 ? `約${sec}秒` : `約${Math.round(sec / 60)}分`;
+  let text = `表紙を取得中… 残り${left}件・あと${eta}`;
+  if (q) text += `（いま${users}人が取得中・全体で${Math.max(q.pending, left)}件待ち）`;
+  return text;
 }
 
 function firstCoverFrom(isbns, map) {
@@ -1454,7 +1490,7 @@ function mountCoverFetch(barEl, entries) {
     const paint = () => {
       const left = total - done;
       status.style.display = left > 0 ? "" : "none";
-      if (left > 0) status.textContent = `表紙を取得中… 残り${left}件`;
+      if (left > 0) status.textContent = coverStatusText(left);
     };
     paint();
     let todo = entries.slice();
@@ -1465,7 +1501,7 @@ function mountCoverFetch(barEl, entries) {
         const chunk = todo.slice(i, i + COVER_CHUNK);
         const isbns = [];
         for (const e of chunk) isbns.push(...e.isbns);
-        const map = await fetchCovers(isbns);
+        const map = await fetchCovers(isbns, total - done);
         for (const e of chunk) {
           const url = firstCoverFrom(e.isbns, map);
           if (url) {
@@ -1484,6 +1520,7 @@ function mountCoverFetch(barEl, entries) {
       if (next.length === todo.length) break;
       todo = next;
     }
+    leaveCoverQueue();
     status.style.display = "none";
   });
 }
@@ -3047,7 +3084,7 @@ async function fetchMissingCovers() {
     if (!statusEl) return;
     const left = total - done;
     statusEl.style.display = left > 0 ? "" : "none";
-    if (left > 0) statusEl.textContent = `表紙を取得中… 残り${left}件`;
+    if (left > 0) statusEl.textContent = coverStatusText(left);
   };
   paint();
   // 自動リトライ: 1 回の POST は resolveCovers の予算内に収まる数しか解決できず、残りは
@@ -3061,7 +3098,7 @@ async function fetchMissingCovers() {
     const next = [];
     for (let i = 0; i < todo.length; i += COVER_CHUNK) {
       const batch = todo.slice(i, i + COVER_CHUNK);
-      const map = await fetchCovers(batch.map((it) => it.isbn));
+      const map = await fetchCovers(batch.map((it) => it.isbn), total - done);
       let changed = false;
       for (const it of batch) {
         const url = map[it.isbn];
@@ -3086,6 +3123,7 @@ async function fetchMissingCovers() {
     if (next.length === todo.length) break; // 進捗ゼロ — これ以上は解決しない
     todo = next;
   }
+  leaveCoverQueue();
   state.fetchingCovers = false;
   render();
 }

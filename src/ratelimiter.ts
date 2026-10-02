@@ -12,6 +12,17 @@ const INTERVAL_MS = 1100; // ~0.9 req/s, a small margin under Rakuten's ~1/s cap
 
 export type Priority = "high" | "low";
 
+// Cover-fill presence (see report()). A browser that stops POSTing — tab closed, fill
+// finished — drops out after this long. Its POSTs are at most ~10s apart (9s resolve
+// budget + 1.2s retry pause), so this leaves some slack.
+const PRESENCE_TTL_MS = 20000;
+const PRESENCE_MAX = 2000; // cap on tracked browsers so junk ids can't grow the map
+
+export interface CoverQueue {
+  users: number; // browsers currently filling covers
+  pending: number; // covers they still have left, site-wide
+}
+
 export class RakutenRateLimiter extends DurableObject<Env> {
   // Two reservation lanes, both persisted so an eviction doesn't reset pacing:
   //  - highNext: tail of the user-initiated (high-priority) timeline.
@@ -60,5 +71,25 @@ export class RakutenRateLimiter extends DurableObject<Env> {
     this.lowNext = slot + INTERVAL_MS;
     await this.ctx.storage.put("lowNext", this.lowNext);
     return wait;
+  }
+
+  /**
+   * Cover-fill presence, used on its own instance ("cover-queue") so it never sits in
+   * front of the pacing calls. Each fill POST reports its browser's random id and how
+   * many covers it still has left; returns the site-wide totals over browsers seen in
+   * the last PRESENCE_TTL_MS. In memory only — an eviction just resets the counts.
+   */
+  private waiters = new Map<string, { pending: number; seen: number }>();
+
+  async report(client: string, pending: number): Promise<CoverQueue> {
+    const now = Date.now();
+    for (const [id, w] of this.waiters) if (now - w.seen > PRESENCE_TTL_MS) this.waiters.delete(id);
+    if (pending <= 0) this.waiters.delete(client);
+    else if (this.waiters.has(client) || this.waiters.size < PRESENCE_MAX) {
+      this.waiters.set(client, { pending, seen: now });
+    }
+    let total = 0;
+    for (const w of this.waiters.values()) total += w.pending;
+    return { users: this.waiters.size, pending: total };
   }
 }

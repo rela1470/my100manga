@@ -83,6 +83,7 @@ import { trimShopFrame, trimWhitespace } from "./covertrim";
 import { badRequest, escapeHtml, json, readJsonObject } from "./util";
 
 export { RakutenRateLimiter } from "./ratelimiter";
+import type { CoverQueue } from "./ratelimiter";
 
 const COVER_CACHE = "public, max-age=31536000, immutable";
 
@@ -581,17 +582,36 @@ export default {
 // endpoints return cache-only covers so they're instant; the client calls this
 // to fill the gaps lazily. Returns isbn → cover URL for the ones that resolved.
 async function resolveCoversApi(request: Request, env: Env): Promise<Response> {
-  const body = (await readJsonObject(request)) as { isbns?: unknown; cache_only?: unknown };
+  const body = (await readJsonObject(request)) as {
+    isbns?: unknown;
+    cache_only?: unknown;
+    client?: unknown;
+    pending?: unknown;
+  };
   const isbns = Array.isArray(body.isbns)
     ? body.isbns.filter((x): x is string => typeof x === "string").slice(0, 400)
     : [];
-  if (isbns.length === 0) return json({ covers: {} }, 200, { "cache-control": "no-store" });
   // cache_only: just read the site-wide covers (no store lookups) — the editor uses it
   // on load to pick up covers that changed since its draft was saved (admin approvals).
+  // client/pending: the 表紙を取得 loops report their browser id and covers left, so the
+  // response can say how many people are filling covers and how deep the site-wide wait is.
+  const queue = body.cache_only === true ? null : await reportCoverQueue(env, body.client, body.pending);
+  // A finished fill sends no ISBNs and pending 0 to leave the count right away.
+  if (isbns.length === 0) return json(queue ? { covers: {}, queue } : { covers: {} }, 200, { "cache-control": "no-store" });
   const map = body.cache_only === true ? await readCachedCovers(env, isbns) : await resolveCovers(env, isbns);
   const covers: Record<string, string> = {};
   for (const [isbn, url] of map) if (url) covers[isbn] = url;
-  return json({ covers }, 200, { "cache-control": "no-store" });
+  return json(queue ? { covers, queue } : { covers }, 200, { "cache-control": "no-store" });
+}
+
+async function reportCoverQueue(env: Env, client: unknown, pending: unknown): Promise<CoverQueue | null> {
+  if (!env.RAKUTEN_LIMITER || typeof client !== "string" || !/^[\w-]{8,64}$/.test(client)) return null;
+  if (typeof pending !== "number" || !Number.isFinite(pending)) return null;
+  try {
+    return await env.RAKUTEN_LIMITER.getByName("cover-queue").report(client, Math.min(Math.max(Math.floor(pending), 0), 1000));
+  } catch {
+    return null; // presence is cosmetic — never fail the cover fill over it
+  }
 }
 
 async function renderViewPage(env: Env, slug: string, origin: string): Promise<Response> {

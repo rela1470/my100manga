@@ -88,6 +88,21 @@ npm run ingest:remote:dev
 > 月次更新も全行を書き直すため毎回同規模の書き込みが発生する（blue-green でも書き込み量は変わらない）。
 > また差し替え前はシャドウと現行の両方が同時に存在するため、ロード中だけ当該テーブルのストレージが一時的に約 2 倍になる。
 
+### シリーズ結合データの投入
+
+MADB が同じ作品を複数の C-id に分けて持っている場合に、管理者が確定した結合（`series_merge`）は
+`db/series-merge-data.sql` に保存してある。マスタを取り込んだあとに流すと、結合済みの状態から始められる
+（`db/add-series-merge.sql` のテーブルが前提。upsert なので何度流しても安全）。
+
+```bash
+npx wrangler d1 execute DB --local --file db/series-merge-data.sql            # ローカル
+npx wrangler d1 execute DB --remote --file db/series-merge-data.sql           # 本番
+npx wrangler d1 execute DB --env dev --remote --file db/series-merge-data.sql # 開発
+```
+
+結合はローカルの管理画面でまとめて判断し、`node scripts/dump-series-merge.mjs` でローカル D1 から
+このファイルを作り直す。ローカルで解除した結合は upsert では本番から消えないので、解除は本番の管理画面で行う。
+
 ## 手動取り込み（GitHub Actions）
 
 `.github/workflows/ingest.yml` を Actions の「Run workflow」ボタンから手動実行すると、

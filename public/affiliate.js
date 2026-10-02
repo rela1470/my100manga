@@ -1,6 +1,6 @@
 "use strict";
 
-// Builds Amazon / 楽天 purchase links for a list item. Reads affiliate ids from
+// Builds Amazon / 楽天 / Yahoo! / メルカリ purchase links for a list item. Reads affiliate ids from
 // window.__AFF__ ({ amazon, rakuten }), injected by the Worker on /l/:slug.
 // Everything degrades gracefully: no isbn → title search; no affiliate id →
 // plain (untagged) link that still opens the right store.
@@ -11,7 +11,13 @@
 (function () {
   function aff() {
     var a = window.__AFF__ || {};
-    return { amazon: a.amazon || "", rakuten: a.rakuten || "", mercari: a.mercari || "" };
+    return {
+      amazon: a.amazon || "",
+      rakuten: a.rakuten || "",
+      mercari: a.mercari || "",
+      yahooSid: a.yahooSid || "",
+      yahooPid: a.yahooPid || "",
+    };
   }
 
   // "978-4-08-xxxxxx-x" → "9784080000000"; keeps a trailing X for ISBN-10.
@@ -81,6 +87,29 @@
     return rakutenWrap("https://books.rakuten.co.jp/search?" + p.toString());
   }
 
+  // Yahoo!ショッピング（紙）。バリューコマースの自由テキストリンクに vc_url で遷移先を
+  // 渡すと任意ページへのアフィリンクになる。ISBN は JAN と同じなので検索で該当巻に当たる。
+  // sid/pid 未設定なら素の検索URL。
+  function yahooVc() {
+    var a = aff();
+    if (!a.yahooSid || !a.yahooPid) return "";
+    return "sid=" + encodeURIComponent(a.yahooSid) + "&pid=" + encodeURIComponent(a.yahooPid);
+  }
+
+  function yahooPrint(item) {
+    var term = cleanIsbn(item && item.isbn) || q(item);
+    var target = "https://shopping.yahoo.co.jp/search?p=" + encodeURIComponent(term);
+    var vc = yahooVc();
+    if (!vc) return target;
+    return "https://ck.jp.ap.valuecommerce.com/servlet/referral?" + vc + "&vc_url=" + encodeURIComponent(target);
+  }
+
+  // バリューコマースのインプレッション計測用 1x1 ビーコン（広告コードに同梱されているもの）。
+  function yahooPixel() {
+    var vc = yahooVc();
+    return vc ? "https://ad.jp.ap.valuecommerce.com/servlet/gifbanner?" + vc : "";
+  }
+
   // 中古（絶版の紙をどうしても紙で欲しい人向け）。メルカリアンバサダーの afid を
   // 付けた検索ページへ飛ばす。ISBN では中古出品が引きにくいのでタイトル検索。
   // afid 未設定なら素の検索URL。
@@ -99,6 +128,7 @@
     var links = [
       { format: "print", label: "Amazon（紙）", store: "amazon", url: amazonPrint(item) },
       { format: "print", label: "楽天ブックス（紙）", store: "rakuten", url: rakutenPrint(item) },
+      { format: "print", label: "Yahoo!ショッピング（紙）", store: "yahoo", url: yahooPrint(item), pixel: yahooPixel() },
       { format: "ebook", label: "Kindle（電子）", store: "amazon", url: amazonKindle(item) },
       { format: "ebook", label: "楽天Kobo（電子）", store: "rakuten", url: rakutenKobo(item) },
     ];

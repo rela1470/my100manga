@@ -1146,6 +1146,7 @@ footer.site .foot-links a { color: var(--muted); }
 .buy-btn.amazon { background: #ff9900; color: #1a1015; border-color: #e88a00; }
 .buy-btn.rakuten { background: #bf0000; border-color: #a30000; }
 .buy-btn.mercari { background: #ff0211; border-color: #d80010; }
+.buy-btn.yahoo { background: #ff0033; border-color: #d9002b; }
 .buy-note { font-size: 11px; color: var(--muted); margin: 4px 0 0; }
 
 /* correction page */

@@ -113,25 +113,28 @@ Google Books で書影が取れない ISBN を、楽天ブックス書籍検索 
 
 ## アフィリエイト（購入リンク）
 
-閲覧ページ（`/l/:slug`）の作品詳細モーダルに **Amazon・楽天の購入リンク**を出す。紙の本は絶版が多いので、**紙版と電子書籍版（Kindle / 楽天Kobo）を常に併記**する（電子版は絶版でも入手できることが多い）。
+閲覧ページ（`/l/:slug`）の作品詳細モーダルに **Amazon・楽天・Yahoo!ショッピング・メルカリの購入リンク**を出す。紙の本は絶版が多いので、**紙版と電子書籍版（Kindle / 楽天Kobo）を常に併記**する（電子版は絶版でも入手できることが多い）。
 
 - リンク生成は `public/affiliate.js`（クライアント側）。ISBN があれば Amazon は ISBN-10（=ASIN）に変換して商品ページ `/dp/<isbn10>` へ直リンク、楽天ブックスは ISBN 検索。ISBN が無い／979始まり（ISBN-10 が無い）ときはタイトル検索にフォールバックする。電子版は紙の ISBN が使えないため常にタイトル検索（Kindle=`i=digital-text`、楽天Kobo=`g=101`）。
 - アフィリエイト ID は Worker が `window.__AFF__` として閲覧ページに注入する（`src/index.ts` `renderViewPage`）。
 - ステマ規制対応として、フッタとモーダルにアフィリエイト利用の明示（ディスクロージャ）を入れている。外部リンクには `rel="sponsored nofollow noopener"` を付与。
 
-### 設定（`AMAZON_ASSOCIATE_TAG` / `RAKUTEN_AFFILIATE_ID` / `MERCARI_AFID`）
+### 設定（`AMAZON_ASSOCIATE_TAG` / `RAKUTEN_AFFILIATE_ID` / `MERCARI_AFID` / `YAHOO_VC_SID` / `YAHOO_VC_PID`）
 
 アフィリエイト ID はリンクに露出する公開値だが、**clone した人が誤って別人のタグ付きリンクを配信しないよう** `wrangler.jsonc` には載せず、デプロイ先ごとに **`wrangler secret` で注入する**。**未設定でもリンクは動作する**（各ストアの正しいページを開くが、紹介タグは付かない＝報酬は発生しない）。
 
 - `AMAZON_ASSOCIATE_TAG` — Amazon アソシエイトのトラッキング ID（例 `xxxxxxxx-22`）。
 - `RAKUTEN_AFFILIATE_ID` — 楽天アフィリエイト ID（`hb.afl.rakuten.co.jp/hgc/<ID>/` の `<ID>`。`g00xxxxx.xxxxxxxx.g00xxxxx.xxxxxxxx` 形式）。
 - `MERCARI_AFID` — メルカリのアフィリエイト ID。
+- `YAHOO_VC_SID` / `YAHOO_VC_PID` — バリューコマースで発行した Yahoo!ショッピングの自由テキストリンク（`ck.jp.ap.valuecommerce.com/servlet/referral?sid=…&pid=…`）の `sid` / `pid`。Yahoo!ショッピングの ISBN 検索ページを `vc_url=` で包んだリンクになる（両方そろわないとタグ無し）。
 
 ```bash
 # 本番
 npx wrangler secret put AMAZON_ASSOCIATE_TAG
 npx wrangler secret put RAKUTEN_AFFILIATE_ID
 npx wrangler secret put MERCARI_AFID
+npx wrangler secret put YAHOO_VC_SID
+npx wrangler secret put YAHOO_VC_PID
 # 開発は --env dev を付ける
 npx wrangler secret put AMAZON_ASSOCIATE_TAG --env dev
 ```

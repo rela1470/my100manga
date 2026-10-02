@@ -357,6 +357,14 @@ function renderBuy(it) {
     a.target = "_blank";
     a.rel = "noopener sponsored nofollow";
     a.textContent = l.label;
+    if (l.pixel) {
+      const px = document.createElement("img");
+      px.src = l.pixel;
+      px.width = px.height = 1;
+      px.alt = "";
+      px.style.border = "0";
+      a.appendChild(px);
+    }
     (groups[l.format] || groups.print).appendChild(a);
   });
   box.style.display = "";

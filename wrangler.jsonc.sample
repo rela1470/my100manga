@@ -32,7 +32,7 @@
   // ── production (deployed by `wrangler deploy`, no --env) ──────────────────
   // デプロイ先ごとの個人設定は公開リポに載せず、すべて
   // `wrangler secret put <NAME>` で注入する（未設定でも起動はする）:
-  //   AMAZON_ASSOCIATE_TAG / RAKUTEN_AFFILIATE_ID / MERCARI_AFID
+  //   AMAZON_ASSOCIATE_TAG / RAKUTEN_AFFILIATE_ID / MERCARI_AFID / YAHOO_VC_SID / YAHOO_VC_PID
   //     … アフィリンクの紹介タグ。未設定ならタグ無しのリンク（購入は可能）。
   //   RAKUTEN_APP_ID / RAKUTEN_ACCESS_KEY … 楽天 API（表紙フォールバック Tier1）。
   //   YAHOO_APP_ID … Yahoo!ショッピング 商品検索API の Client ID（表紙フォールバック

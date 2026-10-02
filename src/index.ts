@@ -52,7 +52,7 @@ import {
 import { addReport } from "./reports";
 import { requireAdmin } from "./adminAuth";
 import { handleRanking } from "./ranking";
-import { analyticsTags, gtmBody, injectAnalytics, appVersion } from "./analytics";
+import { analyticsTags, gtmBody, injectAnalytics, appVersion, affIds } from "./analytics";
 import { footerHtml } from "./footer";
 import { bumpPopularity } from "./popularity";
 import { Env, MangaList } from "./types";
@@ -471,11 +471,7 @@ async function renderViewPage(env: Env, slug: string, origin: string): Promise<R
   let html = await templateRes.text();
 
   const meta = buildOgp(data, `${origin}/l/${slug}`);
-  const aff = {
-    amazon: env.AMAZON_ASSOCIATE_TAG ?? "",
-    rakuten: env.RAKUTEN_AFFILIATE_ID ?? "",
-    mercari: env.MERCARI_AFID ?? "",
-  };
+  const aff = affIds(env);
   const injected =
     `<script>window.__LIST__=${safeJson(data)};` +
     `window.__AFF__=${safeJson(aff)};</script>`;

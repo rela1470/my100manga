@@ -35,13 +35,18 @@ export function gtmBody(env: Env): string {
 // affiliate.js / buildBuyLinks が購入リンクにタグを付けられるようにする。公開値なので
 // secret ではなく env の vars。view ページは renderViewPage 側で __AFF__ を注入するため
 // このプレースホルダを持たず、素通りする。
-export function affData(env: Env): string {
-  const aff = {
+export function affIds(env: Env) {
+  return {
     amazon: env.AMAZON_ASSOCIATE_TAG ?? "",
     rakuten: env.RAKUTEN_AFFILIATE_ID ?? "",
     mercari: env.MERCARI_AFID ?? "",
+    yahooSid: env.YAHOO_VC_SID ?? "",
+    yahooPid: env.YAHOO_VC_PID ?? "",
   };
-  const safe = JSON.stringify(aff).replace(/</g, "\\u003c").replace(/>/g, "\\u003e").replace(/&/g, "\\u0026");
+}
+
+export function affData(env: Env): string {
+  const safe = JSON.stringify(affIds(env)).replace(/</g, "\\u003c").replace(/>/g, "\\u003e").replace(/&/g, "\\u0026");
   return `<script>window.__AFF__=${safe};</script>`;
 }
 

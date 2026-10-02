@@ -45,6 +45,10 @@ export interface Env {
   RAKUTEN_AFFILIATE_ID?: string;
   // メルカリアンバサダーの afid。中古（絶版）の受け皿として検索リンクに付ける。
   MERCARI_AFID?: string;
+  // Yahoo!ショッピング（バリューコマース）の自由テキストリンクの sid / pid。
+  // ck.jp.ap.valuecommerce.com/servlet/referral?sid=…&pid=…&vc_url=<商品URL> で包む。
+  YAHOO_VC_SID?: string;
+  YAHOO_VC_PID?: string;
   // 人気傾向の計測（Analytics Engine）。writeDataPoint はノンブロッキングで課金も安く、
   // サンプリングは AE 側が自動でやる。バインディング未設定でも落ちないよう optional。
   // 集計は Cloudflare の SQL API 経由（管理画面表示は後で実装）。see src/popularity.ts

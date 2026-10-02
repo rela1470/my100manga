@@ -316,7 +316,19 @@ export async function getSeriesVolumes(
   const labelTemplate = volumeLabelTemplate([...knownNumbers]);
   const corrections = (await Promise.all(members.map((m) => getCorrectionVolumes(env, m)))).flat();
   for (const c of corrections) {
-    if (knownIsbns.has(c.isbn)) continue;
+    if (knownIsbns.has(c.isbn)) {
+      // 同じ ISBN の巻がマスタに巻番号なしで入っている（C269160 シャーリーの 1巻）なら、訂正の
+      // 巻番号をその巻に付ける。付けないと番号付きの巻が 2〜 だけに見え、抜け巻と判定され続ける。
+      const plain = plainVolumeNumber(c.volume_number);
+      const unnumbered = entries.find((e) => !e.volume_number && e.isbns.includes(c.isbn));
+      if (unnumbered && c.volume_number && !(plain !== null && knownPlain.has(plain))) {
+        unnumbered.volume_number = c.volume_number;
+        unnumbered.vol_sort = c.vol_sort;
+        knownNumbers.add(c.volume_number);
+        if (plain !== null) knownPlain.add(plain);
+      }
+      continue;
+    }
     if (c.volume_number && knownNumbers.has(c.volume_number)) continue;
     const plain = plainVolumeNumber(c.volume_number);
     if (plain !== null && knownPlain.has(plain)) continue;

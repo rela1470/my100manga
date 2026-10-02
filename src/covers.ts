@@ -2,6 +2,7 @@ import { Env } from "./types";
 import { googleCover } from "./util";
 import { rakutenResolveFull, rakutenReady } from "./rakuten";
 import { yahooResolveCover, yahooReady } from "./yahoo";
+import { ichibaCovers } from "./ichiba";
 import { bookMetaInsertFromRakuten } from "./book";
 
 // Google Books returns a ~10.8KB gray "image not available" placeholder when an
@@ -62,6 +63,8 @@ export async function readCachedCovers(env: Env, isbns: string[]): Promise<Map<s
 
 /** Resolve the best cover URL for each ISBN: the Rakuten Books cover (exact-ISBN)
  *  if one exists, else a Yahoo!ショッピング cover (exact-ISBN via jan_code), else a
+ *  楽天市場 cover (ISBN keyword — only a 楽天ブックス-cabinet image applies directly;
+ *  a shop image is queued for admin review and the ISBN stays coverless), else a
  *  real Google Books cover, else "". Results (including "no cover") are cached
  *  permanently in the `covers` table; only cache misses hit the network, so each
  *  API's rate limit is paid at most once per ISBN. Returns a map isbn → cover URL
@@ -82,7 +85,7 @@ export async function resolveCovers(env: Env, isbns: string[]): Promise<Map<stri
   // never poisoned with a permanent "no cover" for something that just wasn't tried.
   const determined = new Map<string, string>();
   // ISBNs Rakuten confirmed it has no cover for — handed down the fallback chain
-  // (Yahoo → Google).
+  // (Yahoo → 楽天市場 → Google).
   const needFallback: string[] = [];
   // Book metadata (author/publisher/発行日/あらすじ) parsed from the SAME Rakuten
   // response as the cover, cached for the detail popup so /api/book is a pure cache
@@ -119,7 +122,7 @@ export async function resolveCovers(env: Env, isbns: string[]): Promise<Map<stri
   // "none" falls through to Google. Items not reached before the deadline (or that
   // come back undetermined) are left uncached so a later POST retries them, exactly
   // like the Rakuten tier.
-  const needGoogle: string[] = [];
+  const needIchiba: string[] = [];
   if (needFallback.length && yahooReady(env)) {
     for (const isbn of needFallback) {
       const remaining = deadline - Date.now();
@@ -127,13 +130,41 @@ export async function resolveCovers(env: Env, isbns: string[]): Promise<Map<stri
       const cover = await yahooResolveCover(env, isbn, "low", remaining);
       if (cover === null) continue; // undetermined — don't cache, retry on a later POST
       if (cover) determined.set(isbn, cover); // found
-      else needGoogle.push(isbn); // Yahoo confirmed none — fall through to Google
+      else needIchiba.push(isbn); // Yahoo confirmed none — fall through to 楽天市場
     }
   } else {
-    needGoogle.push(...needFallback);
+    needIchiba.push(...needFallback);
   }
 
-  // Tier 3: Google (parallel — no rate limit) for ISBNs neither Rakuten nor Yahoo
+  // Tier 3: 楽天市場 (ISBN keyword) for Yahoo misses — same Rakuten limiter and
+  // deadline. Shop images (used-book logo frames, wrong editions) are never applied
+  // unreviewed: the best one is queued into cover_suggestion for the admin and the
+  // ISBN is cached as "no cover" meanwhile (approve writes `covers`). An image from
+  // the 楽天ブックス cabinet is as trusted as Tier 1 and applies directly.
+  const needGoogle: string[] = [];
+  const queued: { isbn: string; url: string }[] = [];
+  if (needIchiba.length && rakutenReady(env)) {
+    for (const isbn of needIchiba) {
+      const remaining = deadline - Date.now();
+      if (remaining <= 0) break; // out of time — leave the rest uncached
+      const found = await ichibaCovers(env, isbn, "low", remaining);
+      if (found === null) continue; // undetermined — don't cache, retry on a later POST
+      if (!found.length) {
+        needGoogle.push(isbn); // 楽天市場 confirmed none — fall through to Google
+        continue;
+      }
+      const trusted = found.find((c) => isTrustedCoverUrl(c.url));
+      if (trusted) determined.set(isbn, trusted.url);
+      else {
+        queued.push({ isbn, url: found[0].url });
+        determined.set(isbn, "");
+      }
+    }
+  } else {
+    needGoogle.push(...needIchiba);
+  }
+
+  // Tier 4: Google (parallel — no rate limit) for ISBNs neither Rakuten nor Yahoo
   // could cover. Off by default; see googleEnabled. Either way these are now
   // determined: a Google cover, or a confirmed "no cover" ("").
   if (needGoogle.length && googleEnabled(env)) {
@@ -148,7 +179,7 @@ export async function resolveCovers(env: Env, isbns: string[]): Promise<Map<stri
   // A store can hand back an image an admin redacted (same URL under another ISBN of
   // the volume, which the list showed via the sibling fallback). Cache those as "no
   // cover" so auto-resolution can't undo the redaction.
-  const redacted = await redactedCoverUrls(env, [...determined.values()]);
+  const redacted = await redactedCoverUrls(env, [...determined.values(), ...queued.map((q) => q.url)]);
   for (const [isbn, url] of determined) if (redacted.has(url)) determined.set(isbn, "");
 
   const writes = [];
@@ -161,8 +192,48 @@ export async function resolveCovers(env: Env, isbns: string[]): Promise<Map<stri
   }
   if (writes.length) await env.DB.batch(writes);
   if (metaWrites.length) await env.DB.batch(metaWrites);
+  if (queued.length) await queueReview(env, queued, redacted, now);
 
   return out;
+}
+
+/** Queue auto-found 楽天市場 covers for admin review (cover_suggestion with
+ *  suggest_count 0 = found by the resolver, not picked by a user). Not gated by
+ *  COVER_SUGGESTIONS_ENABLED: that switch guards user-supplied URLs, and these come
+ *  from the API. DO NOTHING on conflict so a pair the admin already dismissed or
+ *  redacted isn't reopened on every re-resolve. */
+async function queueReview(
+  env: Env,
+  items: { isbn: string; url: string }[],
+  redacted: Set<string>,
+  now: number,
+): Promise<void> {
+  const stmts = items
+    .filter((q) => !redacted.has(q.url))
+    .map((q) =>
+      env.DB.prepare(
+        `INSERT INTO cover_suggestion (isbn, cover_url, old_cover_url, suggest_count, first_at, last_at)
+         VALUES (?, ?, '', 0, ?, ?) ON CONFLICT (isbn, cover_url) DO NOTHING`
+      ).bind(q.isbn, q.url, now, now)
+    );
+  if (stmts.length) await env.DB.batch(stmts);
+}
+
+/** Whether a picked image may fill an empty global cover without review: a book image
+ *  from 楽天ブックス (its thumbnail host serves every Rakuten product, so only the
+ *  books cabinet path counts) or Google Books (book covers only). Yahoo!ショッピング
+ *  and 楽天市場 shop images can be any product, so they go through review. An
+ *  unreviewed fill can then at worst be a different book's cover, never an
+ *  arbitrary image. */
+export function isTrustedCoverUrl(url: string): boolean {
+  try {
+    const u = new URL(url);
+    if (u.protocol !== "https:") return false;
+    if (u.hostname === "thumbnail.image.rakuten.co.jp") return u.pathname.startsWith("/@0_mall/book/cabinet/");
+    return u.hostname === "books.google.com";
+  } catch {
+    return false;
+  }
 }
 
 /** Which of `urls` an admin redacted via a cover report (cover_suggestion

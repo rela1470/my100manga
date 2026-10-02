@@ -1,7 +1,7 @@
 import { Env } from "./types";
 import { badRequest, json, notFound, volumeLabelTemplate, formatVolumeLabel, readJsonObject, toIsbn13 } from "./util";
 import { findNgWord } from "./ngwords";
-import { readCachedCovers, resolveCovers } from "./covers";
+import { isTrustedCoverUrl, readCachedCovers, resolveCovers } from "./covers";
 
 // A correction volume as merged into the series volume list. title/author are filled
 // from the series row by the caller, not stored, so they always track the master.
@@ -135,22 +135,6 @@ const MAX_COVER_SUGGESTIONS_PER_ISBN = 10;
  *  to re-enable. The code stays wired up so it can be turned back on later. */
 export function coverSuggestionsEnabled(env: Env): boolean {
   return env.COVER_SUGGESTIONS_ENABLED === "true" || env.COVER_SUGGESTIONS_ENABLED === "1";
-}
-
-/** Whether a picked image may fill an empty global cover without review: a book image
- *  from 楽天ブックス (its thumbnail host serves every Rakuten product, so only the
- *  books cabinet path counts) or Google Books (book covers only). Yahoo!ショッピング
- *  images can be any product, so they go through review. An unreviewed fill can then
- *  at worst be a different book's cover, never an arbitrary image. */
-function isTrustedCoverUrl(url: string): boolean {
-  try {
-    const u = new URL(url);
-    if (u.protocol !== "https:") return false;
-    if (u.hostname === "thumbnail.image.rakuten.co.jp") return u.pathname.startsWith("/@0_mall/book/cabinet/");
-    return u.hostname === "books.google.com";
-  } catch {
-    return false;
-  }
 }
 
 /** POST /api/cover-suggestions — a list editor picked a cover for a book. Covers are

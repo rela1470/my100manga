@@ -1298,6 +1298,14 @@ footer.site .foot-reset button:hover { opacity: 1; }
   max-height: 360px; overflow: auto; margin: 6px 0 14px;
 }
 @media (max-width: 560px) { .cand-grid { grid-template-columns: repeat(3, 1fr); } }
+/* 表紙候補の段階ローディング。段階ごとの区画は display:contents でグリッドに溶け込ませ、
+   到着順に関係なく段階順に並べる。 */
+.cand-section { display: contents; }
+.pick-stages { display: flex; flex-direction: column; margin: 6px 0 0; }
+.pick-stages .spinner { padding: 3px 0; font-size: 13px; }
+.pick-stage.done { color: var(--muted); font-size: 13px; padding: 3px 0 3px 24px; position: relative; }
+.pick-stage.done::before { content: "✓"; position: absolute; left: 4px; color: var(--accent); }
+.pick-stage.fail { color: var(--muted); font-size: 13px; padding: 3px 0 3px 24px; }
 .cand {
   display: flex; flex-direction: column; gap: 4px; padding: 6px;
   background: var(--panel-2); border: 1.5px solid var(--border); border-radius: var(--radius-sm);

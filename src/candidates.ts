@@ -3,7 +3,8 @@ import { badRequest, json } from "./util";
 import { coverSuggestionsEnabled } from "./corrections";
 import { probeGoogleCover } from "./covers";
 import { probeYahooCover } from "./yahoo";
-import { rakutenResolveFull, rakutenSearchTitle, RakutenBook, RakutenBookFull } from "./rakuten";
+import { ichibaCovers } from "./ichiba";
+import { rakutenResolveFull, rakutenSearchTitle, RakutenBook } from "./rakuten";
 import { bookMetaInsertFromRakuten, cacheBookMetaBatch } from "./book";
 
 interface Candidate {
@@ -12,18 +13,27 @@ interface Candidate {
   label: string; // what it is, e.g. "ISBN一致" or the matched edition title
 }
 
-// Candidate cover images for the correction page: Google (if real), Rakuten by
-// exact ISBN, Yahoo!ショッピング by exact ISBN (jan_code), and Rakuten title-search
-// hits (so the owner can pick the right one when the stored ISBN's edition has no
-// cover). GET /api/cover-candidates.
+// Candidate cover images for the correction page, fetched in stages so the picker
+// can show each source as soon as it answers instead of waiting for the slowest
+// (all of them queue on the 1 req/s Rakuten/Yahoo limiters). GET
+// /api/cover-candidates?stage=…:
+//   isbn   — exact-ISBN hits: Google (if real), 楽天ブックス, Yahoo!ショッピング (jan_code)
+//   title  — 楽天ブックス title-search hits, so the owner can pick the right one when
+//            the stored ISBN's edition has no cover
+//   ichiba — 楽天市場 shop listings for the ISBN (used-book shops etc.; review-only)
 // `q` is an owner-typed keyword: when present we run a literal Rakuten title
 // search (no broadening, no ISBN lookups) so they can steer past bad auto matches.
+type Stage = "isbn" | "title" | "ichiba";
+const STAGES: Stage[] = ["isbn", "title", "ichiba"];
+
 export async function coverCandidates(request: Request, env: Env): Promise<Response> {
   const url = new URL(request.url);
   const isbn = (url.searchParams.get("isbn") ?? "").trim().slice(0, 20);
   const title = (url.searchParams.get("title") ?? "").trim().slice(0, 200);
   const q = (url.searchParams.get("q") ?? "").trim().slice(0, 200);
+  const stage = url.searchParams.get("stage") as Stage | null;
   if (!isbn && !title && !q) return badRequest("isbn か title を指定してください");
+  if (!q && !(stage && STAGES.includes(stage))) return badRequest("stage を指定してください");
 
   const candidates: Candidate[] = [];
   const seen = new Set<string>();
@@ -37,45 +47,55 @@ export async function coverCandidates(request: Request, env: Env): Promise<Respo
   // Tells the client whether the "画像URLを直接指定" input should be shown (single
   // source of truth = the server flag; the submission endpoint enforces it anyway).
   const urlSubmit = coverSuggestionsEnabled(env);
+  const reply = () => json({ candidates, url_submit: urlSubmit }, 200, { "cache-control": "no-store" });
 
   if (q) {
     const hits = await searchOwnerQuery(env, q);
     for (const b of hits) add(b.cover_url, "楽天ブックス", b.title);
     await cacheBookMetaBatch(env, hits);
-    return json({ candidates, url_submit: urlSubmit }, 200, { "cache-control": "no-store" });
+    return reply();
   }
 
-  // A title ending in a volume ("鋼の錬金術師 6") gets a precise Rakuten "（n）"
-  // phrase too, so the exact volume floats above the series-broadened hits.
+  if (stage === "isbn") {
+    if (!isbn) return reply();
+    const [google, yahoo, rakutenIsbnRes] = await Promise.all([
+      probeGoogleCover(env, isbn),
+      probeYahooCover(env, isbn),
+      rakutenResolveFull(env, isbn, "high"),
+    ]);
+    // The exact-ISBN cover call also carried the book's author/publisher/発行日/あらすじ
+    // — cache it (book_meta) so the detail popup's /api/book is a free cache read
+    // instead of a second Rakuten call for the same ISBN.
+    if (rakutenIsbnRes.meta) {
+      const stmt = bookMetaInsertFromRakuten(env, rakutenIsbnRes.meta);
+      if (stmt) await stmt.run();
+    }
+    if (google) add(google, "Google Books", "ISBN一致");
+    if (rakutenIsbnRes.cover) add(rakutenIsbnRes.cover, "楽天ブックス", "ISBN一致");
+    if (yahoo) add(yahoo, "Yahoo!ショッピング", "ISBN一致");
+    return reply();
+  }
+
+  if (stage === "ichiba") {
+    if (!isbn) return reply();
+    for (const c of (await ichibaCovers(env, isbn, "high")) ?? []) add(c.url, "楽天市場", c.shop);
+    return reply();
+  }
+
+  // stage === "title". A title ending in a volume ("鋼の錬金術師 6") gets a precise
+  // Rakuten "（n）" phrase too, so the exact volume floats above the series-broadened hits.
+  if (!title) return reply();
   const volPhrase = volumePhrase(title);
-  const emptyIsbnRes: { cover: string | null; meta: RakutenBookFull | null } = { cover: "", meta: null };
-  const [google, yahoo, rakutenIsbnRes, rakutenVolume, rakutenTitle] = await Promise.all([
-    isbn ? probeGoogleCover(env, isbn) : Promise.resolve(""),
-    isbn ? probeYahooCover(env, isbn) : Promise.resolve(""),
-    isbn ? rakutenResolveFull(env, isbn, "high") : Promise.resolve(emptyIsbnRes),
+  const [rakutenVolume, rakutenTitle] = await Promise.all([
     volPhrase ? rakutenSearchTitle(env, volPhrase, 30, { genre: false, priority: "high" }) : Promise.resolve([]),
-    title ? searchTitleBroadening(env, title) : Promise.resolve([]),
+    searchTitleBroadening(env, title),
   ]);
-
-  // The exact-ISBN cover call also carried the book's author/publisher/発行日/あらすじ
-  // — cache it (book_meta) so the detail popup's /api/book is a free cache read
-  // instead of a second Rakuten call for the same ISBN.
-  if (rakutenIsbnRes.meta) {
-    const stmt = bookMetaInsertFromRakuten(env, rakutenIsbnRes.meta);
-    if (stmt) await stmt.run();
-  }
-
   // The title-search calls (volume phrase + broadened series) each returned full
   // records too — cache them so their ISBNs' popups are a free book_meta read.
   await cacheBookMetaBatch(env, [...rakutenVolume, ...rakutenTitle]);
-
-  if (google) add(google, "Google Books", "ISBN一致");
-  if (rakutenIsbnRes.cover) add(rakutenIsbnRes.cover, "楽天ブックス", "ISBN一致");
-  if (yahoo) add(yahoo, "Yahoo!ショッピング", "ISBN一致");
   for (const b of rakutenVolume) add(b.cover_url, "楽天ブックス", b.title);
   for (const b of rakutenTitle) add(b.cover_url, "楽天ブックス", b.title);
-
-  return json({ candidates, url_submit: urlSubmit }, 200, { "cache-control": "no-store" });
+  return reply();
 }
 
 interface VolumeCandidate {

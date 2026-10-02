@@ -27,7 +27,9 @@ export function rakutenReady(env: Env): boolean {
   return Boolean(env.RAKUTEN_APP_ID && env.RAKUTEN_ACCESS_KEY);
 }
 
-function headers(env: Env): Record<string, string> {
+/** Browser-XHR-looking headers the 2026 OpenAPI gateway requires. Shared with the
+ *  楽天市場 client (src/ichiba.ts), which goes through the same gateway. */
+export function headers(env: Env): Record<string, string> {
   const ref = env.RAKUTEN_REFERER || DEFAULT_REFERER;
   const origin = ref.replace(/\/$/, "");
   return {
@@ -91,8 +93,9 @@ const MAX_WAIT_MS: Record<Priority, number> = { high: 15000, low: 8000 };
 /** Wait for a global 1 req/s slot on the given priority lane. Returns false when
  *  the caller should skip Rakuten (slot past budget, or limiter unavailable).
  *  `maxWaitMs` overrides the lane default so a caller with a shrinking wall-clock
- *  budget (resolveCovers) can refuse a slot that would land past its deadline. */
-async function awaitSlot(env: Env, priority: Priority, maxWaitMs?: number): Promise<boolean> {
+ *  budget (resolveCovers) can refuse a slot that would land past its deadline.
+ *  楽天市場 (src/ichiba.ts) uses the same applicationId, so it shares this lane. */
+export async function awaitSlot(env: Env, priority: Priority, maxWaitMs?: number): Promise<boolean> {
   if (!env.RAKUTEN_LIMITER) return true; // limiter unbound (tests/local) → no pacing
   const cap = maxWaitMs ?? MAX_WAIT_MS[priority];
   if (cap <= 0) return false;

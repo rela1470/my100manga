@@ -824,27 +824,78 @@ function setUrlSubmit(on) {
   $("urlPickHint").style.display = urlSubmitEnabled ? "" : "none";
 }
 
+// Picker searches run in stages (/api/cover-candidates?stage=…) so each source's
+// hits show as soon as it answers — the slower ones (title broadening, 楽天市場)
+// queue behind the 1 req/s Rakuten/Yahoo limiters. Each stage owns a
+// display:contents section of the grid, so results stay in stage order whatever
+// order they arrive in. pickSeq drops answers from a search the user has since
+// replaced or closed.
+let pickSeq = 0;
+
+async function runPickStages(stages) {
+  const seq = ++pickSeq;
+  const grid = $("candGrid");
+  const box = $("pickStages");
+  grid.innerHTML = "";
+  box.innerHTML = "";
+  box.style.display = "";
+  const seen = new Set();
+  let total = 0;
+  let anyOk = false;
+  await Promise.all(
+    stages.map(async (st) => {
+      const section = document.createElement("div");
+      section.className = "cand-section";
+      grid.appendChild(section);
+      const row = document.createElement("div");
+      row.className = "spinner pick-stage";
+      row.textContent = `${st.label}を検索中…`;
+      box.appendChild(row);
+      let cands = null;
+      try {
+        const res = await fetch(`/api/cover-candidates?${st.qs}`);
+        const data = await res.json();
+        if (res.ok) {
+          cands = data.candidates || [];
+          if (seq === pickSeq) setUrlSubmit(data.url_submit);
+        }
+      } catch {}
+      if (seq !== pickSeq) return;
+      if (cands) anyOk = true;
+      const fresh = (cands || []).filter((c) => c.src && !seen.has(c.src));
+      for (const c of fresh) {
+        seen.add(c.src);
+        section.appendChild(candCell(c));
+      }
+      total += fresh.length;
+      row.className = cands ? "pick-stage done" : "pick-stage fail";
+      row.textContent = cands ? `${st.label}：${fresh.length}件` : `${st.label}：取得に失敗しました`;
+    })
+  );
+  if (seq !== pickSeq) return;
+  box.style.display = "none";
+  if (!anyOk) setUrlSubmit(false);
+  if (total === 0) renderCandidates([]);
+}
+
 // Shared loader: opens the picker modal and fills it with cover candidates for `it`.
 async function loadCandidates(it) {
-  $("candGrid").innerHTML = "";
   $("urlInput").value = "";
   $("coverSearch").value = it.title || "";
   $("pickModal").classList.add("open");
-  $("pickSpinner").style.display = "";
-  try {
-    const qs = new URLSearchParams();
-    if (it.isbn) qs.set("isbn", it.isbn);
-    if (it.title) qs.set("title", it.title);
-    const res = await fetch(`/api/cover-candidates?${qs.toString()}`);
-    const data = await res.json();
-    setUrlSubmit(data.url_submit);
-    renderCandidates(data.candidates || []);
-  } catch (e) {
-    setUrlSubmit(false);
-    renderCandidates([]);
-  } finally {
-    $("pickSpinner").style.display = "none";
-  }
+  const base = new URLSearchParams();
+  if (it.isbn) base.set("isbn", it.isbn);
+  if (it.title) base.set("title", it.title);
+  const stage = (name, label) => {
+    const qs = new URLSearchParams(base);
+    qs.set("stage", name);
+    return { label, qs: qs.toString() };
+  };
+  const stages = [];
+  if (it.isbn) stages.push(stage("isbn", "ISBN一致（楽天ブックス・Yahoo!）"));
+  if (it.title) stages.push(stage("title", "タイトル検索（楽天ブックス）"));
+  if (it.isbn) stages.push(stage("ichiba", "楽天市場（中古店など）"));
+  await runPickStages(stages);
 }
 
 // Re-run the picker with an owner-typed keyword (`q`): literal Rakuten search,
@@ -852,19 +903,7 @@ async function loadCandidates(it) {
 async function runCoverSearch() {
   const q = $("coverSearch").value.trim();
   if (!q) return;
-  $("candGrid").innerHTML = "";
-  $("pickSpinner").style.display = "";
-  try {
-    const res = await fetch(`/api/cover-candidates?q=${encodeURIComponent(q)}`);
-    const data = await res.json();
-    setUrlSubmit(data.url_submit);
-    renderCandidates(data.candidates || []);
-  } catch (e) {
-    setUrlSubmit(false);
-    renderCandidates([]);
-  } finally {
-    $("pickSpinner").style.display = "none";
-  }
+  await runPickStages([{ label: "キーワード検索（楽天ブックス）", qs: `q=${encodeURIComponent(q)}` }]);
 }
 
 // From the edit modal: edits the in-progress selection (state.pending).
@@ -918,27 +957,29 @@ function renderCandidates(cands) {
     grid.appendChild(p);
     return;
   }
-  for (const c of cands) {
-    const cell = document.createElement("button");
-    cell.className = "cand";
-    cell.type = "button";
-    const img = document.createElement("img");
-    img.alt = c.label;
-    img.loading = "lazy";
-    img.onerror = () => cell.remove();
-    applyCover(img, c.src);
-    const srcTag = document.createElement("span");
-    srcTag.className = "src";
-    srcTag.textContent = c.source || "";
-    const cap = document.createElement("span");
-    cap.className = "cap";
-    cap.textContent = c.label;
-    cell.appendChild(img);
-    cell.appendChild(srcTag);
-    cell.appendChild(cap);
-    cell.addEventListener("click", () => applyPickedCover(c.src));
-    grid.appendChild(cell);
-  }
+  for (const c of cands) grid.appendChild(candCell(c));
+}
+
+function candCell(c) {
+  const cell = document.createElement("button");
+  cell.className = "cand";
+  cell.type = "button";
+  const img = document.createElement("img");
+  img.alt = c.label;
+  img.loading = "lazy";
+  img.onerror = () => cell.remove();
+  applyCover(img, c.src);
+  const srcTag = document.createElement("span");
+  srcTag.className = "src";
+  srcTag.textContent = c.source || "";
+  const cap = document.createElement("span");
+  cap.className = "cap";
+  cap.textContent = c.label;
+  cell.appendChild(img);
+  cell.appendChild(srcTag);
+  cell.appendChild(cap);
+  cell.addEventListener("click", () => applyPickedCover(c.src));
+  return cell;
 }
 
 // 表紙はサイト全体で ISBN ごとに1つ（covers）。リストは表示時にそれを引くので、ISBN の
@@ -1007,6 +1048,7 @@ async function submitCover(isbn, url) {
 }
 
 function closeCoverPicker() {
+  pickSeq++; // drop answers still in flight
   $("pickModal").classList.remove("open");
   state.fixIndex = -1;
   $("skipFix").style.display = "none";

@@ -533,7 +533,8 @@ async function loadCoverSuggestions(page = pageState.coverSuggest) {
         el("td", null, [seriesVolumesLink(s.series_id, s.volume_number || "-", label)]),
         el("td", { textContent: s.isbn }),
         isbnConfirmCell(s.isbn),
-        el("td", { className: "num", textContent: String(s.suggest_count) }),
+        // 0 = 表紙の自動取得（楽天市場 Tier3）が見つけてレビューに回したもの。
+        el("td", { className: "num", textContent: s.suggest_count ? String(s.suggest_count) : "自動" }),
         el("td", { textContent: fmtDate(s.last_at) }),
         el("td", { className: "report-actions" }, [approveBtn, dismissBtn]),
       ])

@@ -1190,6 +1190,10 @@ html:has(.modal-backdrop.open) { overflow: hidden; }
   display: flex; gap: 8px; margin: 8px 0;
 }
 .share-url input { flex: 1; }
+/* 新刊の ISBN 追加。巻番号欄は数桁だけなので固定幅にする。 */
+.new-vol-row { align-items: center; }
+.share-url input.new-vol-num { flex: none; width: 4.5em; text-align: right; }
+.new-vol-btn { font-size: 13px; }
 
 footer.site {
   text-align: center;

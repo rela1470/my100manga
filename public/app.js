@@ -1211,6 +1211,13 @@ function buildLiveBar() {
   }
   bar.appendChild(label);
   bar.appendChild(btn);
+  const guide = document.createElement("a");
+  guide.className = "hint";
+  guide.href = "/books-guide";
+  guide.target = "_blank";
+  guide.rel = "noopener";
+  guide.textContent = "追加できる本について";
+  bar.appendChild(guide);
   return bar;
 }
 
@@ -1741,6 +1748,21 @@ function renderVolumes(series, volumes, opts) {
     fetchNew.addEventListener("click", () => fetchSupplement(series, fetchNew));
   }
   supBar.appendChild(fetchNew);
+  // MADB にまだ載っていない新刊（最新巻を取得でも出てこない末尾の巻）を ISBN で足す入口。
+  // 欠番ボタンは既存の巻の間しか出さないので、末尾への追加はここから行う。先に最新DBを
+  // 見てもらうため「最新巻を取得」を押した後（このセッション中）だけ出す。訂正保存は
+  // C-id/U-id 前提なので live とまとまり(G-id)には出さない。
+  if (
+    !opts.live && series.series_id && !isGroupId(series.series_id) &&
+    supplementFetched.has(supKey(series))
+  ) {
+    const newVol = document.createElement("button");
+    newVol.type = "button";
+    newVol.className = "linkbtn new-vol-btn";
+    newVol.textContent = "新刊が出ていますか？";
+    newVol.addEventListener("click", () => openNewVolumePicker(series, volumes));
+    supBar.appendChild(newVol);
+  }
   if (!opts.live) {
     const parts = [];
     if (opts.masterAt) parts.push(`マスター更新 ${fmtDate(opts.masterAt)}`);
@@ -1989,6 +2011,85 @@ async function openGapPicker(series, gap, volumes) {
     box.appendChild(row);
   }
   appendIsbnRow();
+}
+
+// 末尾の新刊を ISBN で追加する画面。巻番号は既存の最大巻 + 1 を初期値にするが、
+// まだ一覧に無い巻を挟んでいることもあるので編集できるようにする。保存は欠番と同じく
+// pickManualVolume（サーバが書影を引き直し、書影の無い ISBN は弾く）。
+function openNewVolumePicker(series, volumes) {
+  const box = clearResults();
+  const bar = document.createElement("div");
+  bar.className = "vol-bar";
+  const back = document.createElement("button");
+  back.type = "button";
+  back.className = "linkbtn";
+  back.textContent = "‹ 巻一覧へ戻る";
+  back.addEventListener("click", () => renderVolumes(series, volumes));
+  bar.appendChild(back);
+  box.appendChild(bar);
+
+  let kan = false;
+  let max = 0;
+  for (const v of volumes) {
+    const s = (v.volume_number || "").trim();
+    if (/^巻\d+$/.test(s)) kan = true;
+    const m = s.match(/\d+/);
+    if (m) max = Math.max(max, parseInt(m[0], 10));
+  }
+
+  const head = document.createElement("p");
+  head.className = "hint";
+  head.textContent = `${series.title} の新刊の ISBN13 と巻番号を入力してください。書影が見つかる ISBN のみ追加できます。`;
+  box.appendChild(head);
+
+  const row = document.createElement("div");
+  row.className = "share-url new-vol-row";
+  const isbnInput = document.createElement("input");
+  isbnInput.type = "text";
+  isbnInput.inputMode = "numeric";
+  isbnInput.placeholder = "ISBN13（例: 9784088528113）";
+  const volInput = document.createElement("input");
+  volInput.type = "text";
+  volInput.inputMode = "numeric";
+  volInput.className = "new-vol-num";
+  volInput.value = String(max + 1);
+  volInput.setAttribute("aria-label", "巻番号");
+  const volUnit = document.createElement("span");
+  volUnit.className = "hint";
+  volUnit.textContent = "巻";
+  const btn = document.createElement("button");
+  btn.type = "button";
+  btn.textContent = "追加";
+  const submit = () => {
+    const isbn = isbnInput.value.replace(/[^0-9]/g, "");
+    if (isbn.length !== 13) {
+      uiAlert("ISBN は13桁（978…）で入力してください");
+      return;
+    }
+    const n = parseInt(volInput.value.replace(/[^0-9]/g, ""), 10);
+    if (!n) {
+      uiAlert("巻番号を数字で入力してください");
+      return;
+    }
+    if (volumes.some((v) => v.isbn === isbn || (v.isbns || []).includes(isbn))) {
+      uiAlert("この ISBN はすでに巻一覧にあります");
+      return;
+    }
+    const gap = { n, vol: kan ? `巻${n}` : `${n}`, disp: `${n}巻` };
+    pickManualVolume(series, gap, { isbn, cover_url: "" }, volumes);
+  };
+  btn.addEventListener("click", submit);
+  for (const el of [isbnInput, volInput]) {
+    el.addEventListener("keydown", (e) => {
+      if (e.key === "Enter" && !e.isComposing) submit();
+    });
+  }
+  row.appendChild(isbnInput);
+  row.appendChild(volInput);
+  row.appendChild(volUnit);
+  row.appendChild(btn);
+  box.appendChild(row);
+  isbnInput.focus();
 }
 
 // Fill a missing volume: persist it as a correction (so it's cached for everyone),

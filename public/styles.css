@@ -132,8 +132,9 @@ textarea:focus {
   display: flex;
   flex-wrap: wrap;
   align-items: center;
+  justify-content: center;
   gap: 12px;
-  margin: -4px 0 16px;
+  margin: 24px 0 0;
 }
 .action-bar .cover-status { margin: 0; }
 
@@ -199,7 +200,7 @@ button:disabled { opacity: .5; cursor: not-allowed; transform: none; box-shadow:
   justify-content: center;
   gap: 12px;
   flex-wrap: wrap;
-  margin-top: 16px;
+  margin-top: 24px;
   padding: 8px 14px;
   border: 1px solid var(--warn);
   border-radius: var(--radius-sm);
@@ -215,13 +216,28 @@ button:disabled { opacity: .5; cursor: not-allowed; transform: none; box-shadow:
 }
 .diff-bar button.ghost:hover { background: rgba(107, 114, 128, .12); filter: none; }
 
-.clear-bar { display: flex; justify-content: center; margin-top: 32px; }
+.clear-bar { display: flex; flex-direction: column; align-items: center; gap: 12px; margin-top: 24px; }
 button.danger {
   background: transparent;
   border: 1.5px solid var(--danger);
   color: var(--danger);
 }
 button.danger:hover { background: rgba(239, 68, 68, .12); filter: none; }
+/* 「編集中の漫画を全削除」は誤タップを誘わないよう、枠なしの小さなテキストボタンにする。 */
+.clear-bar button.danger {
+  border: none;
+  color: var(--muted);
+  font-size: 13px;
+  font-weight: normal;
+  padding: 6px 10px;
+}
+.clear-bar button.danger:hover {
+  background: none;
+  color: var(--danger);
+  text-decoration: underline;
+  transform: none;
+  box-shadow: none;
+}
 
 /* Honor reduced-motion: kill the bouncy transforms/animations globally. */
 @media (prefers-reduced-motion: reduce) {
@@ -946,6 +962,27 @@ html:has(.modal-backdrop.open) { overflow: hidden; }
 }
 
 .results { max-height: 320px; overflow: auto; margin: 8px 0; }
+
+/* 画面いっぱいのモーダル（検索）。結果欄だけがスクロールし、見出しとフッターは常に見える。 */
+.modal-full { padding: 16px 12px; }
+.modal-full .modal {
+  display: flex;
+  flex-direction: column;
+  height: calc(100dvh - 32px);
+  max-width: 720px;
+}
+.modal-full .results { flex: 1; max-height: none; min-height: 0; }
+.modal-full .modal-actions { flex: none; }
+@media (max-width: 560px) {
+  .modal-full { padding: 0; }
+  .modal-full .modal {
+    height: 100dvh;
+    max-width: none;
+    border: none;
+    border-radius: 0;
+    padding: 16px 14px calc(14px + env(safe-area-inset-bottom));
+  }
+}
 .result {
   display: flex;
   gap: 10px;
@@ -995,20 +1032,28 @@ html:has(.modal-backdrop.open) { overflow: hidden; }
   color: var(--accent-2);
 }
 .sup-btn:hover { background: rgba(217, 119, 6, .12); filter: none; }
-/* マスター更新日・最終確認日。長くなり得るので独立した行に落として折り返す。 */
+/* 巻一覧の末尾の「最新巻を取得」バー。更新日・IDはボタンの下に1行ずつ。 */
+.sup-bar { margin-top: 12px; }
+/* マスター更新日・最終確認日。 */
 .sup-stamp {
   font-size: 12px;
   color: var(--muted);
   flex-basis: 100%;
-  order: 5;
-  text-align: right;
 }
 
-/* 更新日の行に添えるシリーズID。問い合わせ用なので目立たせない。 */
+/* シリーズID。問い合わせ用なので目立たせないが、ID だけを選択・コピーできるようにする。 */
 .series-id {
   font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
   user-select: all;
 }
+.series-id-line { flex-basis: 100%; font-size: 12px; display: flex; align-items: center; gap: 6px; }
+.series-id-line .copy-id { font-size: 12px; padding: 2px 4px; }
+
+/* 検索モーダルの見出し直下に出す、巻一覧で開いているシリーズ名。 */
+.search-subtitle { margin: -4px 0 8px; font-size: 20px; font-weight: 800; line-height: 1.35; }
+.search-subtitle[hidden] { display: none; }
+.search-subtitle .name-report-flag { font-size: 13px; font-weight: normal; }
+.search-subtitle .sa { margin-top: 2px; font-size: 13px; font-weight: normal; color: var(--muted); }
 
 /* キーワード取得バー（検索結果の先頭に常設）。 */
 .live-bar { justify-content: flex-start; flex-wrap: wrap; gap: 8px; }
@@ -1040,6 +1085,9 @@ html:has(.modal-backdrop.open) { overflow: hidden; }
 .gap-btn { font-size: 13px; }
 
 .modal-actions { display: flex; justify-content: space-between; gap: 8px; margin-top: 12px; }
+/* 検索モーダルのフッター左側。表示中の画面の「表紙を取得」を入れる（閉じるの左に左寄せ）。 */
+.search-actions { flex: 1; display: flex; align-items: center; flex-wrap: wrap; gap: 8px; min-width: 0; }
+.search-actions .cover-status { margin: 0; }
 .hint { color: var(--muted); font-size: 13px; }
 .spinner { color: var(--muted); font-size: 14px; padding: 10px 0; display: flex; align-items: center; gap: 8px; }
 .spinner::before {
@@ -1377,4 +1425,11 @@ footer.site .foot-reset button:hover { opacity: 1; }
 @media (max-width: 560px) {
   .ui-dialog { padding: 18px; }
   .ui-dialog-actions button { flex: 1; padding: 12px 14px; }
+}
+
+/* iOS Safari zooms into inputs under 16px on focus (and leaves the page horizontally scrollable) */
+@media (max-width: 640px) {
+  input[type="text"], textarea, select,
+  .toolbar input[type="text"],
+  .modal input[type="text"], .modal textarea { font-size: 16px; }
 }

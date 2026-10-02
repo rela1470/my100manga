@@ -388,7 +388,7 @@ function addSlot(index) {
   label.textContent = "追加";
   slot.appendChild(plus);
   slot.appendChild(label);
-  slot.addEventListener("click", openAdd);
+  slot.addEventListener("click", focusTopSearch);
   return slot;
 }
 
@@ -578,15 +578,34 @@ function placeholderCover(title) {
 }
 
 /* ---------- add / search modal ---------- */
-// 本の追加は検索モーダルから。1 巻を選ぶと即リストへ追加し、コメント/ネタバレ/表紙は
-// 追加後に編集ポップアップで設定する（本の差し替えは「削除して再追加」の運用）。
+// 本の追加はトップの検索欄から。検索結果をモーダルに出し、1 巻を選ぶと即リストへ追加する。
+// コメント/ネタバレ/表紙は追加後に編集ポップアップで設定する（本の差し替えは「削除して再追加」の運用）。
+// モーダルに検索欄は置かず、再検索はモーダルを閉じてトップの検索欄から行う。
 function openAdd() {
   state.editIndex = -1;
   state.pending = null;
-  $("searchInput").value = "";
-  $("results").innerHTML = "";
+  clearResults();
   $("searchModal").classList.add("open");
-  $("searchInput").focus();
+}
+
+// 空き枠の「追加」: トップの検索欄へ誘導する。
+function focusTopSearch() {
+  const input = $("topSearch");
+  input.scrollIntoView({ behavior: "smooth", block: "center" });
+  input.focus({ preventScroll: true });
+}
+
+// Empties the modal body, the series title under the heading (searchSubtitle) and
+// the footer slot (searchActions) that holds the current view's 表紙を取得 button,
+// so neither outlives the view it belongs to.
+function clearResults() {
+  $("searchActions").innerHTML = "";
+  const sub = $("searchSubtitle");
+  sub.innerHTML = "";
+  sub.hidden = true;
+  const box = $("results");
+  box.innerHTML = "";
+  return box;
 }
 
 function closeSearch() {
@@ -997,29 +1016,24 @@ function closeCoverPicker() {
 function topSearch() {
   const q = $("topSearch").value.trim();
   if (q.length < 2) { uiAlert("2文字以上で検索してください"); return; }
+  // Drop focus so the mobile soft keyboard folds away while results load.
+  $("topSearch").blur();
   openAdd();
-  $("searchInput").value = q;
-  doSearch();
+  doSearch(q);
 }
 
-async function doSearch() {
-  const q = $("searchInput").value.trim();
-  if (q.length < 2) {
-    uiAlert("2文字以上で検索してください");
-    return;
-  }
-  // Drop focus so the mobile soft keyboard folds away while results load.
-  $("searchInput").blur();
+async function doSearch(q) {
   lastQuery = q;
+  liveFetchedQuery = "";
   $("searchSpinner").style.display = "";
-  $("results").innerHTML = "";
+  clearResults();
   try {
     const res = await fetch(`/api/search?q=${encodeURIComponent(q)}`);
     const data = await res.json();
     if (!res.ok) throw new Error(data.error || "検索に失敗しました");
     renderResults(data.results || []);
   } catch (e) {
-    $("results").innerHTML = "";
+    clearResults();
     const p = document.createElement("p");
     p.className = "hint";
     p.textContent = e.message || "検索に失敗しました";
@@ -1031,35 +1045,31 @@ async function doSearch() {
 
 let lastResults = [];
 let lastQuery = "";
+// The query whose live fetch already succeeded. The live bar is rebuilt on every
+// renderResults, so this keeps its button in the done state for that query.
+let liveFetchedQuery = "";
 
 // Search returns series-level results. Clicking one drills into its volumes.
 function renderResults(results) {
   lastResults = results;
-  const box = $("results");
-  box.innerHTML = "";
-
-  // 常設: マスタ(月次ダンプ)に無い作品を live MADB からキーワードで取得する導線。
-  // マスタ検索が0件でも手詰まりにならないよう、結果の有無にかかわらず先頭に出す。
-  box.appendChild(buildLiveBar());
+  const box = clearResults();
 
   if (results.length === 0) {
     const p = document.createElement("p");
     p.className = "hint";
-    p.textContent = "見つかりませんでした。別の語か、上の「最新DBから取得」を試してください。";
+    p.textContent = "見つかりませんでした。別の語か、下の「最新DBから取得」を試してください。";
     box.appendChild(p);
-    return;
   }
   const pending = [];
   for (const r of results) box.appendChild(buildResultCard(r, pending));
-  if (pending.length) {
-    const bar = document.createElement("div");
-    bar.className = "vol-bar";
-    mountCoverFetch(bar, pending);
-    box.insertBefore(bar, box.querySelector(".result"));
-  }
+  mountCoverFetch($("searchActions"), pending);
+
+  // 常設: マスタ(月次ダンプ)に無い作品を live MADB からキーワードで取得する導線。
+  // マスタ検索が0件でも手詰まりにならないよう、結果の有無にかかわらず末尾に出す。
+  box.appendChild(buildLiveBar());
 }
 
-// Keyword live-fetch bar shown atop every result set. Probes MADB SPARQL for the
+// Keyword live-fetch bar shown below every result set. Probes MADB SPARQL for the
 // whole query (works absent from the master), dedupes against what's already shown,
 // and merges the finds in as `live` cards.
 function buildLiveBar() {
@@ -1071,8 +1081,13 @@ function buildLiveBar() {
   const btn = document.createElement("button");
   btn.type = "button";
   btn.className = "sup-btn";
-  btn.textContent = `「${lastQuery}」を最新DBから取得`;
-  btn.addEventListener("click", () => liveFetch(lastQuery, btn));
+  if (liveFetchedQuery === lastQuery) {
+    btn.textContent = "取得しました";
+    btn.disabled = true;
+  } else {
+    btn.textContent = `「${lastQuery}」を最新DBから取得`;
+    btn.addEventListener("click", () => liveFetch(lastQuery, btn));
+  }
   bar.appendChild(label);
   bar.appendChild(btn);
   return bar;
@@ -1152,9 +1167,9 @@ async function liveFetch(q, btn) {
     const data = await readJson(res);
     if (!res.ok) throw new Error(data.error || "取得に失敗しました。少し待って再度お試しください。");
     const live = data.results || [];
+    liveFetchedQuery = q;
     if (!live.length) {
-      btn.disabled = false;
-      btn.textContent = orig;
+      btn.textContent = "取得しました";
       uiAlert("最新DBに該当するシリーズは見つかりませんでした。");
       return;
     }
@@ -1309,8 +1324,7 @@ async function openSeries(series) {
     renderVolumes(series, series.volumes || [], { probed: true, live: true });
     return;
   }
-  const box = $("results");
-  box.innerHTML = "";
+  const box = clearResults();
   const spin = document.createElement("p");
   spin.className = "hint";
   spin.textContent = "巻を読み込み中...";
@@ -1351,6 +1365,13 @@ async function probeSupplement(seriesId) {
 }
 
 // シリーズ詳細（巻一覧）画面の取得ボタン。probe 後に一覧を再描画する。
+// Series whose 最新巻 fetch already ran in this session. Their button renders as a
+// disabled "取得しました" (no re-fetch); keyed by C-id, or title for live series.
+const supplementFetched = new Set();
+function supKey(series) {
+  return series.series_id || `live:${normKey(series.title)}`;
+}
+
 async function fetchSupplement(series, btn) {
   const orig = btn.textContent;
   btn.disabled = true;
@@ -1358,6 +1379,7 @@ async function fetchSupplement(series, btn) {
   try {
     const data = await probeSupplement(series.series_id);
     series.unconfirmed = false;
+    supplementFetched.add(supKey(series));
     renderVolumes(series, data.volumes || [], {
       probed: true,
       checkedAt: data.supplement_checked_at || Date.now(),
@@ -1383,9 +1405,9 @@ async function refetchLiveSeries(series, btn) {
     const data = await res.json();
     if (!res.ok) throw new Error(data.error || "取得に失敗しました");
     const match = (data.results || []).find((r) => normKey(r.title) === normKey(series.title));
+    supplementFetched.add(supKey(series));
     if (!match) {
-      btn.disabled = false;
-      btn.textContent = orig;
+      btn.textContent = "取得しました";
       uiAlert("最新DBに該当するシリーズは見つかりませんでした。");
       return;
     }
@@ -1409,8 +1431,7 @@ function fmtDate(ms) {
 
 function renderVolumes(series, volumes, opts) {
   opts = opts || {};
-  const box = $("results");
-  box.innerHTML = "";
+  const box = clearResults();
 
   // 自分が「間違っています」と通報した巻は、ソース(マスタ/補完/手動)を問わずこの端末では
   // 表示しない。ただし本人が誤タップを戻せるよう full list(volumes)は保持したまま、表示用の
@@ -1435,51 +1456,17 @@ function renderVolumes(series, volumes, opts) {
     addAll.addEventListener("click", () => bulkAddSeries(visible));
     bar.appendChild(addAll);
   }
-  // マスタ(月次ダンプ)に未リンクの新刊を、このボタンを押したときだけ取得する（閲覧を SPARQL
-  // 往復でブロックしないため）。取得済みでも「再取得」として常に押せるようにする。
-  // ・通常のマスタ series … サーバの /supplement を叩き、最終確認日を併記する。
-  // ・live 由来（キーワード取得でマージした／live-only）… サーバ補完はマスタ著者で照合するため
-  //   巻数が減りうる。代わりにキーワードライブ検索をやり直して埋め込み巻を更新する。
-  if (opts.live) {
-    const fetchNew = document.createElement("button");
-    fetchNew.type = "button";
-    fetchNew.className = "sup-btn";
-    fetchNew.textContent = "最新DBから再取得";
-    fetchNew.addEventListener("click", () => refetchLiveSeries(series, fetchNew));
-    bar.appendChild(fetchNew);
-  } else {
-    const parts = [];
-    if (opts.masterAt) parts.push(`マスター更新 ${fmtDate(opts.masterAt)}`);
-    if (opts.probed && opts.checkedAt) parts.push(`最終確認 ${fmtDate(opts.checkedAt)}`);
-    // 通報・問い合わせ時に特定しやすいよう、マスタのシリーズID(C-id)を日付と同じ行に控えめに添える。
-    if (parts.length || series.series_id) {
-      const stamp = document.createElement("span");
-      stamp.className = "hint sup-stamp";
-      stamp.textContent = parts.join("・");
-      if (series.series_id) {
-        if (parts.length) stamp.appendChild(document.createTextNode("・"));
-        const sid = document.createElement("span");
-        sid.className = "series-id";
-        sid.textContent = `ID ${series.series_id}`;
-        stamp.appendChild(sid);
-      }
-      bar.appendChild(stamp);
-    }
-    const fetchNew = document.createElement("button");
-    fetchNew.type = "button";
-    fetchNew.className = "sup-btn";
-    fetchNew.textContent = opts.probed ? "最新巻を再取得" : "最新巻を取得";
-    fetchNew.addEventListener("click", () => fetchSupplement(series, fetchNew));
-    bar.appendChild(fetchNew);
-  }
   box.appendChild(bar);
 
   // この端末で「間違っています」と非表示にした巻を、本人が戻せる導線（誤タップ救済）。
   if (hidden.length) box.appendChild(buildHiddenRestore(series, volumes, hidden, opts));
 
-  const head = document.createElement("p");
-  head.className = "hint";
-  head.textContent = `${series.title}`;
+  const head = $("searchSubtitle");
+  const titleEl = document.createElement("span");
+  titleEl.className = "st";
+  titleEl.textContent = series.title;
+  head.appendChild(titleEl);
+  head.hidden = false;
   // マスタのシリーズ名が壊れている場合（例: 「ハレグゥ」が「ｖ」で取り込まれている）に、
   // 閲覧者が名前の誤りを通報できる導線。live シリーズは C-id が無く通報先が無いので出さない。
   // 通報はサーバに件数だけ記録し、全体反映（名前の修正）は管理者が確定するまで行わない。
@@ -1536,7 +1523,14 @@ function renderVolumes(series, volumes, opts) {
     });
     head.appendChild(mergeFlag);
   }
-  box.appendChild(head);
+  // 作者・出版社（検索カードと同じ並び）。シリーズに作者が無ければ先頭巻の著者で補う。
+  const byline = [series.creator || (visible[0] && visible[0].author), series.publisher].filter(Boolean).join(" / ");
+  if (byline) {
+    const sa = document.createElement("div");
+    sa.className = "sa";
+    sa.textContent = byline;
+    head.appendChild(sa);
+  }
 
   // マスタに欠けている巻（例: ONE PIECE 巻110）を検出して手動追加の導線を出す。
   // live シリーズは C-id が無く訂正保存(/corrections)できないので抜け巻ピッカーは出さない。
@@ -1557,6 +1551,43 @@ function renderVolumes(series, volumes, opts) {
       gapBox.appendChild(btn);
     }
     box.appendChild(gapBox);
+  }
+
+  // マスタ(月次ダンプ)に未リンクの新刊を、このボタンを押したときだけ取得する（閲覧を SPARQL
+  // 往復でブロックしないため）。巻一覧の末尾に置く。
+  // ・通常のマスタ series … サーバの /supplement を叩き、最終確認日を併記する。
+  // ・live 由来（キーワード取得でマージした／live-only）… サーバ補完はマスタ著者で照合するため
+  //   巻数が減りうる。代わりにキーワードライブ検索をやり直して埋め込み巻を更新する。
+  // 1 回取得したら（このセッション中は）「取得しました」で押せなくする。
+  const supBar = document.createElement("div");
+  supBar.className = "vol-bar sup-bar";
+  const fetchNew = document.createElement("button");
+  fetchNew.type = "button";
+  fetchNew.className = "sup-btn";
+  if (supplementFetched.has(supKey(series))) {
+    fetchNew.textContent = "取得しました";
+    fetchNew.disabled = true;
+  } else if (opts.live) {
+    fetchNew.textContent = "最新DBから取得";
+    fetchNew.addEventListener("click", () => refetchLiveSeries(series, fetchNew));
+  } else {
+    fetchNew.textContent = "最新巻を取得";
+    fetchNew.addEventListener("click", () => fetchSupplement(series, fetchNew));
+  }
+  supBar.appendChild(fetchNew);
+  if (!opts.live) {
+    const parts = [];
+    if (opts.masterAt) parts.push(`マスター更新 ${fmtDate(opts.masterAt)}`);
+    if (opts.probed && opts.checkedAt) parts.push(`最終確認 ${fmtDate(opts.checkedAt)}`);
+    if (parts.length) {
+      const stamp = document.createElement("span");
+      stamp.className = "hint sup-stamp";
+      stamp.textContent = parts.join("・");
+      supBar.appendChild(stamp);
+    }
+    // 通報・問い合わせ時に特定しやすいよう、マスタのシリーズID(C-id)を添える。
+    // ID 部分だけを選択/コピーできるようにラベルと分け、コピーボタンも付ける。
+    if (series.series_id) supBar.appendChild(buildSeriesIdLine(series.series_id));
   }
 
   const pending = [];
@@ -1611,12 +1642,30 @@ function renderVolumes(series, volumes, opts) {
       });
     }
   }
-  if (pending.length) {
-    const fetchBar = document.createElement("div");
-    fetchBar.className = "vol-bar";
-    mountCoverFetch(fetchBar, pending);
-    box.insertBefore(fetchBar, box.querySelector(".result"));
-  }
+  box.appendChild(supBar);
+  mountCoverFetch($("searchActions"), pending);
+}
+
+function buildSeriesIdLine(id) {
+  const line = document.createElement("span");
+  line.className = "hint series-id-line";
+  line.appendChild(document.createTextNode("ID "));
+  const sid = document.createElement("span");
+  sid.className = "series-id";
+  sid.textContent = id;
+  line.appendChild(sid);
+  const btn = document.createElement("button");
+  btn.type = "button";
+  btn.className = "linkbtn copy-id";
+  btn.textContent = "コピー";
+  btn.addEventListener("click", () => {
+    navigator.clipboard?.writeText(id).then(() => {
+      btn.textContent = "コピーしました";
+      setTimeout(() => { btn.textContent = "コピー"; }, 1500);
+    });
+  });
+  line.appendChild(btn);
+  return line;
 }
 
 function volLabel(v) {
@@ -1681,8 +1730,7 @@ function detectGaps(volumes) {
 // Assisted search (Rakuten by title+volume) for one missing volume. Renders the
 // candidates inline; picking one stages it exactly like selectVolume.
 async function openGapPicker(series, gap, volumes) {
-  const box = $("results");
-  box.innerHTML = "";
+  const box = clearResults();
   const bar = document.createElement("div");
   bar.className = "vol-bar";
   const back = document.createElement("button");
@@ -1917,8 +1965,7 @@ async function reportWrongSeriesName(series, btn, textEl) {
 // サーバが同じタイトル・同じ著者のシリーズから出す。候補に無ければシリーズID（巻一覧の
 // 右上に出している C-id）で直接指定できる。依頼は件数だけ記録され、結合は管理者が確定する。
 async function openMergeRequest(series, volumes, opts) {
-  const box = $("results");
-  box.innerHTML = "";
+  const box = clearResults();
   const bar = document.createElement("div");
   bar.className = "vol-bar";
   const back = document.createElement("button");
@@ -2655,8 +2702,6 @@ function wireEvents() {
   $("confirmPublish").addEventListener("click", confirmPublish);
   $("cancelPublish").addEventListener("click", () => $("publishModal").classList.remove("open"));
   $("ownerInput").addEventListener("keydown", (e) => { if (e.key === "Enter" && !e.isComposing) confirmPublish(); });
-  $("searchBtn").addEventListener("click", doSearch);
-  $("searchInput").addEventListener("keydown", (e) => { if (e.key === "Enter" && !e.isComposing) doSearch(); });
   $("cancelSearch").addEventListener("click", closeSearch);
   $("saveSlot").addEventListener("click", saveSlot);
   $("removeSlot").addEventListener("click", removeSlot);

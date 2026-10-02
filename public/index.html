@@ -25,13 +25,13 @@
       </div>
     </div>
 
+    <div class="grid" id="grid" aria-label="100作品グリッド"></div>
+
     <div class="action-bar" id="actionBar" style="display:none">
       <button id="fetchCovers" class="primary" style="display:none">表紙を取得</button>
       <button id="fixMissing" style="display:none">表紙がない本を指定</button>
       <p class="cover-status" id="coverStatus" style="display:none"></p>
     </div>
-
-    <div class="grid" id="grid" aria-label="100作品グリッド"></div>
 
     <div class="diff-bar" id="diffBar" style="display:none">
       <span class="diff-count" id="diffCount"></span>
@@ -64,17 +64,14 @@
   <!--FOOTER_AFF-->
 
   <!-- add / search modal -->
-  <div class="modal-backdrop" id="searchModal">
+  <div class="modal-backdrop modal-full" id="searchModal">
     <div class="modal">
       <h2 id="searchTitle">作品を追加</h2>
-      <div class="row">
-        <input type="text" id="searchInput" placeholder="漫画のタイトルで検索（2文字以上）">
-        <button id="searchBtn">検索</button>
-      </div>
+      <div class="search-subtitle" id="searchSubtitle" hidden></div>
       <div class="spinner" id="searchSpinner" style="display:none">検索中...</div>
       <div class="results" id="results"></div>
       <div class="modal-actions">
-        <div style="flex:1"></div>
+        <div class="search-actions" id="searchActions"></div>
         <button id="cancelSearch">閉じる</button>
       </div>
     </div>

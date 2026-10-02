@@ -253,6 +253,8 @@
         <button data-merge-mode="candidates" class="merge-mode">自動検出の候補</button>
         <button data-merge-mode="merges" class="merge-mode">結合済み</button>
         <button data-merge-mode="links" class="merge-mode">巻の紐付け</button>
+        <button data-merge-mode="splitRequests" class="merge-mode">分離の依頼</button>
+        <button data-merge-mode="split" class="merge-mode">分離</button>
         <button id="reloadMerge">再読み込み</button>
       </div>
       <p class="hint">
@@ -265,6 +267,9 @@
         ID が「G…」のものはシリーズに属さない巻のまとまり（書名＋著者）です。結合すると巻を
         残す側のシリーズに紐付け、残す側が「G…」なら独自シリーズ（「U…」）を作ります
         （「巻の紐付け」から解除できます。名前は名前修正で直せます）。
+        「分離」は逆に、1 つのシリーズに混ざった別の版（例: キン肉マン C261524 の復刻版）を
+        ISBN を選んで独自シリーズへ移します（再取り込みでも維持され、「巻の紐付け」から解除すると元のシリーズに戻ります）。
+        「分離の依頼」は閲覧者の「別の版が混ざっている？」で、依頼された巻を選んだ状態で分離の画面を開けます。
       </p>
       <p class="hint" id="mergeHint" style="display:none"></p>
       <div id="mergeList"></div>

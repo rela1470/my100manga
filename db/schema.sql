@@ -269,10 +269,14 @@ CREATE TABLE IF NOT EXISTS custom_series (
   label      TEXT,
   created_at INTEGER NOT NULL
 );
+-- シリーズの分離（1 つの C-id に混ざった別の版、例: キン肉マン C261524 の復刻版を独自シリーズへ
+-- 移す）も同じ表に from_series_id 付きで記録する。取り込み後の載せ直し・解除は「巻が今
+-- from_series_id にいる（NULL ならシリーズ無し）」ときだけ書き換える・そこへ戻す。
 CREATE TABLE IF NOT EXISTS volume_series_link (
-  isbn       TEXT PRIMARY KEY,   -- シリーズの無いマスタ巻の ISBN13
+  isbn       TEXT PRIMARY KEY,   -- マスタ巻の ISBN13
   series_id  TEXT NOT NULL,      -- 紐付け先（C-id か U-id）
-  created_at INTEGER NOT NULL    -- 1 回の結合で紐付けた巻は同じ値（解除の単位）
+  created_at INTEGER NOT NULL,   -- 1 回の結合・分離で紐付けた巻は同じ値（解除の単位）
+  from_series_id TEXT            -- 分離元の C-id（NULL = シリーズ無しの巻の紐付け）
 );
 CREATE INDEX IF NOT EXISTS idx_volume_series_link_series ON volume_series_link (series_id);
 
@@ -289,6 +293,20 @@ CREATE TABLE IF NOT EXISTS series_merge_request (
   PRIMARY KEY (series_a, series_b)
 );
 CREATE INDEX IF NOT EXISTS idx_series_merge_request_last ON series_merge_request (last_reported_at);
+
+-- 閲覧者の「別の版が混ざっている？」依頼（シリーズの分離の依頼）。結合依頼と同じ collect-only
+-- 方針で、全体反映は管理者の確定まで行わない。閲覧者が別の版だと選んだ巻を ISBN ごとに 1 行、
+-- 繰り返しの依頼は report_count を増やす。series_id は結合済みなら残す側。管理者は 分離（移した
+-- ISBN の行を消す）か 却下（そのシリーズの行を消す）。See src/merge.ts (requestSeriesSplit)。
+CREATE TABLE IF NOT EXISTS series_split_request (
+  series_id         TEXT NOT NULL,   -- 依頼されたシリーズ（C-id / U-id）
+  isbn              TEXT NOT NULL,   -- 別の版だと選ばれた巻の ISBN13
+  report_count      INTEGER NOT NULL DEFAULT 0,
+  first_reported_at INTEGER NOT NULL,
+  last_reported_at  INTEGER NOT NULL,
+  PRIMARY KEY (series_id, isbn)
+);
+CREATE INDEX IF NOT EXISTS idx_series_split_request_last ON series_split_request (last_reported_at);
 
 -- 管理画面の自動検出候補（名前・著者・出版社・レーベルが同じで巻番号が重ならない組）を
 -- 「別の版なので結合しない」と却下した記録。group_key は候補グループの未結合メンバーの

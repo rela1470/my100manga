@@ -5,6 +5,7 @@ import {
   isGroupId,
   loadGroup,
   resolveGroup,
+  unattributedGroupsFor,
   nextCustomSeriesId,
   createCustomSeriesStmts,
   linkStmts,
@@ -21,6 +22,11 @@ import {
 // シリーズに属さない巻のまとまり（G<ISBN>, src/groups.ts）も結合の相手にできる。依頼には
 // G-id のまま記録し、確定時にグループの巻を残す側へ ISBN 単位で紐付ける（volume_series_link）。
 // 残す側がグループなら、そこから独自シリーズ（U…）を作って残す側にする。
+//
+// 逆に、1 つの C-id に別の版が混ざっていることもある（例: キン肉マン C261524 に 1〜36巻の
+// 復刻版が入っていて、12〜36巻が元の版と二重に並ぶ）。管理者が ISBN を選んで独自シリーズへ
+// 移す（分離）。仕組みは紐付けと同じで、volume_series_link に分離元（from_series_id）付きで
+// 記録し、解除すると分離元に戻す。
 
 // D1 の bind パラメータ上限を避けるための IN 句チャンク（readCachedCovers と同じ）。
 const CHUNK = 90;
@@ -193,14 +199,16 @@ const publicInfo = (i: SeriesInfo) => ({
 
 /** GET /api/series/:id/merge-candidates — 「シリーズが分かれている？」の候補。同じ正規化
  *  タイトル（name_norm）で同じ著者のシリーズを、結合済みは target に読み替えて返す。
- *  出版社/レーベル違いも候補に含める（判断は閲覧者と管理者に委ねる）。 */
+ *  出版社/レーベル違いも候補に含める（判断は閲覧者と管理者に委ねる）。続けて、どのシリーズにも
+ *  寄せられていない同名のグループ（unattributedGroupsFor）を返す。同名シリーズが複数ある書名の
+ *  迷子巻は検索に出ないので、シリーズページからたどり着ける入口はここだけになる。 */
 export async function getMergeCandidates(env: Env, seriesId: string): Promise<Response> {
   const self = await resolveUnit(env, seriesId);
   if (!self) return notFound("シリーズが見つかりません");
   if (isGroupId(self)) return getGroupMergeCandidates(env, self);
-  const meta = await env.DB.prepare(`SELECT id, name_norm, creator FROM series WHERE id = ?`)
+  const meta = await env.DB.prepare(`SELECT id, name, name_norm, creator FROM series WHERE id = ?`)
     .bind(self)
-    .first<{ id: string; name_norm: string; creator: string | null }>();
+    .first<{ id: string; name: string; name_norm: string; creator: string | null }>();
   if (!meta) return notFound("シリーズが見つかりません");
 
   const res = await env.DB.prepare(
@@ -219,8 +227,12 @@ export async function getMergeCandidates(env: Env, seriesId: string): Promise<Re
     .filter((i): i is SeriesInfo => !!i && i.volume_count > 0)
     .sort((a, b) => b.volume_count - a.volume_count)
     .map(publicInfo);
+  const groups = (await unattributedGroupsFor(env, meta.name))
+    .filter((g) => g.volumes.length > 0)
+    .sort((a, b) => b.volumes.length - a.volumes.length)
+    .map((g) => publicInfo(groupInfo(g.id, g)));
   return json(
-    { series: selfInfo ? publicInfo(selfInfo) : null, candidates },
+    { series: selfInfo ? publicInfo(selfInfo) : null, candidates: [...candidates, ...groups] },
     200,
     { "cache-control": "no-store" }
   );
@@ -309,6 +321,60 @@ export async function requestSeriesMerge(request: Request, env: Env, seriesId: s
     })
   );
   return json({ ok: true, count: bs.length }, 200, { "cache-control": "no-store" });
+}
+
+/** 1 回の分離依頼で送れる ISBN の上限（兄弟 ISBN 込み。長期連載の別の版をまとめて選べる程度）。 */
+const SPLIT_REQUEST_MAX = 500;
+
+/** POST /api/series/:id/split-request — 「このシリーズに別の版が混ざっている」と分離を依頼する。
+ *  body: { isbns: [] }（別の版だと選んだ巻の ISBN。兄弟 ISBN 込み）。結合依頼と同じ collect-only
+ *  方針で、ISBN ごとに件数だけ記録し、分離は管理者が確定する。マスタの巻（volumes にあり、
+ *  このシリーズ＝結合済みなら全 member に属するもの）だけを記録し、補完・ユーザ投稿の巻は
+ *  分離の対象外なので黙って除く。全巻を選んだ依頼は分離にならないので弾く。 */
+export async function requestSeriesSplit(request: Request, env: Env, seriesId: string): Promise<Response> {
+  const body = (await readJsonObject(request)) as { isbns?: unknown };
+  const isbns = Array.isArray(body.isbns)
+    ? [...new Set(body.isbns.filter((x): x is string => typeof x === "string" && /^\d{13}$/.test(x)))]
+    : [];
+  if (!isbns.length) return badRequest("別の版の巻を選んでください");
+  if (isbns.length > SPLIT_REQUEST_MAX) return badRequest("選んだ巻が多すぎます");
+  const id = seriesId.toUpperCase();
+  if (isGroupId(id)) return badRequest("シリーズに属さないまとまりは分離を依頼できません");
+
+  const target = await resolveMergeTarget(env, id);
+  const members = await mergeMembers(env, target);
+  const inMembers = members.map(() => "?").join(",");
+  const total =
+    (
+      await env.DB.prepare(`SELECT COUNT(*) AS n FROM volumes WHERE series_id IN (${inMembers})`)
+        .bind(...members)
+        .first<{ n: number }>()
+    )?.n ?? 0;
+  if (!total) return notFound(`シリーズが見つかりません: ${seriesId}`);
+
+  const found: string[] = [];
+  for (let i = 0; i < isbns.length; i += CHUNK) {
+    const chunk = isbns.slice(i, i + CHUNK);
+    const res = await env.DB.prepare(
+      `SELECT isbn FROM volumes WHERE series_id IN (${inMembers}) AND isbn IN (${chunk.map(() => "?").join(",")})`
+    )
+      .bind(...members, ...chunk)
+      .all<{ isbn: string }>();
+    for (const r of res.results ?? []) found.push(r.isbn);
+  }
+  if (!found.length) return badRequest("選んだ巻はこのシリーズのマスターの巻ではありません");
+  if (found.length >= total) return badRequest("全ての巻を選ぶと分離になりません。別の版の巻だけを選んでください");
+
+  const now = Date.now();
+  const stmt = env.DB.prepare(
+    `INSERT INTO series_split_request (series_id, isbn, report_count, first_reported_at, last_reported_at)
+     VALUES (?, ?, 1, ?, ?)
+     ON CONFLICT (series_id, isbn) DO UPDATE SET
+       report_count = report_count + 1,
+       last_reported_at = excluded.last_reported_at`
+  );
+  await env.DB.batch(found.map((isbn) => stmt.bind(target, isbn, now, now)));
+  return json({ ok: true, count: found.length }, 200, { "cache-control": "no-store" });
 }
 
 // ── 管理画面 ──────────────────────────────────────────────────────────────
@@ -603,16 +669,21 @@ export async function adminListLinks(env: Env, opts: PageOpts): Promise<Response
       ).first<{ n: number }>()
     )?.n ?? 0;
   const res = await env.DB.prepare(
-    `SELECT l.series_id, l.created_at, COUNT(*) AS isbn_count,
-            json_group_array(DISTINCT v.title) AS titles,
-            COALESCE(o.name, s.name) AS series_name,
-            EXISTS(SELECT 1 FROM custom_series cs WHERE cs.id = l.series_id) AS custom
-       FROM volume_series_link l
-       LEFT JOIN volumes v ON v.isbn = l.isbn
-       LEFT JOIN series s ON s.id = l.series_id
-       LEFT JOIN series_name_override o ON o.series_id = l.series_id
-      GROUP BY l.series_id, l.created_at
-      ORDER BY l.created_at DESC LIMIT ? OFFSET ?`
+    `SELECT g.*, COALESCE(fo.name, fs.name) AS from_series_name
+       FROM (SELECT l.series_id, l.created_at, COUNT(*) AS isbn_count,
+                    json_group_array(DISTINCT v.title) AS titles,
+                    COALESCE(o.name, s.name) AS series_name,
+                    EXISTS(SELECT 1 FROM custom_series cs WHERE cs.id = l.series_id) AS custom,
+                    MAX(l.from_series_id) AS from_series_id
+               FROM volume_series_link l
+               LEFT JOIN volumes v ON v.isbn = l.isbn
+               LEFT JOIN series s ON s.id = l.series_id
+               LEFT JOIN series_name_override o ON o.series_id = l.series_id
+              GROUP BY l.series_id, l.created_at
+              ORDER BY l.created_at DESC LIMIT ? OFFSET ?) g
+       LEFT JOIN series fs ON fs.id = g.from_series_id
+       LEFT JOIN series_name_override fo ON fo.series_id = g.from_series_id
+      ORDER BY g.created_at DESC`
   )
     .bind(opts.per, opts.offset)
     .all<{
@@ -622,6 +693,8 @@ export async function adminListLinks(env: Env, opts: PageOpts): Promise<Response
       titles: string | null;
       series_name: string | null;
       custom: number;
+      from_series_id: string | null;
+      from_series_name: string | null;
     }>();
   const links = (res.results ?? []).map((r) => ({
     series_id: r.series_id,
@@ -631,12 +704,15 @@ export async function adminListLinks(env: Env, opts: PageOpts): Promise<Response
     titles: (JSON.parse(r.titles ?? "[]") as (string | null)[]).filter((t): t is string => !!t),
     series_name: r.series_name ?? "",
     custom: !!r.custom,
+    // 分離（別の版を独自シリーズへ移したもの）なら分離元。null はシリーズ無しの巻の紐付け。
+    from_series_id: r.from_series_id,
+    from_series_name: r.from_series_name ?? "",
   }));
   return json({ links, total, page: opts.page, per: opts.per }, 200, { "cache-control": "no-store" });
 }
 
-/** 紐付けを解除する（その回に紐付けた巻をシリーズ無しに戻す）。独自シリーズに巻も結合も
- *  残らなければ独自シリーズごと消す。 */
+/** 紐付けを解除する（その回に紐付けた巻を元に戻す: シリーズ無しの巻はシリーズ無しに、分離した
+ *  巻は分離元に）。独自シリーズに巻も結合も残らなければ独自シリーズごと消す。 */
 export async function adminUnlinkVolumes(env: Env, seriesId: string, createdAt: number): Promise<Response> {
   const res = await env.DB.prepare(
     `SELECT isbn FROM volume_series_link WHERE series_id = ? AND created_at = ?`
@@ -646,17 +722,20 @@ export async function adminUnlinkVolumes(env: Env, seriesId: string, createdAt: 
   const isbns = (res.results ?? []).map((r) => r.isbn);
   if (!isbns.length) return notFound("紐付けが見つかりません");
 
-  const stmts: D1PreparedStatement[] = [
-    env.DB.prepare(`DELETE FROM volume_series_link WHERE series_id = ? AND created_at = ?`).bind(seriesId, createdAt),
-  ];
+  // 戻し先は紐付けの行から引くので、行を消す前に volumes を戻す。
+  const stmts: D1PreparedStatement[] = [];
   for (let i = 0; i < isbns.length; i += CHUNK) {
     const chunk = isbns.slice(i, i + CHUNK);
     stmts.push(
       env.DB.prepare(
-        `UPDATE volumes SET series_id = NULL WHERE series_id = ? AND isbn IN (${chunk.map(() => "?").join(",")})`
+        `UPDATE volumes SET series_id = (SELECT l.from_series_id FROM volume_series_link l WHERE l.isbn = volumes.isbn)
+          WHERE series_id = ? AND isbn IN (${chunk.map(() => "?").join(",")})`
       ).bind(seriesId, ...chunk)
     );
   }
+  stmts.push(
+    env.DB.prepare(`DELETE FROM volume_series_link WHERE series_id = ? AND created_at = ?`).bind(seriesId, createdAt)
+  );
   await env.DB.batch(stmts);
 
   let removedSeries = false;
@@ -677,4 +756,184 @@ export async function adminUnlinkVolumes(env: Env, seriesId: string, createdAt: 
     removedSeries = true;
   }
   return json({ ok: true, isbns: isbns.length, removed_series: removedSeries });
+}
+
+/** 分離の画面用: シリーズ（結合済みなら全 member）の巻を ISBN ごとに返す。巻一覧の API は
+ *  同じ巻番号の ISBN を 1 巻にまとめてしまうので、別の版を 1 冊ずつ選べるよう生の行を返す。 */
+export async function adminSplitSourceVolumes(env: Env, seriesId: string): Promise<Response> {
+  if (isGroupId(seriesId)) return badRequest("シリーズに属さないまとまりは分離できません");
+  const target = await resolveMergeTarget(env, seriesId);
+  const meta = await env.DB.prepare(
+    `SELECT s.id, COALESCE(o.name, s.name) AS name, s.creator, s.publisher, s.label
+       FROM series s LEFT JOIN series_name_override o ON o.series_id = s.id WHERE s.id = ?`
+  )
+    .bind(target)
+    .first<{ id: string; name: string; creator: string | null; publisher: string | null; label: string | null }>();
+  if (!meta) return notFound("シリーズが見つかりません");
+  const members = await mergeMembers(env, target);
+  // 閲覧者の分離依頼で「別の版」と選ばれた回数も添える（画面で依頼された巻を選んだ状態にする）。
+  const res = await env.DB.prepare(
+    `SELECT v.isbn, v.series_id, v.volume_number, v.vol_sort, v.title, v.label, v.pubdate,
+            COALESCE(r.report_count, 0) AS report_count
+       FROM volumes v
+       LEFT JOIN series_split_request r ON r.series_id = ? AND r.isbn = v.isbn
+      WHERE v.series_id IN (${members.map(() => "?").join(",")})
+      ORDER BY v.vol_sort, v.pubdate, v.isbn`
+  )
+    .bind(target, ...members)
+    .all<{
+      isbn: string;
+      series_id: string;
+      volume_number: string | null;
+      vol_sort: number | null;
+      title: string;
+      label: string | null;
+      pubdate: string | null;
+      report_count: number;
+    }>();
+  return json(
+    { series_id: meta.id, name: meta.name, creator: meta.creator ?? "", label: meta.label ?? "", volumes: res.results ?? [] },
+    200,
+    { "cache-control": "no-store" }
+  );
+}
+
+/** シリーズを分離する。body: { source_id, isbns: [], name }。選んだ ISBN を新しい独自シリーズ
+ *  （名前は name、著者・出版社・レーベルは分離元から）へ移す。結合済みのシリーズなら全 member の巻
+ *  から選べ、巻ごとに今いる member を分離元として記録する。全巻を移すことはできない。 */
+export async function adminSplitSeries(request: Request, env: Env): Promise<Response> {
+  const body = (await readJsonObject(request)) as { source_id?: unknown; isbns?: unknown; name?: unknown };
+  const sourceRaw = typeof body.source_id === "string" ? body.source_id : "";
+  const name = typeof body.name === "string" ? body.name.trim().slice(0, 200) : "";
+  const isbns = Array.isArray(body.isbns)
+    ? [...new Set(body.isbns.filter((x): x is string => typeof x === "string"))]
+    : [];
+  if (!ID_RE.test(sourceRaw) || isGroupId(sourceRaw)) return badRequest("source_id が不正です");
+  if (!isbns.length || !isbns.every((i) => /^\d{13}$/.test(i))) return badRequest("isbns が不正です");
+  if (!name) return badRequest("名前を入力してください");
+
+  const target = await resolveMergeTarget(env, sourceRaw);
+  const meta = await env.DB.prepare(`SELECT creator, publisher, label FROM series WHERE id = ?`)
+    .bind(target)
+    .first<{ creator: string | null; publisher: string | null; label: string | null }>();
+  if (!meta) return notFound("シリーズが見つかりません");
+  const members = await mergeMembers(env, target);
+  const inMembers = members.map(() => "?").join(",");
+  const total =
+    (
+      await env.DB.prepare(`SELECT COUNT(*) AS n FROM volumes WHERE series_id IN (${inMembers})`)
+        .bind(...members)
+        .first<{ n: number }>()
+    )?.n ?? 0;
+
+  // 選んだ ISBN が分離元の巻であることを確かめ、今いる member ごとに分ける。
+  const fromOf = new Map<string, string[]>();
+  for (let i = 0; i < isbns.length; i += CHUNK) {
+    const chunk = isbns.slice(i, i + CHUNK);
+    const res = await env.DB.prepare(
+      `SELECT isbn, series_id FROM volumes
+        WHERE series_id IN (${inMembers}) AND isbn IN (${chunk.map(() => "?").join(",")})`
+    )
+      .bind(...members, ...chunk)
+      .all<{ isbn: string; series_id: string }>();
+    for (const r of res.results ?? []) {
+      const list = fromOf.get(r.series_id);
+      if (list) list.push(r.isbn);
+      else fromOf.set(r.series_id, [r.isbn]);
+    }
+  }
+  const found = [...fromOf.values()].reduce((n, l) => n + l.length, 0);
+  if (found !== isbns.length) return badRequest("このシリーズの巻ではない ISBN が含まれています");
+  if (found >= total) return badRequest("全ての巻は分離できません");
+
+  const now = Date.now();
+  const created = await nextCustomSeriesId(env);
+  const stmts: D1PreparedStatement[] = createCustomSeriesStmts(
+    env,
+    created,
+    { title: name, creator: meta.creator ?? "", publisher: meta.publisher ?? "", label: meta.label ?? "" },
+    now
+  );
+  for (const [from, list] of fromOf) stmts.push(...linkStmts(env, list, created, now, from));
+  // 移した巻への分離依頼は片付く（残りの巻への依頼は管理者が却下するまで残す）。
+  for (let i = 0; i < isbns.length; i += CHUNK) {
+    const chunk = isbns.slice(i, i + CHUNK);
+    stmts.push(
+      env.DB.prepare(
+        `DELETE FROM series_split_request WHERE series_id = ? AND isbn IN (${chunk.map(() => "?").join(",")})`
+      ).bind(target, ...chunk)
+    );
+  }
+  await env.DB.batch(stmts);
+  return json({ ok: true, source_id: target, created_series: created, isbns: found });
+}
+
+/** 分離依頼の一覧（シリーズ単位、最後の依頼が新しい順）。依頼された巻（巻番号・依頼回数）を
+ *  添えて返す。分離するときは分離の画面に読み込み直す（依頼された巻が選ばれた状態で開く）。 */
+export async function adminListSplitRequests(env: Env, opts: PageOpts): Promise<Response> {
+  const total =
+    (await env.DB.prepare(`SELECT COUNT(DISTINCT series_id) AS n FROM series_split_request`).first<{ n: number }>())
+      ?.n ?? 0;
+  const res = await env.DB.prepare(
+    `SELECT g.series_id, g.report_count, g.isbn_count, g.first_reported_at, g.last_reported_at,
+            COALESCE(o.name, s.name) AS name, s.label,
+            (SELECT COUNT(*) FROM volumes v WHERE v.series_id = g.series_id
+                OR v.series_id IN (SELECT absorbed_id FROM series_merge WHERE target_id = g.series_id)) AS volume_count
+       FROM (SELECT series_id, MAX(report_count) AS report_count, COUNT(*) AS isbn_count,
+                    MIN(first_reported_at) AS first_reported_at, MAX(last_reported_at) AS last_reported_at
+               FROM series_split_request GROUP BY series_id
+              ORDER BY last_reported_at DESC LIMIT ? OFFSET ?) g
+       LEFT JOIN series s ON s.id = g.series_id
+       LEFT JOIN series_name_override o ON o.series_id = g.series_id
+      ORDER BY g.last_reported_at DESC`
+  )
+    .bind(opts.per, opts.offset)
+    .all<{
+      series_id: string;
+      report_count: number;
+      isbn_count: number;
+      first_reported_at: number;
+      last_reported_at: number;
+      name: string | null;
+      label: string | null;
+      volume_count: number;
+    }>();
+  const rows = res.results ?? [];
+  // 依頼された巻の中身（巻番号）。ページ内のシリーズ分だけ引く。
+  const vols = new Map<string, { isbn: string; volume_number: string; pubdate: string; report_count: number }[]>();
+  if (rows.length) {
+    const ids = rows.map((r) => r.series_id);
+    const vr = await env.DB.prepare(
+      `SELECT r.series_id, r.isbn, r.report_count, v.volume_number, v.pubdate
+         FROM series_split_request r LEFT JOIN volumes v ON v.isbn = r.isbn
+        WHERE r.series_id IN (${ids.map(() => "?").join(",")})
+        ORDER BY r.series_id, v.vol_sort, v.pubdate, r.isbn`
+    )
+      .bind(...ids)
+      .all<{ series_id: string; isbn: string; report_count: number; volume_number: string | null; pubdate: string | null }>();
+    for (const v of vr.results ?? []) {
+      const list = vols.get(v.series_id) ?? [];
+      list.push({ isbn: v.isbn, volume_number: v.volume_number ?? "", pubdate: v.pubdate ?? "", report_count: v.report_count });
+      vols.set(v.series_id, list);
+    }
+  }
+  const requests = rows.map((r) => ({
+    series_id: r.series_id,
+    name: r.name ?? "",
+    label: r.label ?? "",
+    volume_count: r.volume_count,
+    report_count: r.report_count,
+    isbn_count: r.isbn_count,
+    first_reported_at: r.first_reported_at,
+    last_reported_at: r.last_reported_at,
+    volumes: vols.get(r.series_id) ?? [],
+  }));
+  return json({ requests, total, page: opts.page, per: opts.per }, 200, { "cache-control": "no-store" });
+}
+
+/** 分離依頼を却下する（そのシリーズへの依頼を全て消す）。 */
+export async function adminDismissSplitRequest(env: Env, seriesId: string): Promise<Response> {
+  const res = await env.DB.prepare(`DELETE FROM series_split_request WHERE series_id = ?`).bind(seriesId).run();
+  if (!(res.meta?.changes ?? 0)) return notFound("依頼が見つかりません");
+  return json({ ok: true, series_id: seriesId });
 }

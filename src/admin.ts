@@ -129,20 +129,20 @@ export async function adminStats(env: Env): Promise<Response> {
 
   return json(
     {
-      // dev=true のとき管理 UI が開発用の「DB初期化」を表示する。DEV_TOOLS を立てた本番でも
-      // true になる（認証は別途 requireAdmin が担保）。無効環境では false で UI にも出さない。
-      dev: devToolsEnabled(env),
-      stats: {
-        lists,
-        series,
-        volumes,
-        covers,
-        corrections,
-        reports,
-        volume_reports,
-        series_reports,
-        cover_suggestions,
-      },
+    // dev=true のとき管理 UI が開発用の「DB初期化」を表示する。DEV_TOOLS を立てた本番でも
+    // true になる（認証は別途 requireAdmin が担保）。無効環境では false で UI にも出さない。
+    dev: devToolsEnabled(env),
+    stats: {
+      lists,
+      series,
+      volumes,
+      covers,
+      corrections,
+      reports,
+      volume_reports,
+      series_reports,
+      cover_suggestions,
+    },
     },
     200,
     { "cache-control": "no-store" }
@@ -158,16 +158,25 @@ export async function adminTodo(env: Env): Promise<Response> {
     return row?.n ?? 0;
   };
 
-  const [reports, volume_reports, series_reports, merge_requests, volume_title_reports, corrections, cover_suggestions] =
-    await Promise.all([
-      count(`SELECT COUNT(*) AS n FROM reports WHERE resolved_at = 0`),
-      count(`SELECT COUNT(*) AS n FROM volume_report`),
-      count(`SELECT COUNT(*) AS n FROM series_report`),
-      count(`SELECT COUNT(*) AS n FROM series_merge_request`),
-      count(`SELECT COUNT(*) AS n FROM volume_title_report`),
-      count(`SELECT COUNT(*) AS n FROM series_correction WHERE reviewed_at = 0`),
-      count(`SELECT COUNT(*) AS n FROM cover_suggestion WHERE resolved_at = 0`),
-    ]);
+  const [
+    reports,
+    volume_reports,
+    series_reports,
+    merge_requests,
+    split_requests,
+    volume_title_reports,
+    corrections,
+    cover_suggestions,
+  ] = await Promise.all([
+    count(`SELECT COUNT(*) AS n FROM reports WHERE resolved_at = 0`),
+    count(`SELECT COUNT(*) AS n FROM volume_report`),
+    count(`SELECT COUNT(*) AS n FROM series_report`),
+    count(`SELECT COUNT(*) AS n FROM series_merge_request`),
+    count(`SELECT COUNT(DISTINCT series_id) AS n FROM series_split_request`),
+    count(`SELECT COUNT(*) AS n FROM volume_title_report`),
+    count(`SELECT COUNT(*) AS n FROM series_correction WHERE reviewed_at = 0`),
+    count(`SELECT COUNT(*) AS n FROM cover_suggestion WHERE resolved_at = 0`),
+  ]);
 
   return json(
     {
@@ -176,6 +185,7 @@ export async function adminTodo(env: Env): Promise<Response> {
         volume_reports,
         series_reports,
         merge_requests,
+        split_requests,
         volume_title_reports,
         corrections,
         cover_suggestions,
@@ -211,6 +221,7 @@ const DEV_RESET_TABLES = [
   "series_name_override",
   "series_merge",
   "series_merge_request",
+  "series_split_request",
   "series_merge_dismissed",
   "volume_title_report",
   "volume_title_override",

@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 // ローカル D1 で管理者が確定したシリーズ結合（series_merge / series_merge_dismissed、
-// シリーズに属さない巻の紐付け custom_series / volume_series_link）を
+// シリーズに属さない巻の紐付け・シリーズの分離 custom_series / volume_series_link）を
 // SQL にダンプし、本番へいつでもリストアできるようにする。結合はローカルの管理画面で
 // まとめて判断し、結果だけを本番に流す運用のためのもの。
 //
@@ -45,7 +45,7 @@ const customs = query(
   "SELECT id, name, name_norm, creator, publisher, label, created_at FROM custom_series ORDER BY id"
 );
 const links = query(
-  "SELECT isbn, series_id, created_at FROM volume_series_link ORDER BY series_id, isbn"
+  "SELECT isbn, series_id, created_at, from_series_id FROM volume_series_link ORDER BY series_id, isbn"
 );
 const qn = (v) => (v == null ? "NULL" : q(v));
 
@@ -54,7 +54,7 @@ const lines = [
   `-- 生成: ${new Date().toISOString()}  series_merge ${merges.length} 件 / series_merge_dismissed ${dismissed.length} 件` +
     ` / custom_series ${customs.length} 件 / volume_series_link ${links.length} 件`,
   "-- リストア: npx wrangler d1 execute DB --remote --file db/series-merge-data.sql",
-  "-- 前提: db/add-series-merge.sql・db/add-custom-series.sql 適用済み。upsert なので何度流しても安全。",
+  "-- 前提: db/add-series-merge.sql・db/add-custom-series.sql・db/add-series-split.sql 適用済み。upsert なので何度流しても安全。",
   "",
 ];
 for (const m of merges) {
@@ -79,8 +79,10 @@ for (const c of customs) {
 }
 for (const l of links) {
   lines.push(
-    `INSERT INTO volume_series_link (isbn, series_id, created_at) VALUES (${q(l.isbn)}, ${q(l.series_id)}, ${Number(l.created_at)})` +
-      " ON CONFLICT (isbn) DO UPDATE SET series_id = excluded.series_id, created_at = excluded.created_at;"
+    "INSERT INTO volume_series_link (isbn, series_id, created_at, from_series_id) VALUES " +
+      `(${q(l.isbn)}, ${q(l.series_id)}, ${Number(l.created_at)}, ${qn(l.from_series_id)})` +
+      " ON CONFLICT (isbn) DO UPDATE SET series_id = excluded.series_id, created_at = excluded.created_at," +
+      " from_series_id = excluded.from_series_id;"
   );
 }
 // 独自シリーズを series に、紐付けを volumes に反映する（src/groups.ts APPLY_LINKS_SQL と同じ）。
@@ -88,7 +90,8 @@ lines.push(
   "INSERT OR REPLACE INTO series (id, name, name_norm, name_kana, name_kana_norm, creator, publisher, label, num_items)",
   "  SELECT id, name, name_norm, NULL, NULL, creator, publisher, label, NULL FROM custom_series;",
   "UPDATE volumes SET series_id = (SELECT l.series_id FROM volume_series_link l WHERE l.isbn = volumes.isbn)",
-  "  WHERE series_id IS NULL AND isbn IN (SELECT isbn FROM volume_series_link);"
+  "  WHERE isbn IN (SELECT isbn FROM volume_series_link)",
+  "    AND series_id IS (SELECT l.from_series_id FROM volume_series_link l WHERE l.isbn = volumes.isbn);"
 );
 // 結合で片付いた依頼（両方が同じ単位に入ったもの）を消す。src/merge.ts
 // CLEANUP_MERGE_REQUESTS_SQL と同じ条件（G-id は紐付け先、結合済みは残す側に読み替える）。

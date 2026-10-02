@@ -69,17 +69,18 @@ const PRUNE_SUPPLEMENT_SQL =
   "OR (v.series_id = series_supplement.series_id AND v.vol_sort = json_extract(j.value, '$.vol_sort')))" +
   "), '[]');";
 
-// Re-apply admin-confirmed links for volumes the master leaves series-less (see
-// src/groups.ts APPLY_LINKS_SQL — keep in sync): custom series go back into `series`,
-// linked ISBNs get their series_id again. Volumes the new master links itself are left
-// alone (series_id IS NULL guard).
+// Re-apply admin-confirmed links (see src/groups.ts APPLY_LINKS_SQL — keep in sync):
+// custom series go back into `series`, linked ISBNs get their series_id again. Only
+// volumes still where they were when linked are rewritten — series-less (from_series_id
+// NULL) or still in the split source — so the new master's own re-filing wins.
 const APPLY_LINKS_SQL = [
   "CREATE TABLE IF NOT EXISTS custom_series (id TEXT PRIMARY KEY, name TEXT NOT NULL, name_norm TEXT NOT NULL, creator TEXT, publisher TEXT, label TEXT, created_at INTEGER NOT NULL);",
-  "CREATE TABLE IF NOT EXISTS volume_series_link (isbn TEXT PRIMARY KEY, series_id TEXT NOT NULL, created_at INTEGER NOT NULL);",
+  "CREATE TABLE IF NOT EXISTS volume_series_link (isbn TEXT PRIMARY KEY, series_id TEXT NOT NULL, created_at INTEGER NOT NULL, from_series_id TEXT);",
   "INSERT OR REPLACE INTO series (id, name, name_norm, name_kana, name_kana_norm, creator, publisher, label, num_items) " +
     "SELECT id, name, name_norm, NULL, NULL, creator, publisher, label, NULL FROM custom_series;",
   "UPDATE volumes SET series_id = (SELECT l.series_id FROM volume_series_link l WHERE l.isbn = volumes.isbn) " +
-    "WHERE series_id IS NULL AND isbn IN (SELECT isbn FROM volume_series_link);",
+    "WHERE isbn IN (SELECT isbn FROM volume_series_link) " +
+    "AND series_id IS (SELECT l.from_series_id FROM volume_series_link l WHERE l.isbn = volumes.isbn);",
 ];
 
 // Blue-green cutover. RENAMEs are instant metadata ops, so the window where the live

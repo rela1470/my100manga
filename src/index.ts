@@ -6,6 +6,7 @@ import { coverCandidates, volumeCandidates } from "./candidates";
 import {
   getMergeCandidates,
   requestSeriesMerge,
+  requestSeriesSplit,
   adminListMergeRequests,
   adminDismissMergeRequest,
   adminListMergeCandidates,
@@ -14,6 +15,10 @@ import {
   adminListMerges,
   adminUnmergeSeries,
   adminListLinks,
+  adminSplitSourceVolumes,
+  adminSplitSeries,
+  adminListSplitRequests,
+  adminDismissSplitRequest,
   adminUnlinkVolumes,
 } from "./merge";
 import { handleBook } from "./book";
@@ -250,6 +255,11 @@ export default {
       if (mergeCandMatch && request.method === "GET") {
         return await getMergeCandidates(env, mergeCandMatch[1]);
       }
+      // 「別の版が混ざっている？」: シリーズの分離の依頼（collect-only, see src/merge.ts）。
+      const splitReqMatch = path.match(/^\/api\/series\/([A-Za-z0-9]+)\/split-request$/);
+      if (splitReqMatch && request.method === "POST") {
+        return await requestSeriesSplit(request, env, splitReqMatch[1]);
+      }
       const mergeReqMatch = path.match(/^\/api\/series\/([A-Za-z0-9]+)\/merge-request$/);
       if (mergeReqMatch && request.method === "POST") {
         return await requestSeriesMerge(request, env, mergeReqMatch[1]);
@@ -399,6 +409,21 @@ export default {
       // シリーズに属さない巻の紐付け（グループの結合）の一覧と解除。
       if (path === "/api/admin/series-links" && request.method === "GET") {
         return await adminListLinks(env, parsePage(url));
+      }
+      // シリーズの分離（混ざった別の版を独自シリーズへ移す）。解除は上の紐付けの解除と同じ。
+      const adminSplitMatch = path.match(/^\/api\/admin\/series-splits\/([A-Za-z0-9]+)\/volumes$/);
+      if (adminSplitMatch && request.method === "GET") {
+        return await adminSplitSourceVolumes(env, adminSplitMatch[1]);
+      }
+      if (path === "/api/admin/series-splits" && request.method === "POST") {
+        return await adminSplitSeries(request, env);
+      }
+      if (path === "/api/admin/split-requests" && request.method === "GET") {
+        return await adminListSplitRequests(env, parsePage(url));
+      }
+      const adminSplitReqMatch = path.match(/^\/api\/admin\/split-requests\/([A-Za-z0-9]+)$/);
+      if (adminSplitReqMatch && request.method === "DELETE") {
+        return await adminDismissSplitRequest(env, adminSplitReqMatch[1]);
       }
       const adminLinkMatch = path.match(/^\/api\/admin\/series-links\/([A-Za-z0-9]+)\/(\d+)$/);
       if (adminLinkMatch && request.method === "DELETE") {

@@ -27,14 +27,27 @@ export const isCustomSeriesId = (id: string): boolean => /^U\d{6,}$/.test(id);
 const CHUNK = 90;
 
 /** 独自シリーズを series に、ISBN の紐付けを volumes に反映する（冪等）。取り込み直後・
- *  ダンプのリストア時に流す。マスタが自分でシリーズを付けた巻（series_id NOT NULL）は
- *  上書きしない。scripts/ingest.mjs・scripts/dump-series-merge.mjs に同じ SQL がある。 */
+ *  ダンプのリストア時に流す。巻が紐付けたときと同じシリーズにいるときだけ書き換える:
+ *  シリーズ無しの巻の紐付け（from_series_id NULL）はマスタがまだシリーズを付けていない巻だけ、
+ *  分離（from_series_id = 分離元）はマスタがまだ分離元に入れている巻だけ。マスタが自分で
+ *  付け替えた巻はそちらを優先する。scripts/ingest.mjs・scripts/dump-series-merge.mjs に同じ SQL がある。 */
 export const APPLY_LINKS_SQL = [
   `INSERT OR REPLACE INTO series (id, name, name_norm, name_kana, name_kana_norm, creator, publisher, label, num_items)
      SELECT id, name, name_norm, NULL, NULL, creator, publisher, label, NULL FROM custom_series`,
   `UPDATE volumes SET series_id = (SELECT l.series_id FROM volume_series_link l WHERE l.isbn = volumes.isbn)
-    WHERE series_id IS NULL AND isbn IN (SELECT isbn FROM volume_series_link)`,
+    WHERE isbn IN (SELECT isbn FROM volume_series_link)
+      AND series_id IS (SELECT l.from_series_id FROM volume_series_link l WHERE l.isbn = volumes.isbn)`,
 ];
+
+/** シリーズ無しの巻のまとまりの単位: 正規化した書名 + 著者 + レーベル。レーベルを入れるのは、
+ *  同じ書名・著者の別版（キングダムの本編「ヤングジャンプコミックス」と「愛蔵版コミックス」など）を
+ *  1 つのまとまりに混ぜないため。混ざると結合で別版の ISBN が本編の同じ巻番号に紐付いてしまう。
+ *  レーベルの表記ゆれ（「ヤングジャンプ・コミックス」/「ヤングジャンプコミックス」）は中黒・空白を
+ *  除いて吸収する。検索（search.ts discoverUnlinked）・売上ランキングもこの単位でまとめる。 */
+export function groupKey(v: { title: string; creator: string | null; label: string | null }): string {
+  const label = (v.label ?? "").replace(/[\s　・･]+/g, "").toLowerCase();
+  return `${normTitle(v.title)} ${normTitle(v.creator ?? "")} ${label}`;
+}
 
 export interface GroupRow {
   isbn: string;
@@ -42,6 +55,7 @@ export interface GroupRow {
   vol_sort: number | null;
   title: string;
   creator: string | null;
+  creators?: string | null; // display credit line (see db/add-creators.sql); not every query selects it
   publisher: string | null;
   label: string | null;
   pubdate: string | null;
@@ -65,13 +79,14 @@ export interface UnlinkedGroup {
   id: string; // "G" + グループ内で最小の ISBN
   title: string;
   creator: string;
+  creators: string; // 役割付きの全作者表記。無ければ creator と同じ
   publisher: string;
   label: string;
   isbns: string[]; // 通常版/特装版などの兄弟 ISBN も含む全 ISBN
   volumes: GroupVolume[]; // 巻番号単位にまとめたもの（読み順）
 }
 
-/** 同じグループの行（正規化した書名・著者が同じ）を巻番号単位にまとめてグループにする。
+/** 同じグループの行（groupKey が同じ）を巻番号単位にまとめてグループにする。
  *  `rows` は全て同じグループのもの。cover は呼び出し側で読んだキャッシュから引く。 */
 export function buildGroup(rows: GroupRow[], covers: Map<string, string>): UnlinkedGroup {
   const vols = new Map<string, { rep: GroupRow; isbns: string[] }>();
@@ -83,6 +98,7 @@ export function buildGroup(rows: GroupRow[], covers: Map<string, string>): Unlin
   }
   const first = rows[0];
   const creator = first?.creator ?? "";
+  const creators = first?.creators || creator;
   const pickCover = (isbns: string[]) => {
     for (const i of isbns) {
       const c = covers.get(i);
@@ -113,6 +129,7 @@ export function buildGroup(rows: GroupRow[], covers: Map<string, string>): Unlin
     id: "G" + [...isbns].sort()[0],
     title: first?.title ?? "",
     creator,
+    creators,
     publisher: head?.publisher ?? "",
     label: head?.label ?? "",
     isbns,
@@ -121,19 +138,18 @@ export function buildGroup(rows: GroupRow[], covers: Map<string, string>): Unlin
 }
 
 /** isbn を含むグループ。isbn がシリーズ無しのマスタ巻でなければ null。
- *  シリーズ無しの巻（~11 万行）を書名の前方一致で絞り、正規化した書名・著者の一致を JS で
- *  確かめる（検索の discoverUnlinked と同じ粒度）。 */
+ *  シリーズ無しの巻（~11 万行）を書名の前方一致で絞り、groupKey（書名・著者・レーベル）の一致を
+ *  JS で確かめる（検索の discoverUnlinked と同じ粒度）。 */
 export async function loadGroup(env: Env, isbn: string): Promise<UnlinkedGroup | null> {
   const seed = await env.DB.prepare(
-    `SELECT title, creator FROM volumes WHERE isbn = ? AND series_id IS NULL`
+    `SELECT title, creator, label FROM volumes WHERE isbn = ? AND series_id IS NULL`
   )
     .bind(isbn)
-    .first<{ title: string; creator: string | null }>();
+    .first<{ title: string; creator: string | null; label: string | null }>();
   if (!seed) return null;
-  const nt = normTitle(seed.title);
-  const nc = normTitle(seed.creator ?? "");
+  const key = groupKey(seed);
   const res = await env.DB.prepare(
-    `SELECT isbn, volume_number, vol_sort, title, creator, publisher, label, pubdate
+    `SELECT isbn, volume_number, vol_sort, title, creator, creators, publisher, label, pubdate
        FROM volumes
       WHERE series_id IS NULL
         AND REPLACE(REPLACE(title, ' ', ''), '　', '') LIKE ? ESCAPE '\\'
@@ -143,12 +159,44 @@ export async function loadGroup(env: Env, isbn: string): Promise<UnlinkedGroup |
     // normTitle の小文字化は全角英字にも効くが SQLite の LIKE は ASCII しか大小を無視しない。
     .bind(escapeLikeClamped(seed.title.replace(/[ 　]+/g, ""), LIKE_MAX_BYTES - 1) + "%")
     .all<GroupRow>();
-  const rows = (res.results ?? []).filter(
-    (r) => normTitle(r.title) === nt && normTitle(r.creator ?? "") === nc
-  );
+  const rows = (res.results ?? []).filter((r) => groupKey(r) === key);
   if (!rows.length) return null;
   const covers = await readCachedCovers(env, rows.map((r) => r.isbn));
   return buildGroup(rows, covers);
+}
+
+/** シリーズ名 `name` と同じ作品かもしれない、どのシリーズにも寄せられていないグループ。
+ *  シリーズの結合候補（merge.getMergeCandidates）に並べ、シリーズページから迷子の巻へ
+ *  たどり着けるようにする。書名の基本書名（「=」「:」以降を除いたもの）が一致するものを拾う
+ *  ので、素の「キングダム」に対して「キングダム = KINGDOM」の巻も候補になる。著者は問わない
+ *  （判断は閲覧者と管理者に委ねる）。attributeTitles で既存シリーズに寄せられる書名は
+ *  getSeriesVolumes がそのシリーズの巻一覧に混ぜ済みなので除く。 */
+export async function unattributedGroupsFor(env: Env, name: string): Promise<UnlinkedGroup[]> {
+  const base = baseTitle(name);
+  if (!base) return [];
+  const res = await env.DB.prepare(
+    `SELECT isbn, volume_number, vol_sort, title, creator, publisher, label, pubdate
+       FROM volumes
+      WHERE series_id IS NULL
+        AND REPLACE(REPLACE(LOWER(title), ' ', ''), '　', '') LIKE ? ESCAPE '\\'
+      ORDER BY vol_sort, pubdate, isbn
+      LIMIT 2000`
+  )
+    .bind(escapeLikeClamped(base, LIKE_MAX_BYTES - 1) + "%")
+    .all<GroupRow>();
+  const byKey = new Map<string, GroupRow[]>();
+  for (const r of res.results ?? []) {
+    if (baseTitle(r.title) !== base) continue;
+    const k = groupKey(r);
+    const g = byKey.get(k);
+    if (g) g.push(r);
+    else byKey.set(k, [r]);
+  }
+  if (!byKey.size) return [];
+  const owner = await attributeTitles(env, [...byKey.values()].map((rows) => rows[0].title));
+  return [...byKey.values()]
+    .filter((rows) => !owner.get(rows[0].title))
+    .map((rows) => buildGroup(rows, new Map()));
 }
 
 /** シリーズ無しの巻の書名が、既存のどのシリーズに属すると見なせるか（書名 → シリーズ ID、
@@ -246,6 +294,7 @@ export async function getGroupVolumes(
       series_id: g.id,
       title: g.title,
       creator: g.creator,
+      creators: g.creators,
       publisher: g.publisher,
       group: true,
       supplement_probed: true,
@@ -265,8 +314,14 @@ export async function nextCustomSeriesId(env: Env): Promise<string> {
   return "U" + String(n).padStart(6, "0");
 }
 
-/** グループから独自シリーズを作る文（custom_series と、即時反映のための series 行）。 */
-export function createCustomSeriesStmts(env: Env, id: string, g: UnlinkedGroup, now: number): D1PreparedStatement[] {
+/** グループ（または分離元のシリーズ）から独自シリーズを作る文（custom_series と、即時反映の
+ *  ための series 行）。 */
+export function createCustomSeriesStmts(
+  env: Env,
+  id: string,
+  g: Pick<UnlinkedGroup, "title" | "creator" | "publisher" | "label">,
+  now: number
+): D1PreparedStatement[] {
   const nn = normTitle(g.title);
   return [
     env.DB.prepare(
@@ -280,20 +335,29 @@ export function createCustomSeriesStmts(env: Env, id: string, g: UnlinkedGroup, 
   ];
 }
 
-/** ISBN をシリーズに紐付ける文（volume_series_link への記録と volumes への即時反映）。 */
-export function linkStmts(env: Env, isbns: string[], seriesId: string, now: number): D1PreparedStatement[] {
+/** ISBN をシリーズに紐付ける文（volume_series_link への記録と volumes への即時反映）。
+ *  fromSeriesId はシリーズの分離のとき、巻が今いる（マスタが付けた）シリーズ。省略時は
+ *  シリーズ無しの巻の紐付け。 */
+export function linkStmts(
+  env: Env,
+  isbns: string[],
+  seriesId: string,
+  now: number,
+  fromSeriesId: string | null = null
+): D1PreparedStatement[] {
   const stmts: D1PreparedStatement[] = [];
   const ins = env.DB.prepare(
-    `INSERT INTO volume_series_link (isbn, series_id, created_at) VALUES (?, ?, ?)
-     ON CONFLICT (isbn) DO UPDATE SET series_id = excluded.series_id, created_at = excluded.created_at`
+    `INSERT INTO volume_series_link (isbn, series_id, created_at, from_series_id) VALUES (?, ?, ?, ?)
+     ON CONFLICT (isbn) DO UPDATE SET series_id = excluded.series_id, created_at = excluded.created_at,
+       from_series_id = excluded.from_series_id`
   );
-  for (const i of isbns) stmts.push(ins.bind(i, seriesId, now));
+  for (const i of isbns) stmts.push(ins.bind(i, seriesId, now, fromSeriesId));
   for (let i = 0; i < isbns.length; i += CHUNK) {
     const chunk = isbns.slice(i, i + CHUNK);
     stmts.push(
       env.DB.prepare(
-        `UPDATE volumes SET series_id = ? WHERE series_id IS NULL AND isbn IN (${chunk.map(() => "?").join(",")})`
-      ).bind(seriesId, ...chunk)
+        `UPDATE volumes SET series_id = ? WHERE series_id IS ? AND isbn IN (${chunk.map(() => "?").join(",")})`
+      ).bind(seriesId, fromSeriesId, ...chunk)
     );
   }
   return stmts;

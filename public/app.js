@@ -1654,8 +1654,40 @@ function renderVolumes(series, volumes, opts) {
     if (!head.querySelector(".name-report-flag")) head.appendChild(document.createTextNode(" "));
     head.appendChild(mergeFlag);
   }
+  if (series.series_id && !opts.live && !isGroupId(series.series_id) && volumes.length > 1) {
+    // 逆に、1 つのシリーズに別の版（復刻版・新装版など）が混ざっている（例: キン肉マン C261524 に
+    // 1〜36巻の復刻版が入り、12〜36巻が二重に並ぶ）ときの分離依頼。結合依頼と同じく collect-only。
+    const splitFlag = document.createElement("button");
+    splitFlag.type = "button";
+    splitFlag.className = "report-flag name-report-flag";
+    splitFlag.title = "復刻版・新装版など別の版の巻が混ざっている場合に分離を依頼（管理者が確認して別シリーズにします）";
+    splitFlag.setAttribute("aria-label", "別の版が混ざっている");
+    const sIcon = document.createElement("span");
+    sIcon.className = "flag-icon";
+    sIcon.textContent = "⑂";
+    const sText = document.createElement("span");
+    sText.className = "flag-text";
+    const requested = isSplitRequested(series.series_id);
+    sText.textContent = requested ? "別の版の混在を依頼済み" : "別の版が混ざっている？";
+    if (requested) splitFlag.classList.add("reported");
+    splitFlag.appendChild(sIcon);
+    splitFlag.appendChild(sText);
+    splitFlag.addEventListener("click", (e) => {
+      e.stopPropagation();
+      if (isSplitRequested(series.series_id)) return;
+      if (noHover() && !splitFlag.classList.contains("revealed")) {
+        splitFlag.classList.add("revealed");
+        return;
+      }
+      openSplitRequest(series, volumes, opts);
+    });
+    head.appendChild(document.createTextNode(" "));
+    head.appendChild(splitFlag);
+  }
   // 作者・出版社（検索カードと同じ並び）。シリーズに作者が無ければ先頭巻の著者で補う。
-  const byline = [series.creator || (visible[0] && visible[0].author), series.publisher].filter(Boolean).join(" / ");
+  const byline = [series.creators || series.creator || (visible[0] && visible[0].author), series.publisher]
+    .filter(Boolean)
+    .join(" / ");
   if (byline) {
     const sa = document.createElement("div");
     sa.className = "sa";
@@ -2482,6 +2514,141 @@ async function sendMergeRequest(series, otherIds, btn) {
   for (const id of otherIds) markMergeRequested(series.series_id, id);
   uiAlert(`${otherIds.length} 件の結合を依頼しました。管理者が確認して反映します。`);
   return true;
+}
+
+// 「別の版が混ざっている？」: このシリーズの巻のうち別の版のものを選んで分離を依頼する画面。
+// 巻一覧は同じ巻番号の ISBN を 1 巻にまとめているので、別の版が別の巻として並んでいる
+// （巻番号の表記が違う）ときに選べる。依頼は ISBN ごとに件数だけ記録され、分離は管理者が確定する。
+function openSplitRequest(series, volumes, opts) {
+  const box = clearResults();
+  const bar = document.createElement("div");
+  bar.className = "vol-bar";
+  const back = document.createElement("button");
+  back.type = "button";
+  back.className = "linkbtn";
+  back.textContent = "‹ 巻一覧へ戻る";
+  back.addEventListener("click", () => renderVolumes(series, volumes, opts));
+  bar.appendChild(back);
+  box.appendChild(bar);
+
+  const title = document.createElement("h3");
+  title.className = "merge-title";
+  title.textContent = series.title;
+  const selfId = document.createElement("span");
+  selfId.className = "series-id";
+  selfId.textContent = `ID ${series.series_id}`;
+  title.appendChild(selfId);
+  box.appendChild(title);
+
+  const head = document.createElement("p");
+  head.className = "hint";
+  head.textContent = "復刻版・新装版など、このシリーズに混ざっている別の版の巻にチェックを入れて依頼してください。管理者が確認して別のシリーズに分けます。";
+  box.appendChild(head);
+
+  const selected = new Set(); // 選んだ巻（volumes の添字）
+  const list = document.createElement("div");
+  box.appendChild(list);
+
+  const footer = document.createElement("div");
+  footer.className = "merge-submit";
+  const sendBtn = document.createElement("button");
+  sendBtn.type = "button";
+  sendBtn.className = "primary";
+  footer.appendChild(sendBtn);
+  box.appendChild(footer);
+  const refresh = () => {
+    sendBtn.textContent = selected.size ? `選択した ${selected.size} 巻を別の版として依頼` : "別の版の巻を選んでください";
+    sendBtn.disabled = !selected.size || selected.size >= volumes.length;
+  };
+
+  volumes.forEach((v, i) => {
+    const row = document.createElement("div");
+    row.className = "result merge-cand";
+    const check = document.createElement("label");
+    check.className = "merge-check";
+    const cb = document.createElement("input");
+    cb.type = "checkbox";
+    cb.setAttribute("aria-label", `${volLabel(v)} を選択`);
+    cb.addEventListener("change", () => {
+      if (cb.checked) selected.add(i);
+      else selected.delete(i);
+      refresh();
+    });
+    check.appendChild(cb);
+    check.addEventListener("click", (e) => e.stopPropagation());
+    row.appendChild(check);
+    if (v.cover_url) {
+      const img = document.createElement("img");
+      img.loading = "lazy";
+      img.alt = volLabel(v);
+      img.onerror = () => img.remove();
+      applyCover(img, v.cover_url);
+      row.appendChild(img);
+    }
+    const info = document.createElement("div");
+    info.className = "info";
+    const t = document.createElement("div");
+    t.className = "t";
+    t.textContent = volLabel(v);
+    const a = document.createElement("div");
+    a.className = "a";
+    a.textContent = [v.label, v.pubdate, v.correction ? "ユーザ投稿" : ""].filter(Boolean).join(" / ");
+    info.appendChild(t);
+    info.appendChild(a);
+    row.appendChild(info);
+    // 行のどこを押しても選択を切り替える（チェックボックスが小さいので）。
+    row.addEventListener("click", () => {
+      cb.checked = !cb.checked;
+      cb.dispatchEvent(new Event("change"));
+    });
+    list.appendChild(row);
+  });
+
+  sendBtn.addEventListener("click", async () => {
+    const isbns = [...selected].flatMap((i) => volumes[i].isbns || [volumes[i].isbn]);
+    sendBtn.disabled = true;
+    sendBtn.textContent = "送信中…";
+    try {
+      const res = await fetch(`/api/series/${encodeURIComponent(series.series_id)}/split-request`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ isbns }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data.error || "依頼に失敗しました");
+    } catch (e) {
+      uiAlert(e.message || "依頼に失敗しました");
+      refresh();
+      return;
+    }
+    markSplitRequested(series.series_id);
+    uiAlert("別の版の分離を依頼しました。管理者が確認して反映します。");
+    renderVolumes(series, volumes, opts);
+  });
+
+  refresh();
+  return box;
+}
+
+// 分離を依頼したシリーズの端末ローカル台帳（localStorage）。二重依頼を防ぎ、依頼済み表示に使う。
+const SPLIT_REQUESTS_KEY = "my100manga_split_requests_v1";
+function splitRequestedSet() {
+  try {
+    const raw = localStorage.getItem(SPLIT_REQUESTS_KEY);
+    return new Set(raw ? JSON.parse(raw) : []);
+  } catch {
+    return new Set();
+  }
+}
+function isSplitRequested(seriesId) {
+  return !!seriesId && splitRequestedSet().has(seriesId);
+}
+function markSplitRequested(seriesId) {
+  const s = splitRequestedSet();
+  s.add(seriesId);
+  try {
+    localStorage.setItem(SPLIT_REQUESTS_KEY, JSON.stringify([...s]));
+  } catch {}
 }
 
 // 結合を依頼したシリーズの組の端末ローカル台帳（localStorage）。二重依頼を防ぐ。

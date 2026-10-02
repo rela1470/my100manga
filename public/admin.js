@@ -57,6 +57,7 @@ const TODO_ITEMS = [
   ["volume_reports", "巻の通報", "volume-reports"],
   ["series_reports", "シリーズ名の修正", "series-reports"],
   ["merge_requests", "シリーズの結合依頼", "series-merges", "requests"],
+  ["split_requests", "シリーズの分離依頼", "series-merges", "splitRequests"],
   ["volume_title_reports", "本のタイトルの修正", "volume-title-reports"],
   ["corrections", "シリーズへの手動追加", "corrections"],
   ["cover_suggestions", "表紙の修正", "cover-suggestions"],
@@ -1362,8 +1363,9 @@ async function loadTitleOverrides(page = pageState.titleOverrides) {
 
 // --- シリーズの結合 ------------------------------------------------------
 // 依頼（閲覧者の「シリーズが分かれている？」）/ 自動検出の候補 / 結合済み / 巻の紐付け の
-// 4 表示を切り替える。シリーズに属さない巻のまとまり（ID「G…」）を結合すると、巻をシリーズに
-// 紐付ける（残す側がまとまりなら独自シリーズ「U…」を作る）。紐付けは「巻の紐付け」から解除する。
+// 4 表示と、分離のフォームを切り替える。シリーズに属さない巻のまとまり（ID「G…」）を結合すると、
+// 巻をシリーズに紐付ける（残す側がまとまりなら独自シリーズ「U…」を作る）。分離は 1 つのシリーズに
+// 混ざった別の版を独自シリーズへ移す。どちらも「巻の紐付け」から解除する。
 let mergeMode = "requests";
 let mergeSeq = 0; // 表示切替が速いときに古い応答で上書きしないための世代番号
 
@@ -1372,6 +1374,7 @@ const MERGE_MODES = {
   candidates: { url: "/api/admin/merge-candidates", key: "candidates", empty: "自動検出の候補はありません。" },
   merges: { url: "/api/admin/series-merges", key: "merges", empty: "結合済みのシリーズはありません。" },
   links: { url: "/api/admin/series-links", key: "links", empty: "紐付けた巻はありません。" },
+  splitRequests: { url: "/api/admin/split-requests", key: "requests", empty: "分離の依頼はありません。" },
 };
 
 function setMergeMode(mode) {
@@ -1390,6 +1393,12 @@ async function loadMerge(page = pageState.merge) {
   const seq = ++mergeSeq;
   list.textContent = "";
   $("mergePager").style.display = "none";
+  if (mergeMode === "split") {
+    hint.style.display = "none";
+    count.textContent = "";
+    renderSplitForm(list);
+    return;
+  }
   hint.textContent = "読み込み中…";
   hint.style.display = "";
 
@@ -1422,6 +1431,8 @@ async function loadMerge(page = pageState.merge) {
     renderMergedTable(list, rows);
   } else if (mergeMode === "links") {
     renderLinksTable(list, rows);
+  } else if (mergeMode === "splitRequests") {
+    renderSplitRequestsTable(list, rows);
   } else {
     for (const r of rows) list.append(mergeGroupCard(r));
   }
@@ -1614,10 +1625,11 @@ function renderLinksTable(list, links) {
     btn.addEventListener("click", () => unlinkVolumes(l, btn));
     const sid = el("a", { className: "slug detail", textContent: l.series_id, title: "このシリーズの巻一覧を表示" });
     sid.addEventListener("click", () => openSeriesVolumes(l.series_id, l.series_name));
+    const from = l.from_series_id ? `（${l.from_series_id}「${l.from_series_name || "-"}」から分離）` : "";
     body.append(
       el("tr", {}, [
         el("td", { className: "owner" }, [sid]),
-        el("td", { className: "wrap", textContent: (l.series_name || "-") + (l.custom ? "（独自シリーズ）" : "") }),
+        el("td", { className: "wrap", textContent: (l.series_name || "-") + (l.custom ? "（独自シリーズ）" : "") + from }),
         el("td", { className: "wrap", textContent: l.titles.join(" / ") || "-" }),
         el("td", { textContent: `${l.isbn_count}` }),
         el("td", { textContent: fmtDate(l.created_at) }),
@@ -1637,7 +1649,8 @@ function renderLinksTable(list, links) {
 
 async function unlinkVolumes(l, btn) {
   const extra = l.custom ? "\n巻も結合も残らなければ独自シリーズも削除します。" : "";
-  if (!(await uiConfirm(`この回に紐付けた ${l.isbn_count} 件の ISBN を ${l.series_id} から外し、シリーズ無しに戻します。${extra}よろしいですか？`, { okLabel: "解除する" }))) return;
+  const back = l.from_series_id ? `分離元の ${l.from_series_id} に戻します。` : "シリーズ無しに戻します。";
+  if (!(await uiConfirm(`この回に紐付けた ${l.isbn_count} 件の ISBN を ${l.series_id} から外し、${back}${extra}よろしいですか？`, { okLabel: "解除する" }))) return;
   btn.disabled = true;
   try {
     const res = await fetch(`/api/admin/series-links/${encodeURIComponent(l.series_id)}/${l.created_at}`, { method: "DELETE" });
@@ -1647,6 +1660,203 @@ async function unlinkVolumes(l, btn) {
   } catch (e) {
     uiAlert("解除に失敗しました: " + e.message);
     btn.disabled = false;
+  }
+}
+
+// 分離のフォーム: シリーズ ID で巻を ISBN ごとに読み込み、移す巻を選んで独自シリーズを作る。
+// 巻一覧は同じ巻番号の ISBN を 1 巻にまとめるので、ここでは 1 ISBN = 1 行で選ばせる。
+let splitSeriesId = "";
+
+function renderSplitForm(list) {
+  const input = el("input", { type: "text", placeholder: "シリーズID（例: C261524）", value: splitSeriesId });
+  const loadBtn = el("button", { textContent: "読み込む" });
+  const area = el("div");
+  const load = () => {
+    const id = input.value.trim();
+    if (!/^[A-Za-z0-9]{1,32}$/.test(id)) {
+      uiAlert("シリーズIDを入力してください");
+      return;
+    }
+    splitSeriesId = id;
+    loadSplitVolumes(id, area);
+  };
+  loadBtn.addEventListener("click", load);
+  input.addEventListener("keydown", (e) => {
+    if (e.key === "Enter") load();
+  });
+  list.append(el("div", { className: "cover-single" }, [input, loadBtn]), area);
+  if (splitSeriesId) loadSplitVolumes(splitSeriesId, area);
+}
+
+async function loadSplitVolumes(id, area) {
+  const seq = mergeSeq;
+  area.textContent = "読み込み中…";
+  let data;
+  try {
+    const res = await fetch(`/api/admin/series-splits/${encodeURIComponent(id)}/volumes`);
+    data = await res.json();
+    if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
+  } catch (e) {
+    if (seq === mergeSeq) area.textContent = "取得に失敗しました: " + e.message;
+    return;
+  }
+  if (seq !== mergeSeq) return;
+  area.textContent = "";
+
+  const vols = data.volumes || [];
+  const merged = vols.some((v) => v.series_id !== data.series_id);
+  const checks = [];
+  const body = el("tbody");
+  const selCount = el("span", { className: "count" });
+  const updateCount = () => {
+    selCount.textContent = `${checks.filter((c) => c.checked).length} / ${vols.length} 件を選択`;
+  };
+  for (const v of vols) {
+    // 閲覧者が「別の版」と依頼した巻は選んだ状態で出す。
+    const cb = el("input", { type: "checkbox", value: v.isbn, checked: v.report_count > 0 });
+    cb.addEventListener("change", updateCount);
+    checks.push(cb);
+    body.append(
+      el("tr", {}, [
+        el("td", {}, [cb]),
+        el("td", { className: "owner", textContent: v.isbn }),
+        el("td", { className: "wrap", textContent: v.volume_number || "-" }),
+        el("td", { className: "wrap", textContent: v.title }),
+        el("td", { className: "wrap", textContent: v.label || "-" }),
+        el("td", { textContent: v.pubdate || "-" }),
+        el("td", { textContent: v.report_count ? `${v.report_count}` : "" }),
+        ...(merged ? [el("td", { textContent: v.series_id })] : []),
+      ])
+    );
+  }
+
+  // 「の巻」「復刻」など巻番号・書名に含まれる文字で一括選択する（別の版は表記が揃っていることが多い）。
+  const filter = el("input", { type: "text", placeholder: "巻番号・書名に含む文字" });
+  const pickBtn = el("button", { textContent: "一致する巻を選択" });
+  pickBtn.addEventListener("click", () => {
+    const q = filter.value.trim();
+    if (!q) return;
+    vols.forEach((v, i) => {
+      if ((v.volume_number || "").includes(q) || v.title.includes(q)) checks[i].checked = true;
+    });
+    updateCount();
+  });
+  const clearBtn = el("button", { textContent: "選択を解除" });
+  clearBtn.addEventListener("click", () => {
+    checks.forEach((c) => (c.checked = false));
+    updateCount();
+  });
+
+  const nameInput = el("input", { type: "text", value: `${data.name} 復刻版`, style: "min-width:240px" });
+  const splitBtn = el("button", { className: "primary", textContent: "分離" });
+  splitBtn.addEventListener("click", () =>
+    splitSeries(data, checks.filter((c) => c.checked).map((c) => c.value), nameInput.value.trim(), splitBtn)
+  );
+  updateCount();
+
+  area.append(
+    el("p", { className: "hint", textContent: `${data.series_id}「${data.name}」（${data.label || "レーベル無し"}）の巻 ${vols.length} 件` }),
+    el("div", { className: "cover-single" }, [filter, pickBtn, clearBtn, selCount]),
+    el("table", { className: "admin-table" }, [
+      el("thead", {}, [
+        el("tr", {}, ["", "ISBN", "巻番号", "書名", "レーベル", "発売日", "依頼", ...(merged ? ["C-id"] : [])].map((t) =>
+          el("th", { textContent: t })
+        )),
+      ]),
+      body,
+    ]),
+    el("div", { className: "cover-single", style: "margin-top:12px" }, [
+      el("span", { textContent: "新しいシリーズの名前" }),
+      nameInput,
+      splitBtn,
+    ])
+  );
+}
+
+// 分離の依頼（シリーズ単位）。依頼された巻と回数を並べ、「分離する」で分離の画面に読み込む。
+function renderSplitRequestsTable(list, requests) {
+  const body = el("tbody");
+  for (const r of requests) {
+    const openBtn = el("button", { className: "primary", textContent: "分離する" });
+    openBtn.addEventListener("click", () => {
+      splitSeriesId = r.series_id;
+      setMergeMode("split");
+    });
+    const dismissBtn = el("button", { textContent: "却下" });
+    dismissBtn.addEventListener("click", () => dismissSplitRequest(r, dismissBtn));
+    const sid = el("a", { className: "slug detail", textContent: r.series_id, title: "このシリーズの巻一覧を表示" });
+    sid.addEventListener("click", () => openSeriesVolumes(r.series_id, r.name));
+    const vols = r.volumes.map((v) => `${v.volume_number || v.isbn}${v.report_count > 1 ? `（${v.report_count}）` : ""}`);
+    body.append(
+      el("tr", {}, [
+        el("td", { className: "owner" }, [sid]),
+        el("td", { className: "wrap", textContent: `${r.name || "-"}（${r.label || "レーベル無し"}・全${r.volume_count}冊）` }),
+        el("td", { className: "wrap", textContent: `${r.isbn_count}冊: ${vols.join(", ")}` }),
+        el("td", { textContent: `${r.report_count}` }),
+        el("td", { textContent: fmtDate(r.last_reported_at) }),
+        el("td", { className: "report-actions" }, [openBtn, dismissBtn]),
+      ])
+    );
+  }
+  list.append(
+    el("table", { className: "admin-table" }, [
+      el("thead", {}, [
+        el("tr", {}, ["シリーズ", "名前", "別の版だと依頼された巻", "依頼回数", "最終依頼", ""].map((t) => el("th", { textContent: t }))),
+      ]),
+      body,
+    ])
+  );
+}
+
+async function dismissSplitRequest(r, btn) {
+  if (!(await uiConfirm(`${r.series_id}「${r.name}」への分離の依頼を却下します（依頼を全て消します）。よろしいですか？`, { okLabel: "却下する" }))) return;
+  btn.disabled = true;
+  try {
+    const res = await fetch(`/api/admin/split-requests/${encodeURIComponent(r.series_id)}`, { method: "DELETE" });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
+    await loadMerge(pageState.merge);
+  } catch (e) {
+    uiAlert("却下に失敗しました: " + e.message);
+    btn.disabled = false;
+  }
+}
+
+async function splitSeries(src, isbns, name, btn) {
+  if (!isbns.length) {
+    uiAlert("移す巻を1つ以上選んでください");
+    return;
+  }
+  if (!name) {
+    uiAlert("新しいシリーズの名前を入力してください");
+    return;
+  }
+  if (name.length > 200) {
+    uiAlert("名前は200文字以内で入力してください");
+    return;
+  }
+  const ok = await uiConfirm(
+    `${src.series_id}「${src.name}」から ${isbns.length} 件の ISBN を、独自シリーズ「${name}」（U…）に移します。\n` +
+      "全ての閲覧者の検索・巻一覧・リスト表示に反映されます。よろしいですか？",
+    { okLabel: "分離する" }
+  );
+  if (!ok) return;
+  btn.disabled = true;
+  btn.textContent = "分離中…";
+  try {
+    const res = await fetch("/api/admin/series-splits", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ source_id: src.series_id, isbns, name }),
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
+    // 結果は「巻の紐付け」の先頭に出る（解除もそこから）。
+    setMergeMode("links");
+  } catch (e) {
+    uiAlert("分離に失敗しました: " + e.message);
+    btn.disabled = false;
+    btn.textContent = "分離";
   }
 }
 

@@ -89,6 +89,21 @@ header.site p.tagline {
   color: var(--muted);
   font-size: 14px;
 }
+/* ヘッダーの売上ランキングへのボタン（トップ・閲覧画面）。 */
+header.site .header-link {
+  display: inline-flex; align-items: center; gap: 6px;
+  margin-top: 12px; padding: 7px 16px;
+  border-radius: var(--radius-pill);
+  background: var(--panel); border: 1.5px solid var(--accent);
+  color: var(--accent); font-size: 13px; font-weight: 700; text-decoration: none;
+  box-shadow: var(--shadow-sm);
+  transition: transform var(--dur) var(--ease-bounce), box-shadow var(--dur) var(--ease), background var(--dur) var(--ease);
+}
+header.site .header-link:hover {
+  transform: translateY(-1px); box-shadow: var(--shadow-pop);
+  background: linear-gradient(135deg, var(--accent), var(--accent-3)); border-color: transparent; color: #fff;
+}
+header.site .header-link-icon { font-size: 14px; line-height: 1; }
 
 .toolbar {
   display: flex;
@@ -243,7 +258,7 @@ button.danger:hover { background: rgba(239, 68, 68, .12); filter: none; }
 @media (prefers-reduced-motion: reduce) {
   * { transition-duration: .01ms !important; animation-duration: .01ms !important; animation-iteration-count: 1 !important; }
   button:hover, button:active,
-  .slot:hover, .rank-row:hover, .stat-card:hover, .result:hover, .cand:hover, .fix-row:hover { transform: none !important; }
+  .slot:hover, .stat-card:hover, .result:hover, .cand:hover, .fix-row:hover { transform: none !important; }
 }
 
 /* ── 管理画面 (admin.html) ─────────────────────────────────────────── */
@@ -355,6 +370,11 @@ button.danger:hover { background: rgba(239, 68, 68, .12); filter: none; }
 }
 .stat-card .n { font-size: 26px; font-weight: 800; color: var(--accent); }
 .stat-card .k { font-size: 12px; color: var(--muted); margin-top: 2px; }
+/* 日付などの長い値を並べる stat-grid（管理画面の売上ランキング） */
+.stat-grid.compact .n { font-size: 18px; }
+/* 管理画面の売上ランキング: 今日の分が未取得（Cron 停止の疑い） */
+.stat-card.warn { border-color: #f0b429; }
+.stat-card.warn .n { color: #c77700; }
 
 .admin-table {
   width: 100%;
@@ -1048,6 +1068,18 @@ html:has(.modal-backdrop.open) { overflow: hidden; }
     padding: 16px 14px calc(14px + env(safe-area-inset-bottom));
   }
 }
+/* スマホでだけ画面いっぱいにするモーダル（本の詳細: 閲覧画面・ランキング）。検索の .modal-full と
+   同じ見た目だが、PC ではふつうのカードのまま。中身が長ければ背景（.modal-backdrop）ごとスクロール。 */
+@media (max-width: 560px) {
+  .modal-sheet { padding: 0; }
+  .modal-sheet .modal {
+    min-height: 100dvh;
+    max-width: none;
+    border: none;
+    border-radius: 0;
+    padding: 16px 14px calc(14px + env(safe-area-inset-bottom));
+  }
+}
 .result {
   display: flex;
   gap: 10px;
@@ -1408,41 +1440,28 @@ footer.site .foot-reset button:hover { opacity: 1; }
 .rank-note { color: var(--muted); font-size: 12px; margin: 4px 0 12px; }
 .rank-empty { color: var(--muted); text-align: center; padding: 32px 0; }
 
-.rank-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 10px; }
-.rank-row {
-  display: flex; align-items: center; gap: 12px;
-  background: var(--panel); border: 1px solid var(--border); border-radius: var(--radius);
-  padding: 12px 14px;
-  box-shadow: var(--shadow-sm);
-  transition: transform var(--dur) var(--ease-bounce), box-shadow var(--dur) var(--ease);
+/* 人気ランキング ⇔ 売上ランキングの切り替え（ページ間リンク） */
+.rank-switch { display: flex; gap: 0; margin: 4px 0 0; border-bottom: 1.5px solid var(--border); }
+.rank-switch a {
+  padding: 8px 16px; font-size: 14px; font-weight: 600; color: var(--muted); text-decoration: none;
+  border-bottom: 3px solid transparent; margin-bottom: -1.5px;
 }
-@media (hover: hover) {
-  .rank-row:hover { transform: translateY(-2px); box-shadow: var(--shadow-pop); }
+.rank-switch a.active { color: var(--accent); border-bottom-color: var(--accent); }
+/* ランキング（人気・売上）の表紙グリッド（100 冊の閲覧画面の .slot を流用）。左上の順位は 1〜3 位を金銀銅に。 */
+a.rank-slot { color: inherit; text-decoration: none; }
+.rank-slot .num.top1 { background: linear-gradient(135deg, #f4ce73, #e8a200); font-size: 14px; }
+.rank-slot .num.top2 { background: linear-gradient(135deg, #c9d0d8, #9aa3ad); font-size: 13px; }
+.rank-slot .num.top3 { background: linear-gradient(135deg, #e3a679, #c57b45); font-size: 13px; }
+.rank-slot:first-child { border-color: #f4ce73; box-shadow: 0 8px 20px rgba(232,162,0,.18); }
+.rank-slot .meta .c { white-space: nowrap; text-overflow: ellipsis; }
+.rank-source { color: var(--muted); font-size: 11px; margin: 16px 0 0; }
+/* ランキングの本の詳細（book-detail.js）の「巻一覧を開く」。リンクだが primary ボタンの見た目に。 */
+a.bd-series {
+  display: inline-block; margin-top: 12px; padding: 9px 16px; border-radius: var(--radius-pill);
+  background: linear-gradient(135deg, var(--accent), #60a5fa); color: #fff; /* button.primary と同じ */
+  font-weight: 800; font-size: 13px; text-decoration: none; box-shadow: var(--shadow-sm);
 }
-.rank-num {
-  flex: 0 0 auto; width: 32px; text-align: center;
-  font-size: 18px; font-weight: 800; color: var(--muted);
-}
-.rank-num.top { color: var(--accent); }
-/* gold / silver / bronze for the top three rows (CSS-only, no JS changes) */
-.rank-list .rank-row:nth-child(1) .rank-num { color: #e8a200; font-size: 22px; }
-.rank-list .rank-row:nth-child(2) .rank-num { color: #9aa3ad; font-size: 20px; }
-.rank-list .rank-row:nth-child(3) .rank-num { color: #c57b45; font-size: 20px; }
-.rank-list .rank-row:nth-child(1) { border-color: #f4ce73; box-shadow: 0 8px 20px rgba(232,162,0,.18); }
-.rank-cover { flex: 0 0 auto; width: 48px; height: 68px; }
-.rank-cover .cover {
-  width: 48px; height: 68px; object-fit: contain; background: var(--panel-2); border-radius: 4px;
-}
-.rank-cover .cover.placeholder {
-  display: flex; align-items: center; justify-content: center;
-  color: var(--muted); font-size: 9px; padding: 4px; text-align: center; overflow: hidden;
-}
-.rank-meta { flex: 1 1 auto; min-width: 0; }
-.rank-title { font-weight: 600; font-size: 14px; line-height: 1.3; }
-.rank-author { color: var(--muted); font-size: 12px; margin-top: 2px; }
-.rank-count { flex: 0 0 auto; text-align: right; white-space: nowrap; }
-.rank-count-num { font-size: 18px; font-weight: 700; color: var(--accent); }
-.rank-count-unit { font-size: 11px; color: var(--muted); margin-left: 2px; }
+a.bd-series:hover { filter: brightness(1.03); box-shadow: var(--shadow-pop); }
 
 /* ── サイト内ダイアログ (ui-dialog.js) ─────────────────────────────────
    スマホで扱いづらいブラウザ標準 alert/confirm/prompt の置き換え。 */

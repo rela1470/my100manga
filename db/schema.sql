@@ -45,7 +45,9 @@ CREATE TABLE IF NOT EXISTS covers (
 -- master (volumes) + Rakuten and cached permanently — a published book's metadata
 -- is immutable, so each ISBN hits Rakuten at most once (same reasoning as `covers`).
 -- Only written when the Rakuten lookup was determinate; a rate-limit-skipped lookup
--- is left uncached so a later open can retry. See src/book.ts.
+-- is left uncached so a later open can retry. Exception: a row with an empty あらすじ
+-- (typically a pre-release volume whose Rakuten description isn't written yet) is
+-- re-fetched on open once its checked_at is a day old. See src/book.ts.
 CREATE TABLE IF NOT EXISTS book_meta (
   isbn       TEXT PRIMARY KEY,
   authors    TEXT NOT NULL DEFAULT '',  -- "/"-joined author list
@@ -385,3 +387,21 @@ CREATE TABLE IF NOT EXISTS publish_audit (
 );
 CREATE INDEX IF NOT EXISTS idx_publish_audit_slug ON publish_audit (slug);
 CREATE INDEX IF NOT EXISTS idx_publish_audit_created ON publish_audit (created_at);
+
+-- 売上ランキング（src/salesRanking.ts）。楽天ブックスのコミックを「売れている順」で毎日
+-- 上位 300 件取得した日次スナップショット。楽天は期間も部数も出さないので、日ごとの順位を
+-- ポイントにして作品単位（work_norm）で過去7日・30日・年間に積み上げる。
+CREATE TABLE IF NOT EXISTS sales_snapshot (
+  day        TEXT NOT NULL,      -- 取得日 (JST, YYYY-MM-DD)
+  rank       INTEGER NOT NULL,   -- その日の順位 (1 始まり)
+  isbn       TEXT NOT NULL,      -- ISBN13
+  title      TEXT NOT NULL,      -- 楽天の書名そのまま (「SPY×FAMILY 18」)
+  work       TEXT NOT NULL,      -- 巻数・版の表記を除いた作品名 (salesWorkTitle)
+  work_norm  TEXT NOT NULL,      -- normTitle(work)。集計の単位
+  author     TEXT,
+  publisher  TEXT,
+  sales_date TEXT,               -- 楽天の発売日表記 (「2026年11月04日」「…頃」)
+  cover_url  TEXT,
+  PRIMARY KEY (day, rank)
+);
+CREATE INDEX IF NOT EXISTS idx_sales_snapshot_work ON sales_snapshot (work_norm, day);

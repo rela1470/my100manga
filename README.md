@@ -219,6 +219,9 @@ npm run dev
 - `PUT /api/lists/:slug` — 更新（`edit_token` 必須）
 - `GET /api/cover-candidates?isbn=&title=` — 表紙ピッカー用。Google / 楽天ISBN一致 / 楽天タイトル検索の候補を返す
 - `GET /api/ranking` — 本が追加されている回数ランキング。巻(ISBN)単位・選んだ人数(`COUNT(DISTINCT slug)`)で集計。`{windows:{cumulative,d30,d7,d24}, computed_at}` を返す（各窓 top100）。`src/ranking.ts`。閲覧ページは `/ranking`（`public/ranking.html`）
+- `GET /api/sales-ranking` — 売上ランキング。楽天ブックスのコミック「売れている順」（書籍検索API `sort=sales`）の上位 300 件を毎日 Cron（05:00 JST）で `sales_snapshot` に記録し、作品単位で集計する。日ごとの順位をポイント（1 位 = 300pt）にし、同じ日の同じ作品は最高順位だけを数える。`{windows:{day,d7,d30,year}, latest_day, first_day, year, computed_at}` を返す（各窓 top100）。作品名は楽天の書名から巻数・版の表記を除いたもので、シリーズ / まとまり（G-id）へ書名で寄せて巻一覧へのリンクにする（寄せ先が無い作品はトップの検索 `/?q=<作品名>` へのリンク）。`src/salesRanking.ts`。閲覧ページは `/sales-ranking`（`public/sales-ranking.html`）
+- `GET /api/admin/sales-ranking` — 管理画面「売上ランキング」用。直近 14 日の取得件数、集計開始日、最後に集計した時刻、窓ごとのリンク付き件数、巻一覧へのリンクが付かなかった作品（どれかの窓の上位に入っているもの）を返す
+- `POST /api/admin/sales-ranking/snapshot` — 売上ランキングの今日の分を Cron を待たずに取得・集計する。手動分はその日の 05:00 の Cron が置き換え、Cron が取得済みの日（`meta.sales_snapshot_cron_day`）は何もしない（`skipped: "cron_done"`）。毎日同じ時刻の順位で揃えるため。`?recompute=1` は取得せず、作品名の付け直しと集計だけ行う（作品名・寄せ先の判定を直した後に使う）
 - `GET /l/:slug` — 閲覧ページ（OGP メタを Worker が埋め込み）
 
 ## デプロイ
@@ -261,15 +264,46 @@ wrangler d1 execute DB --env dev --remote --file db/backfill-events.sql # 開発
 
 以降の作成・更新公開は `src/lists.ts` が自動でイベントを追記するので、backfill は初回のみ。
 
+売上ランキング (`/api/sales-ranking`) は `sales_snapshot` テーブルが前提。既存 DB には一度だけ流す:
+
+```bash
+wrangler d1 execute DB --remote --file db/add-sales-snapshot.sql          # 本番
+wrangler d1 execute DB --env dev --remote --file db/add-sales-snapshot.sql # 開発
+```
+
+データは Cron（`wrangler.jsonc` の `triggers`）が毎日貯める。初日分をすぐ入れたいときは管理者で
+`POST /api/admin/sales-ranking/snapshot` を叩く。
+
+検索で記号・全角半角を無視する（「ぼっちざろっく」で「ぼっち・ざ・ろっく！」が出る）ための検索専用列
+`series.name_search` / `volumes.title_search` は、既存 DB に一度だけ列を足してから取り込み直すと埋まる
+（埋まるまでは従来の照合のまま動く）:
+
+```bash
+wrangler d1 execute DB --remote --file db/add-name-search.sql          # 本番
+wrangler d1 execute DB --env dev --remote --file db/add-name-search.sql # 開発
+npm run ingest:remote        # 本番（列を埋めるには取り込み直しが必要）
+```
+
+検索カード・シリーズ表示の作者を役割付きで全員出す（「原作：丸戸史明、作画：守姫武士」）ための表示用列
+`series.creators` / `volumes.creators` も同様。Worker が SELECT するので**デプロイ前に**列を足し、取り込み直すと
+埋まる（埋まるまでは従来の代表作者 `creator` を表示）:
+
+```bash
+wrangler d1 execute DB --remote --file db/add-creators.sql          # 本番
+wrangler d1 execute DB --env dev --remote --file db/add-creators.sql # 開発
+npm run ingest:remote        # 本番（列を埋めるには取り込み直しが必要）
+```
+
 シークレット（楽天API）は環境ごとに設定する（下記参照）。
 
 ## データモデル（D1）
 
 - `lists` — `slug`(PK), `edit_token`, `owner_name`, `items_json`, `created_at`, `updated_at`
-- `series` — MADB シリーズ。`id`(PK, C-id), `name`, `name_norm`, `name_kana`, `name_kana_norm`, `creator`, `publisher`, `label`, `num_items`
-- `volumes` — MADB 単行本。`isbn`(PK), `series_id`, `volume_number`, `vol_sort`, `title`, `creator`, `publisher`, `label`, `pubdate`
+- `series` — MADB シリーズ。`id`(PK, C-id), `name`, `name_norm`, `name_kana`, `name_kana_norm`, `name_search`(検索専用。全角半角を寄せて記号を落とした書名、`src/util.ts` `searchKey`), `creator`(代表作者), `creators`(表示用。役割付き全作者), `creators_norm`(検索専用), `publisher`, `label`, `num_items`
+- `volumes` — MADB 単行本。`isbn`(PK), `series_id`, `volume_number`, `vol_sort`, `title`, `title_search`(検索専用、`name_search` と同じ変換), `creator`, `creators`, `creators_norm`, `publisher`, `label`, `pubdate`
 - `covers` — 書影解決結果のキャッシュ。`isbn`(PK), `cover_url`(解決した書影URL。`""` は「どこにも無し」), `checked_at`。詳細は下記。
 - `list_item_events` — 巻の「追加」イベントログ（ランキングの元データ）。`id`(PK), `slug`, `isbn`, `added_at`。表示名・著者・表紙は持たず、ランキング計算時に ISBN から引く。公開時に新しく加わった巻を追記（作成は全 item、更新は旧→新差分の新規 isbn のみ）。ランキングは `COUNT(DISTINCT slug)` で人数を数え `added_at` で窓を切る。リスト削除時は `slug` 単位で掃除。集計結果は `meta` に `book_ranking_json` / `book_ranking_at` として 10 分 TTL キャッシュ。`src/ranking.ts`。
+- `sales_snapshot` — 売上ランキングの日次スナップショット。`(day, rank)`(PK), `isbn`, `title`(楽天の書名), `work` / `work_norm`(巻数・版の表記を除いた作品名と集計キー), `author`, `publisher`, `sales_date`, `cover_url`。1 日 300 行。集計結果は `meta` の `sales_ranking_json` に保存し、Cron のたびに作り直す。`src/salesRanking.ts`。
 
 - `live_volumes` — 検索画面の「最新DBから取得」で取れた、マスタに無い巻。`isbn`(PK), `title`, `volume_number`, `author`, `fetched_at`。サーバが MADB から取得した値だけを保存し、リストの本のタイトル解決に使う。
 

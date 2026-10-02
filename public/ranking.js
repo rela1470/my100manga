@@ -48,10 +48,11 @@ function renderTabs() {
   }
 }
 
+// 100 冊の閲覧画面（view.js）と同じ表紙グリッド。左上に順位、下にタイトルと選んだ人数。
 function render(key) {
   const entries = windows[key] || [];
-  const list = $("list");
-  list.textContent = "";
+  const grid = $("list");
+  grid.textContent = "";
   $("empty").hidden = entries.length > 0;
 
   const unit = key === "cumulative" ? "累計" : TABS.find((t) => t.key === key).label;
@@ -60,40 +61,43 @@ function render(key) {
     : "";
 
   for (const e of entries) {
-    const li = document.createElement("li");
-    li.className = "rank-row";
-    li.dataset.isbn = e.isbn;
+    // リンク先: ISBN で検索した結果（その巻のシリーズ。public/app.js openSearchFromUrl）。
+    // 本の詳細の「巻一覧を開く」にも使う。
+    const slot = document.createElement("a");
+    slot.className = "slot view rank-slot";
+    slot.href = `/?q=${encodeURIComponent(e.isbn)}`;
+    slot.dataset.isbn = e.isbn;
+    // タップはページに残って本の詳細（book-detail.js）を開く。Ctrl/⌘ クリック等は通常のリンク。
+    slot.addEventListener("click", (ev) => {
+      if (ev.metaKey || ev.ctrlKey || ev.shiftKey || ev.button !== 0) return;
+      ev.preventDefault();
+      openBookDetail(
+        { isbn: e.isbn, title: e.title, author: e.author, cover_url: e.cover_url },
+        { seriesHref: slot.href }
+      );
+    });
+    if (e.author) slot.title = `${e.title}（${e.author}）`;
 
-    const num = document.createElement("div");
-    num.className = "rank-num" + (e.rank <= 3 ? " top" : "");
+    const num = document.createElement("span");
+    num.className = "num" + (e.rank <= 3 ? ` top${e.rank}` : "");
     num.textContent = e.rank;
-    li.appendChild(num);
+    slot.appendChild(num);
 
-    const coverBox = document.createElement("div");
-    coverBox.className = "rank-cover";
-    coverBox.appendChild(coverNode(e));
-    li.appendChild(coverBox);
+    slot.appendChild(coverNode(e));
 
     const meta = document.createElement("div");
-    meta.className = "rank-meta";
-    const title = document.createElement("div");
-    title.className = "rank-title";
-    title.textContent = e.title;
-    meta.appendChild(title);
-    if (e.author) {
-      const author = document.createElement("div");
-      author.className = "rank-author";
-      author.textContent = e.author;
-      meta.appendChild(author);
-    }
-    li.appendChild(meta);
+    meta.className = "meta";
+    const t = document.createElement("div");
+    t.className = "t";
+    t.textContent = e.title;
+    meta.appendChild(t);
+    const c = document.createElement("div");
+    c.className = "c";
+    c.textContent = `${e.count}人が選択`;
+    meta.appendChild(c);
+    slot.appendChild(meta);
 
-    const count = document.createElement("div");
-    count.className = "rank-count";
-    count.innerHTML = `<span class="rank-count-num">${e.count}</span><span class="rank-count-unit">人が選択</span>`;
-    li.appendChild(count);
-
-    list.appendChild(li);
+    grid.appendChild(slot);
   }
 }
 
@@ -139,20 +143,11 @@ async function fillMissingCovers() {
   for (const key of Object.keys(windows)) {
     for (const e of windows[key] || []) if (!e.cover_url && covers[e.isbn]) e.cover_url = covers[e.isbn];
   }
-  for (const li of document.querySelectorAll(".rank-row")) {
-    const isbn = li.dataset.isbn;
-    if (!isbn || !covers[isbn]) continue;
-    const box = li.querySelector(".rank-cover");
-    if (box && box.querySelector(".placeholder")) {
-      box.textContent = "";
-      const img = document.createElement("img");
-      img.className = "cover";
-      img.loading = "lazy";
-      img.alt = li.querySelector(".rank-title")?.textContent || "";
-      img.onerror = () => img.replaceWith(placeholder(img.alt));
-      applyCover(img, covers[isbn]);
-      box.appendChild(img);
-    }
+  for (const slot of document.querySelectorAll(".rank-slot")) {
+    const url = covers[slot.dataset.isbn];
+    const ph = slot.querySelector(".cover.placeholder");
+    if (!url || !ph) continue;
+    ph.replaceWith(coverNode({ cover_url: url, title: slot.querySelector(".meta .t")?.textContent || "" }));
   }
 }
 

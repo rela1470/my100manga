@@ -230,3 +230,37 @@ export async function rakutenSearchTitle(
   const real = await Promise.all(books.map((b) => isRealCover(b.cover_url)));
   return books.filter((_, i) => real[i]); // drop noimage placeholders
 }
+
+export interface RakutenBestseller {
+  isbn: string;
+  title: string;
+  author: string;
+  publisher: string;
+  sales_date: string; // salesDate as-is ("2026年11月04日", "2026年09月30日頃")
+  cover_url: string;
+}
+
+/** One page of 楽天ブックス' comics sorted by 売れている順 (sort=sales) — the daily sales
+ *  ranking snapshot (src/salesRanking.ts). In-stock/予約 only: an out-of-stock title
+ *  isn't selling. null when the call wasn't made (rate-limit budget / HTTP error). */
+export async function rakutenBestsellers(env: Env, page: number, hits = 30): Promise<RakutenBestseller[] | null> {
+  if (!rakutenReady(env)) return null;
+  const data = await call(
+    env,
+    { booksGenreId: COMICS_GENRE, sort: "sales", hits: String(hits), page: String(page), outOfStockFlag: "0" },
+    "low",
+  );
+  if (data === null) return null;
+  const items: any[] = data?.Items ?? [];
+  return items
+    .map((x) => x?.Item)
+    .filter((it) => it?.isbn && it?.title)
+    .map((it) => ({
+      isbn: String(it.isbn),
+      title: String(it.title),
+      author: String(it.author ?? ""),
+      publisher: String(it.publisherName ?? ""),
+      sales_date: String(it.salesDate ?? ""),
+      cover_url: /noimage/i.test(String(it.largeImageUrl ?? "")) ? "" : upsize(String(it.largeImageUrl ?? "")),
+    }));
+}

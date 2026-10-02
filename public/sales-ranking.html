@@ -1,0 +1,52 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>売上ランキング | My 100 Manga</title>
+  <meta name="description" content="楽天ブックスのコミック売れ筋を毎日記録し、作品ごとに集計した漫画の売上ランキング。日次・過去7日・過去30日・年間で表示します。">
+  <!--ANALYTICS-->
+  <link rel="stylesheet" href="/styles.css">
+</head>
+<body>
+  <!--GTM_BODY-->
+  <header class="site">
+    <h1><a href="/" style="text-decoration:none;color:inherit">My <span class="accent">100</span> Manga</a></h1>
+    <p class="tagline">売上ランキング ― いま売れている漫画</p>
+  </header>
+
+  <div class="wrap">
+    <nav class="rank-switch">
+      <a href="/ranking">みんなが選んだ</a>
+      <a href="/sales-ranking" class="active">売上（楽天ブックス）</a>
+    </nav>
+    <p class="lead">
+      楽天ブックスのコミック「売れている順」を毎日記録し、作品ごとに集計したランキングです。
+      表紙を押すと最新刊の詳細（あらすじ・購入リンク）を開けます。巻の一覧から自分の100に追加することもできます。
+    </p>
+
+    <div class="rank-tabs" id="tabs"></div>
+    <p class="rank-note" id="note"></p>
+    <div class="grid" id="list" aria-label="売上ランキング"></div>
+    <p class="rank-empty" id="empty" hidden>まだ集計データがありません。</p>
+
+    <p class="rank-source">
+      集計方法: 楽天ブックスの売れ筋上位 300 件を毎日取得し、その日の順位をポイント（1位 = 300pt）にして作品ごとに合計しています。
+      同じ日に同じ作品の巻が複数並んだ場合（新刊と既刊、特装版など）は最も高い順位だけを数えます。予約受付中の新刊も含みます。
+      楽天ブックスでの売れ行きをもとにした独自集計で、市場全体の販売部数とは異なります。
+    </p>
+
+    <div class="publish-bar">
+      <a href="/"><button class="primary">自分の100を作る</button></a>
+    </div>
+  </div>
+
+  <!--FOOTER_AFF-->
+
+  <!--AFF_DATA-->
+  <script src="/cover-fit.js"></script>
+  <script src="/affiliate.js"></script>
+  <script src="/book-detail.js"></script>
+  <script src="/sales-ranking.js"></script>
+</body>
+</html>

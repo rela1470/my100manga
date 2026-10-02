@@ -16,13 +16,17 @@
   </header>
 
   <div class="wrap">
+    <nav class="rank-switch">
+      <a href="/ranking" class="active">みんなが選んだ</a>
+      <a href="/sales-ranking">売上（楽天ブックス）</a>
+    </nav>
     <p class="lead">
-      「私を構成する100の漫画」に選ばれている巻を、選んだ人数で集計したランキングです。
+      「私を構成する100の漫画」に選ばれている巻を、選んだ人数で集計したランキングです。表紙を押すと本の詳細（あらすじ・購入リンク）を開けます。
     </p>
 
     <div class="rank-tabs" id="tabs"></div>
     <p class="rank-note" id="note"></p>
-    <ol class="rank-list" id="list"></ol>
+    <div class="grid" id="list" aria-label="人気ランキング"></div>
     <p class="rank-empty" id="empty" hidden>この期間に選ばれた漫画はまだありません。</p>
 
     <div class="publish-bar">
@@ -30,9 +34,12 @@
     </div>
   </div>
 
-  <!--FOOTER-->
+  <!--FOOTER_AFF-->
 
+  <!--AFF_DATA-->
   <script src="/cover-fit.js"></script>
+  <script src="/affiliate.js"></script>
+  <script src="/book-detail.js"></script>
   <script src="/ranking.js"></script>
 </body>
 </html>

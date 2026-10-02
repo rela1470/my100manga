@@ -72,6 +72,7 @@ import {
 import { addReport } from "./reports";
 import { requireAdmin } from "./adminAuth";
 import { handleRanking } from "./ranking";
+import { adminSalesSnapshot, adminSalesStatus, handleSalesRanking, runSalesSnapshot } from "./salesRanking";
 import { handleSiteStats } from "./siteStats";
 import { analyticsTags, gtmBody, injectAnalytics, appVersion, affIds } from "./analytics";
 import { footerHtml } from "./footer";
@@ -197,6 +198,10 @@ export default {
       if (path === "/api/ranking" && request.method === "GET") {
         return await handleRanking(env);
       }
+      // 売上ランキング（楽天ブックスの売れている順の日次スナップショットを作品単位で集計）。
+      if (path === "/api/sales-ranking" && request.method === "GET") {
+        return await handleSalesRanking(env);
+      }
       // トップページの収録数（シリーズ / 巻 / 公開リスト）。
       if (path === "/api/site-stats" && request.method === "GET") {
         return await handleSiteStats(env);
@@ -319,6 +324,13 @@ export default {
       }
       if (path === "/api/admin/todo" && request.method === "GET") {
         return await adminTodo(env);
+      }
+      // 売上ランキングの今日の分を Cron を待たずに取得・集計する（?recompute=1 は集計のみ）。
+      if (path === "/api/admin/sales-ranking" && request.method === "GET") {
+        return await adminSalesStatus(env);
+      }
+      if (path === "/api/admin/sales-ranking/snapshot" && request.method === "POST") {
+        return await adminSalesSnapshot(env, url.searchParams.get("recompute") === "1");
       }
       // 開発用: マスターデータ以外を全削除して DB を初期化。dev（ADMIN_DEV_BYPASS）限定。
       if (path === "/api/admin/dev/reset" && request.method === "POST") {
@@ -552,6 +564,16 @@ export default {
     // --- Static assets (editor, css, js, view.html template, etc.) ---
     // HTML ページには <!--ANALYTICS--> に Google タグを差し込む（admin は素通り）。
     return injectAnalytics(await env.ASSETS.fetch(request), env);
+  },
+
+  // Cron（wrangler.jsonc triggers）: 売上ランキングの日次スナップショット。
+  async scheduled(_controller: ScheduledController, env: Env, ctx: ExecutionContext): Promise<void> {
+    ctx.waitUntil(
+      runSalesSnapshot(env, "cron").then(
+        (r) => console.log("sales snapshot", r),
+        (err) => console.error("sales snapshot failed", err)
+      )
+    );
   },
 } satisfies ExportedHandler<Env>;
 

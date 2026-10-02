@@ -31,6 +31,7 @@
       <a href="#covers" data-page="covers">表紙キャッシュ</a>
       <a href="#supplements" data-page="supplements">補完キャッシュ</a>
       <a href="#book-meta" data-page="book-meta">楽天データ</a>
+      <a href="#sales-ranking" data-page="sales-ranking">売上ランキング</a>
       <a href="#dev-tools" data-page="dev-tools" id="navDevTools" hidden>開発ツール</a>
     </nav>
 
@@ -511,6 +512,58 @@
           <button id="delSup">指定シリーズを削除</button>
         </div>
       </div>
+    </section>
+
+    <!-- 売上ランキング（楽天ブックス売れ筋の日次スナップショット, src/salesRanking.ts） -->
+    <section class="admin-page" id="page-sales-ranking" hidden>
+      <div class="toolbar">
+        <strong>売上ランキング</strong>
+        <span class="count" id="salesSummary"></span>
+        <div style="flex:1"></div>
+        <button id="reloadSales">再読み込み</button>
+      </div>
+      <p class="hint">
+        楽天ブックスのコミック売れ筋上位 300 件を毎日 05:00（JST）の Cron で取得し、作品ごとに集計しています（公開ページ <a href="/sales-ranking" target="_blank">/sales-ranking</a>）。
+        「今日の分を取得」は Cron を待たずに今日の分を取ります。毎日同じ時刻の順位で揃えるため、手動で取った分はその日の 05:00 の Cron で置き換わり、Cron が取得済みの日は手動では取り直しません。
+        「再集計のみ」は取得せず、作品名の付け直しと集計だけを行います（作品名・寄せ先の判定を直した後や、シリーズを結合した後に）。
+      </p>
+      <div class="stat-grid compact" id="salesStats"></div>
+      <div class="cover-actions">
+        <button id="salesSnapshot">今日の分を取得</button>
+        <button id="salesRecompute">再集計のみ</button>
+      </div>
+
+      <div class="toolbar" style="margin-top:20px">
+        <strong>直近の取得</strong>
+      </div>
+      <table class="admin-table" id="salesDaysTable" style="display:none">
+        <thead><tr><th>日付</th><th class="num">件数</th></tr></thead>
+        <tbody id="salesDaysBody"></tbody>
+      </table>
+
+      <div class="toolbar" style="margin-top:20px">
+        <strong>巻一覧へのリンクが付かなかった作品</strong>
+        <span class="count" id="salesUnlinkedCount"></span>
+      </div>
+      <p class="hint">
+        ランキングには出ていますが、作品名に合うシリーズ・まとまりが見つからなかったものです（公開ページでは作品名から検索結果へリンク）。「検索」でトップの検索画面を作品名で開けます。
+        マスタにまだ無い新作か、楽天とマスタで書名の表記が違うものです。
+      </p>
+      <p class="hint" id="salesHint" style="display:none"></p>
+      <table class="admin-table" id="salesUnlinkedTable" style="display:none">
+        <thead>
+          <tr>
+            <th>作品名（集計単位）・著者</th>
+            <th>楽天の書名（代表の巻）</th>
+            <th class="num">日次</th>
+            <th class="num">7日</th>
+            <th class="num">30日</th>
+            <th class="num">年間</th>
+            <th></th>
+          </tr>
+        </thead>
+        <tbody id="salesUnlinkedBody"></tbody>
+      </table>
     </section>
 
     <!-- 楽天データ（book_meta: あらすじ・作者・出版社・発行日のキャッシュ） -->

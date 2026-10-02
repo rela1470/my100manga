@@ -27,7 +27,11 @@ interface BookMetaRow {
   publisher: string;
   pubdate: string;
   caption: string;
+  checked_at: number;
 }
+
+// あらすじが空のキャッシュを楽天から取り直す間隔（handleBook）。
+const EMPTY_CAPTION_RETRY_MS = 24 * 60 * 60 * 1000;
 
 // GET /api/book?isbn=<isbn> — enrich the view-page detail popup with metadata the
 // stored list item doesn't carry. The master (volumes table) is authoritative for
@@ -50,13 +54,14 @@ export async function handleBook(request: Request, env: Env): Promise<Response> 
   // series merges / renames live.
   const seriesP = bookSeries(env, isbn);
 
-  if (!refresh) {
-    const cached = await readBookMeta(env, isbn);
-    if (cached) {
-      return json({ ...cached, series: await seriesP, status: "ok" }, 200, {
-        "cache-control": "no-store",
-      });
-    }
+  // あらすじが空のキャッシュは、最後に楽天を引いてから 1 日経っていれば取り直す。予約中の
+  // 新刊（売上ランキングに多い）は楽天の商品説明がまだ空で、そのまま固まると発売後も
+  // あらすじが出ないため。取り直しても空なら checked_at が進み、また 1 日後に試す。
+  const cached = refresh ? null : await readBookMeta(env, isbn);
+  if (cached && (cached.meta.caption || Date.now() - cached.checkedAt < EMPTY_CAPTION_RETRY_MS)) {
+    return json({ ...cached.meta, series: await seriesP, status: "ok" }, 200, {
+      "cache-control": "no-store",
+    });
   }
 
   const [row, res] = await Promise.all([
@@ -68,6 +73,13 @@ export async function handleBook(request: Request, env: Env): Promise<Response> 
     rakutenResolveFull(env, isbn, "high"),
   ]);
   const rk = res.meta;
+  // 取り直し（あらすじ空の再試行）で楽天を引けなかった（レート制限）ときは、キャッシュの
+  // 楽天由来の値（マスタに無い新刊の作者・出版社など）を落とさないようキャッシュを返す。
+  if (rk === null && cached) {
+    return json({ ...cached.meta, series: await seriesP, status: "ok" }, 200, {
+      "cache-control": "no-store",
+    });
+  }
 
   const result: BookMeta = {
     isbn,
@@ -125,19 +137,22 @@ async function bookSeries(env: Env, isbn: string): Promise<{ id: string; title: 
   return { id, title: s?.name || v.title };
 }
 
-async function readBookMeta(env: Env, isbn: string): Promise<BookMeta | null> {
+async function readBookMeta(env: Env, isbn: string): Promise<{ meta: BookMeta; checkedAt: number } | null> {
   const row = await env.DB.prepare(
-    `SELECT authors, publisher, pubdate, caption FROM book_meta WHERE isbn = ?`
+    `SELECT authors, publisher, pubdate, caption, checked_at FROM book_meta WHERE isbn = ?`
   )
     .bind(isbn)
     .first<BookMetaRow>();
   if (!row) return null;
   return {
-    isbn,
-    authors: row.authors ? row.authors.split("/") : [],
-    publisher: row.publisher,
-    pubdate: row.pubdate,
-    caption: row.caption,
+    meta: {
+      isbn,
+      authors: row.authors ? row.authors.split("/") : [],
+      publisher: row.publisher,
+      pubdate: row.pubdate,
+      caption: row.caption,
+    },
+    checkedAt: row.checked_at,
   };
 }
 

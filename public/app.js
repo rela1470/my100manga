@@ -53,6 +53,7 @@ async function init() {
   loadSiteStats();
   wireEvents();
   openSeriesFromUrl(params);
+  openSearchFromUrl(params);
   // /l/:slug が見つからなかったときはサーバがここへリダイレクトしてくる。
   if (params.get("notfound") === "list") {
     params.delete("notfound");
@@ -73,6 +74,20 @@ function openSeriesFromUrl(params) {
   const qs = params.toString();
   history.replaceState(null, "", location.pathname + (qs ? `?${qs}` : "") + location.hash);
   openSeriesFromBook(sid, title);
+}
+
+// 検索語付きのリンク（/?q=<検索語>。売上ランキングで巻一覧へのリンクが付かなかった作品・
+// 管理画面から）。トップの検索欄に入れて検索結果を開く。パラメータは openSeriesFromUrl と同じく消す。
+function openSearchFromUrl(params) {
+  const q = (params.get("q") || "").trim();
+  if (!q) return;
+  params.delete("q");
+  const qs = params.toString();
+  history.replaceState(null, "", location.pathname + (qs ? `?${qs}` : "") + location.hash);
+  if (q.length < 2) return;
+  $("topSearch").value = q;
+  openAdd();
+  doSearch(q);
 }
 
 /* ---------- site stats (収録シリーズ / 巻 / 公開リスト数) ---------- */
@@ -1180,6 +1195,7 @@ function renderResults(results, isbnMiss = false) {
       ? "このISBNはまだ収録されていません。書名で検索して、下の「最新DBから取得」を試してください。"
       : "見つかりませんでした。別の語か、下の「最新DBから取得」を試してください。";
     box.appendChild(p);
+    box.appendChild(buildRetryForm());
   }
   const pending = [];
   for (const r of results) box.appendChild(buildResultCard(r, pending));
@@ -1188,6 +1204,33 @@ function renderResults(results, isbnMiss = false) {
   // 常設: マスタ(月次ダンプ)に無い作品を live MADB からキーワードで取得する導線。
   // マスタ検索が0件でも手詰まりにならないよう、結果の有無にかかわらず末尾に出す。
   box.appendChild(buildLiveBar());
+}
+
+// 0 件のときだけ出す検索語の編集欄。普段はモーダルに検索欄を置かず再検索はトップの検索欄から
+// だが、0 件は「語を少し変えて試す」場面なので、閉じずにその場で検索し直せるようにする
+// （売上ランキングなどから /?q= で長い書名のまま開いたときにも効く）。
+function buildRetryForm() {
+  const row = document.createElement("form");
+  row.className = "share-url";
+  const input = document.createElement("input");
+  input.type = "text"; // .modal input[type="text"] のスタイル（iOS のズーム防止の 16px も）に揃える
+  input.enterKeyHint = "search";
+  input.value = lastQuery;
+  input.placeholder = "タイトル・著者で検索";
+  const btn = document.createElement("button");
+  btn.type = "submit";
+  btn.textContent = "検索";
+  row.appendChild(input);
+  row.appendChild(btn);
+  row.addEventListener("submit", (e) => {
+    e.preventDefault();
+    const q = input.value.trim();
+    if (q.length < 2) { uiAlert("2文字以上で検索してください"); return; }
+    input.blur();
+    $("topSearch").value = q;
+    doSearch(q);
+  });
+  return row;
 }
 
 // Keyword live-fetch bar shown below every result set. Probes MADB SPARQL for the

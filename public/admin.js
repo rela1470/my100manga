@@ -2842,8 +2842,132 @@ const PAGES = {
     loadBookMetaSummary();
     loadBookMeta(1);
   },
+  "sales-ranking": () => loadSales(),
   "dev-tools": () => {},
 };
+
+/* ---------- 売上ランキング ---------- */
+// 取得状況（Cron が止まっていないか）・手動の取得/再集計・リンクが付かなかった作品の一覧。
+async function loadSales() {
+  const stats = $("salesStats");
+  const hint = $("salesHint");
+  stats.textContent = "";
+  hint.style.display = "none";
+  $("salesDaysTable").style.display = "none";
+  $("salesUnlinkedTable").style.display = "none";
+  $("salesDaysBody").textContent = "";
+  $("salesUnlinkedBody").textContent = "";
+
+  let data;
+  try {
+    const res = await fetch("/api/admin/sales-ranking");
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    data = await res.json();
+  } catch {
+    hint.textContent = "売上ランキングの状況の取得に失敗しました";
+    hint.style.display = "";
+    return;
+  }
+
+  // 最新の取得日が今日（JST）でなければ Cron が止まっている可能性がある。
+  const today = new Date(Date.now() + 9 * 3600 * 1000).toISOString().slice(0, 10);
+  const stale = data.days.length > 0 && data.days[0].day !== today;
+  $("salesSummary").textContent = data.total_days
+    ? `${data.first_day} から ${data.total_days} 日分（${data.total_rows.toLocaleString("ja-JP")} 行）`
+    : "まだ取得していません";
+
+  const linked = (w) => {
+    const [n, total] = data.linked[w] || [0, 0];
+    return total ? `${n} / ${total}` : "-";
+  };
+  const cards = [
+    [
+      data.days[0]?.day || "-",
+      stale
+        ? "最新の取得日（今日の分が未取得）"
+        : data.cron_day === data.days[0]?.day
+          ? "最新の取得日（Cron で取得）"
+          : "最新の取得日（手動。05:00 の Cron で置き換え）",
+    ],
+    [fmtDate(data.computed_at).slice(5), "最後に集計した時刻"],
+    [linked("day"), "リンク付き（日次）"],
+    [linked("year"), "リンク付き（年間）"],
+  ];
+  for (const [n, k] of cards) {
+    stats.append(
+      el("div", { className: "stat-card" + (stale && k.startsWith("最新") ? " warn" : "") }, [
+        el("div", { className: "n", textContent: n }),
+        el("div", { className: "k", textContent: k }),
+      ])
+    );
+  }
+
+  if (data.days.length) {
+    for (const d of data.days) {
+      $("salesDaysBody").append(
+        el("tr", {}, [
+          el("td", { textContent: d.day }),
+          el("td", { className: "num", textContent: String(d.count) }),
+        ])
+      );
+    }
+    $("salesDaysTable").style.display = "";
+  }
+
+  $("salesUnlinkedCount").textContent = `${data.unlinked.length} 件`;
+  if (!data.unlinked.length) {
+    hint.textContent = data.total_days ? "リンクが付かなかった作品はありません。" : "";
+    hint.style.display = data.total_days ? "" : "none";
+    return;
+  }
+  for (const u of data.unlinked) {
+    const rank = (w) => el("td", { className: "num" + (u.ranks[w] ? "" : " muted"), textContent: u.ranks[w] ? `${u.ranks[w]}位` : "-" });
+    // トップの検索画面を作品名の先頭の語で開く（/?q=）。マスタに居るか・どんな書名で居るかの確認用。
+    const search = el("a", {
+      href: `/?q=${encodeURIComponent(u.search_q || u.work)}`,
+      target: "_blank",
+      textContent: "検索",
+    });
+    $("salesUnlinkedBody").append(
+      el("tr", {}, [
+        el("td", { className: "wrap" }, [
+          el("div", { textContent: u.work }),
+          el("div", { className: "muted", style: "font-size:12px", textContent: u.author.replace(/\//g, "・") }),
+        ]),
+        el("td", { className: "wrap muted", textContent: u.title }),
+        rank("day"),
+        rank("d7"),
+        rank("d30"),
+        rank("year"),
+        el("td", {}, [search]),
+      ])
+    );
+  }
+  $("salesUnlinkedTable").style.display = "";
+}
+
+async function runSales(recompute, btn) {
+  const orig = btn.textContent;
+  btn.disabled = true;
+  btn.textContent = recompute ? "集計中…" : "取得中…（30秒ほど）";
+  try {
+    const res = await fetch(`/api/admin/sales-ranking/snapshot${recompute ? "?recompute=1" : ""}`, { method: "POST" });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
+    if (data.skipped === "cron_done") {
+      uiAlert(`${data.day} の分は 05:00 の Cron で取得済みです。データを揃えるため、手動では取り直しません。`);
+      return;
+    }
+    if (!data.ok) throw new Error("楽天から取得できませんでした（レート制限・認証情報を確認してください）");
+    uiAlert(recompute ? "再集計しました。" : `${data.day} の分を ${data.count} 件取得して集計しました。`);
+    await loadSales();
+  } catch (e) {
+    uiAlert((recompute ? "再集計" : "取得") + "に失敗しました: " + e.message);
+  } finally {
+    btn.disabled = false;
+    btn.textContent = orig;
+  }
+}
 
 function currentPageName() {
   const h = (location.hash || "").replace(/^#/, "");
@@ -2915,6 +3039,9 @@ $("reloadSup").addEventListener("click", () => {
 $("purgeSupEmpty").addEventListener("click", (e) => purgeSupplements("empty", e.currentTarget));
 $("purgeSupAll").addEventListener("click", (e) => purgeSupplements("all", e.currentTarget));
 $("delSup").addEventListener("click", (e) => deleteSupplement(e.currentTarget));
+$("reloadSales").addEventListener("click", () => loadSales());
+$("salesSnapshot").addEventListener("click", (e) => runSales(false, e.currentTarget));
+$("salesRecompute").addEventListener("click", (e) => runSales(true, e.currentTarget));
 $("reloadBookMeta").addEventListener("click", () => {
   loadBookMetaSummary();
   loadBookMeta(pageState.bookMeta);

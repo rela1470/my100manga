@@ -85,6 +85,9 @@
     { "name": "RL_WRITE", "namespace_id": "1001", "simple": { "limit": 30, "period": 60 } },
     { "name": "RL_COVERS", "namespace_id": "1002", "simple": { "limit": 120, "period": 60 } }
   ],
+  // 売上ランキングの日次スナップショット（src/salesRanking.ts）。毎日 05:00 JST（20:00 UTC）。
+  // triggers は env に継承されるので dev でも同じ時刻に走る（dev は dev の DB に貯まる）。
+  "triggers": { "crons": ["0 20 * * *"] },
   "routes": [
     { "pattern": "example.com", "custom_domain": true }
   ],

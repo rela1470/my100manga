@@ -68,6 +68,7 @@ export interface GroupVolume {
   vol_sort: number;
   title: string;
   author: string;
+  creators: string; // 役割付きの全作者（巻一覧の表示用）。無ければ author と同じ
   publisher: string;
   label: string;
   pubdate: string;
@@ -114,6 +115,7 @@ export function buildGroup(rows: GroupRow[], covers: Map<string, string>): Unlin
       vol_sort: rep.vol_sort ?? 0,
       title: rep.title,
       author: rep.creator ?? creator,
+      creators: rep.creators || rep.creator || creators,
       publisher: rep.publisher ?? "",
       label: rep.label ?? "",
       pubdate: rep.pubdate ?? "",
@@ -175,7 +177,7 @@ export async function unattributedGroupsFor(env: Env, name: string): Promise<Unl
   const base = baseTitle(name);
   if (!base) return [];
   const res = await env.DB.prepare(
-    `SELECT isbn, volume_number, vol_sort, title, creator, publisher, label, pubdate
+    `SELECT isbn, volume_number, vol_sort, title, creator, creators, publisher, label, pubdate
        FROM volumes
       WHERE series_id IS NULL
         AND REPLACE(REPLACE(LOWER(title), ' ', ''), '　', '') LIKE ? ESCAPE '\\'

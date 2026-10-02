@@ -1837,7 +1837,8 @@ function renderVolumes(series, volumes, opts) {
     t.textContent = volLabel(v);
     const a = document.createElement("div");
     a.className = "a";
-    a.textContent = [v.author, v.pubdate].filter(Boolean).join(" / ");
+    // creators = 役割付きの全作者（"原作：A、作画：B"）。補完の巻など無いものは代表作者で。
+    a.textContent = [v.creators || v.author, v.pubdate].filter(Boolean).join(" / ");
     info.appendChild(t);
     info.appendChild(a);
     row.appendChild(info);

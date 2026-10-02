@@ -29,7 +29,7 @@ interface VolumeRow {
   vol_sort: number | null;
   title: string;
   creator: string | null;
-  creators?: string | null; // only the series' own volumes select it (byline fallback)
+  creators?: string | null; // display credit line (see db/add-creators.sql)
   publisher: string | null;
   label: string | null;
   pubdate: string | null;
@@ -42,6 +42,7 @@ interface OutVolume {
   vol_sort: number;
   title: string;
   author: string;
+  creators: string; // 役割付きの全作者（巻一覧の表示用）。無ければ author と同じ
   publisher: string;
   label: string;
   pubdate: string;
@@ -152,7 +153,7 @@ export async function getSeriesVolumes(
   for (const [name, labels] of nameLabels) {
     if (await isSoleSeriesForName(env, members, name)) {
       const unlinked = await env.DB.prepare(
-        `SELECT isbn, volume_number, vol_sort, title, creator, publisher, label, pubdate
+        `SELECT isbn, volume_number, vol_sort, title, creator, creators, publisher, label, pubdate
          FROM volumes WHERE series_id IS NULL AND title = ? ORDER BY vol_sort, pubdate, isbn`
       )
         .bind(name)
@@ -163,7 +164,7 @@ export async function getSeriesVolumes(
     for (const label of labels) {
       if (!(await isSoleSeriesForNameLabel(env, members, name, label))) continue;
       const unlinked = await env.DB.prepare(
-        `SELECT isbn, volume_number, vol_sort, title, creator, publisher, label, pubdate
+        `SELECT isbn, volume_number, vol_sort, title, creator, creators, publisher, label, pubdate
          FROM volumes WHERE series_id IS NULL AND title = ? AND label = ?
          ORDER BY vol_sort, pubdate, isbn`
       )
@@ -190,7 +191,7 @@ export async function getSeriesVolumes(
   for (const base of bases) {
     if (!(await isSoleSeriesForBase(env, members, base))) continue;
     const variants = await env.DB.prepare(
-      `SELECT isbn, volume_number, vol_sort, title, creator, publisher, label, pubdate
+      `SELECT isbn, volume_number, vol_sort, title, creator, creators, publisher, label, pubdate
        FROM volumes
        WHERE series_id IS NULL
          AND REPLACE(REPLACE(LOWER(title), ' ', ''), '　', '') LIKE ? ESCAPE '\\'
@@ -208,6 +209,7 @@ export async function getSeriesVolumes(
     vol_sort: number;
     title: string;
     author: string;
+    creators?: string; // 補完（SPARQL）の巻には無い
     publisher: string;
     label: string;
     pubdate: string;
@@ -221,6 +223,7 @@ export async function getSeriesVolumes(
     vol_sort: rep.vol_sort ?? 0,
     title: rep.title,
     author: rep.creator ?? meta.creator ?? "",
+    creators: rep.creators || (rep.creator ? "" : meta.creators) || "",
     publisher: rep.publisher ?? "",
     label: rep.label ?? "",
     pubdate: rep.pubdate ?? "",
@@ -339,6 +342,7 @@ export async function getSeriesVolumes(
       vol_sort: c.vol_sort,
       title: displayName,
       author: meta.creator ?? "",
+      creators: meta.creators ?? "",
       publisher: "",
       label: "",
       pubdate: "",
@@ -413,6 +417,7 @@ export async function getSeriesVolumes(
     vol_sort: e.vol_sort,
     title: titleFor(e),
     author: e.author,
+    creators: e.creators || e.author,
     publisher: e.publisher,
     label: e.label,
     pubdate: e.pubdate,

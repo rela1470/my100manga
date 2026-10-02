@@ -125,26 +125,46 @@ export async function getSeriesVolumes(
     }
   };
 
+  // 結合済みなら member ごとに名前・レーベルが違う（例: C451211「One piece」/ C336558
+  // 「ワンピース」）ので、下の 2 種類の fold は member 全員の (name, label) で行う。target の
+  // 名前だけだと、吸収した側の名前で拾っていた迷子巻が結合でかえって消える。
+  const memberMetas = await env.DB.prepare(
+    `SELECT name, label FROM series WHERE id IN (${inMembers})`
+  )
+    .bind(...members)
+    .all<{ name: string; label: string | null }>();
+  const nameLabels = new Map<string, Set<string>>();
+  for (const m of memberMetas.results ?? []) {
+    let labels = nameLabels.get(m.name);
+    if (!labels) nameLabels.set(m.name, (labels = new Set()));
+    if (m.label) labels.add(m.label);
+  }
+
   // When other editions share the name (名探偵コナン: 少年サンデーコミックス 本編 vs My first
   // big / スペシャル), fall back to name + label: loose volumes carrying this series' label
   // are still attributable as long as no sibling shares that label too.
-  if (await isSoleSeriesForName(env, members, meta.name)) {
-    const unlinked = await env.DB.prepare(
-      `SELECT isbn, volume_number, vol_sort, title, creator, publisher, label, pubdate
-       FROM volumes WHERE series_id IS NULL AND title = ? ORDER BY vol_sort, pubdate, isbn`
-    )
-      .bind(meta.name)
-      .all<VolumeRow>();
-    foldUnlinked(unlinked.results ?? []);
-  } else if (meta.label && (await isSoleSeriesForNameLabel(env, members, meta.name, meta.label))) {
-    const unlinked = await env.DB.prepare(
-      `SELECT isbn, volume_number, vol_sort, title, creator, publisher, label, pubdate
-       FROM volumes WHERE series_id IS NULL AND title = ? AND label = ?
-       ORDER BY vol_sort, pubdate, isbn`
-    )
-      .bind(meta.name, meta.label)
-      .all<VolumeRow>();
-    foldUnlinked(unlinked.results ?? []);
+  for (const [name, labels] of nameLabels) {
+    if (await isSoleSeriesForName(env, members, name)) {
+      const unlinked = await env.DB.prepare(
+        `SELECT isbn, volume_number, vol_sort, title, creator, publisher, label, pubdate
+         FROM volumes WHERE series_id IS NULL AND title = ? ORDER BY vol_sort, pubdate, isbn`
+      )
+        .bind(name)
+        .all<VolumeRow>();
+      foldUnlinked(unlinked.results ?? []);
+      continue;
+    }
+    for (const label of labels) {
+      if (!(await isSoleSeriesForNameLabel(env, members, name, label))) continue;
+      const unlinked = await env.DB.prepare(
+        `SELECT isbn, volume_number, vol_sort, title, creator, publisher, label, pubdate
+         FROM volumes WHERE series_id IS NULL AND title = ? AND label = ?
+         ORDER BY vol_sort, pubdate, isbn`
+      )
+        .bind(name, label)
+        .all<VolumeRow>();
+      foldUnlinked(unlinked.results ?? []);
+    }
   }
 
   // Also fold variants MADB filed under a different schema:name string for the SAME work
@@ -156,8 +176,13 @@ export async function getSeriesVolumes(
   // attributed. Skipped when the name has no separator (base === full norm): the exact
   // fold already covered everything. Duplicate volume_numbers just collapse into sibling
   // ISBNs, so nothing is double-counted.
-  const base = baseTitle(meta.name);
-  if (base && base !== normTitle(meta.name) && (await isSoleSeriesForBase(env, members, base))) {
+  const bases = new Set<string>();
+  for (const name of nameLabels.keys()) {
+    const base = baseTitle(name);
+    if (base && base !== normTitle(name)) bases.add(base);
+  }
+  for (const base of bases) {
+    if (!(await isSoleSeriesForBase(env, members, base))) continue;
     const variants = await env.DB.prepare(
       `SELECT isbn, volume_number, vol_sort, title, creator, publisher, label, pubdate
        FROM volumes

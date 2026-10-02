@@ -124,20 +124,58 @@ export function escapeHtml(input: string): string {
 
 // Plain volume labels we know how to read and rewrite. Arc / edition labels like
 // "6 (アラバスタ編)" or "2020年版" deliberately don't match and are left untouched.
-const VOLUME_LABEL_TEMPLATES = ["{n}", "巻{n}", "第{n}巻", "{n}巻"];
+const VOLUME_LABEL_TEMPLATES = ["{n}", "巻{n}", "第{n}巻", "{n}巻", "巻ノ{n}", "巻の{n}", "第{n}集"];
 
-/** The volume number in a plain volume label, or null for anything else. Accepts
- *  "12" / "巻12" / "第12巻" / "12巻", the Latin forms MADB mixes in within one series
- *  (名探偵コナン: "v.15" / "volume 9" / "Volume77" / "VOLUME26") and the doubled form
- *  "170　／　第170巻" / "51　／　VOLUME51" (only when both numbers agree). */
-export function plainVolumeNumber(label: string): number | null {
+const KANJI_DIGITS: Record<string, number> = {
+  〇: 0, 零: 0, 一: 1, 二: 2, ニ: 2, 三: 3, 四: 4, 五: 5, 六: 6, 七: 7, 八: 8, 九: 9,
+};
+const KANJI_UNITS: Record<string, number> = { 十: 10, 百: 100, 千: 1000 };
+// カタカナの「ニ」は MADB の誤記（NARUTO「巻ノ六十ニ」）。語頭では拾わない（「ニンジャ」等）。
+const KANJI_NUM_RE = /[〇零一二三四五六七八九十百千][〇零一二三四五六七八九十百千ニ]*/g;
+
+function kanjiToNumber(s: string): number {
+  // 位取りの無い並び（「一〇五」）はそのまま桁として読む。
+  if (!/[十百千]/.test(s)) return parseInt([...s].map((c) => KANJI_DIGITS[c]).join(""), 10);
+  let total = 0;
+  let digit = 0;
+  for (const c of s) {
+    if (c in KANJI_UNITS) {
+      total += (digit || 1) * KANJI_UNITS[c];
+      digit = 0;
+    } else digit = KANJI_DIGITS[c];
+  }
+  return total + digit;
+}
+
+/** Kanji numerals in a volume label → ASCII digits ("巻ノ二十七" → "巻ノ27", "第一巻" → "第1巻").
+ *  MADB mixes them into otherwise numeric series (NARUTO: "巻ノ26" then "巻ノ二十七"). */
+export function arabicVolumeLabel(label: string): string {
+  return (label ?? "").replace(KANJI_NUM_RE, (m) => String(kanjiToNumber(m)));
+}
+
+// 漢数字だけの巻番号ラベル（VOLUME_LABEL_TEMPLATES の形）。副題（「三つの符号編」）は読まない。
+const KANJI_VOLUME_RE =
+  /^(?:[〇零一二三四五六七八九十百千][〇零一二三四五六七八九十百千ニ]*|(?:巻|巻ノ|巻の|第)[〇零一二三四五六七八九十百千][〇零一二三四五六七八九十百千ニ]*|第[〇零一二三四五六七八九十百千][〇零一二三四五六七八九十百千ニ]*[巻集]|[〇零一二三四五六七八九十百千][〇零一二三四五六七八九十百千ニ]*巻)$/;
+
+/** Sort key for a volume label: the first run of digits, else a kanji-numeral volume label
+ *  ("巻ノ二十七" → 27), else 0. Mirrored in scripts/ingest.mjs. */
+export function volSort(label: string): number {
   const s = (label ?? "").trim();
-  const m =
-    /^(\d+)$/.exec(s) ||
-    /^巻(\d+)$/.exec(s) ||
-    /^第(\d+)巻$/.exec(s) ||
-    /^(\d+)巻$/.exec(s) ||
-    /^v(?:ol(?:ume)?)?\.?[\s　]*(\d+)$/i.exec(s);
+  const m = s.match(/\d+/);
+  if (m) return parseInt(m[0], 10);
+  return KANJI_VOLUME_RE.test(s) ? parseInt(arabicVolumeLabel(s).match(/\d+/)![0], 10) : 0;
+}
+
+/** The volume number in a plain volume label, or null for anything else. Accepts the
+ *  VOLUME_LABEL_TEMPLATES forms ("12" / "巻12" / "第12巻" / "12巻" / "巻ノ12" …, kanji
+ *  numerals included), the Latin forms MADB mixes in within one series
+ *  (名探偵コナン: "v.15" / "volume 9" / "Volume77" / "VOLUME26") and the doubled form
+ *  "170　／　第170巻" / "巻ノ55　／　巻ノ五十五" (only when both numbers agree). */
+export function plainVolumeNumber(label: string): number | null {
+  const s = arabicVolumeLabel(label).trim();
+  const d = /^(\D*)(\d+)(\D*)$/.exec(s);
+  if (d && VOLUME_LABEL_TEMPLATES.includes(`${d[1]}{n}${d[3]}`)) return parseInt(d[2], 10);
+  const m = /^v(?:ol(?:ume)?)?\.?[\s　]*(\d+)$/i.exec(s);
   if (m) return parseInt(m[1], 10);
   const parts = s.split(/[\s　]*[／/][\s　]*/);
   if (parts.length === 2 && !/[／/]/.test(parts[0] + parts[1])) {
@@ -156,7 +194,7 @@ export function volumeLabelTemplate(labels: string[]): string | null {
   const counts = new Map<string, number>();
   const latin = new Map<string, number>();
   for (const l of labels) {
-    const s = (l ?? "").trim();
+    const s = arabicVolumeLabel(l).trim();
     if (!/^\D*\d+\D*$/.test(s)) continue;
     const t = s.replace(/\d+/, "{n}");
     if (VOLUME_LABEL_TEMPLATES.includes(t)) counts.set(t, (counts.get(t) ?? 0) + 1);

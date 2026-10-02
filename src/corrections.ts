@@ -1,5 +1,5 @@
 import { Env } from "./types";
-import { badRequest, json, notFound, volumeLabelTemplate, formatVolumeLabel, readJsonObject, toIsbn13 } from "./util";
+import { badRequest, json, notFound, volumeLabelTemplate, formatVolumeLabel, readJsonObject, toIsbn13, volSort } from "./util";
 import { findNgWord } from "./ngwords";
 import { isTrustedCoverUrl, readCachedCovers, resolveCovers } from "./covers";
 
@@ -25,11 +25,6 @@ const MAX_SUGGESTED_NAME = 100;
 function normalizeVolume(raw: string): string | null {
   const v = raw.trim();
   return /^巻\d+$/.test(v) || /^\d+$/.test(v) ? v : null;
-}
-
-function volSort(s: string): number {
-  const m = s.match(/\d+/);
-  return m ? parseInt(m[0], 10) : 0;
 }
 
 /** Strip separators and keep digits; a valid ISBN13 is exactly 13 digits. */

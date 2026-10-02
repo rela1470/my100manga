@@ -256,10 +256,31 @@ function cleanCreator(s) {
     .trim();
 }
 
-// Numeric sort key from a volume-number string ("1", "10", "上", "3.5" → 1,10,0,3).
-function volSort(s) {
-  const m = String(s ?? "").match(/\d+/);
-  return m ? parseInt(m[0], 10) : 0;
+// Numeric sort key from a volume-number string ("1", "10", "上", "3.5", "巻ノ二十七" →
+// 1,10,0,3,27). Kanji numerals only count in a plain volume label (not "三つの符号編").
+// Mirrors src/util.ts volSort.
+const KANJI_DIGITS = { 〇: 0, 零: 0, 一: 1, 二: 2, ニ: 2, 三: 3, 四: 4, 五: 5, 六: 6, 七: 7, 八: 8, 九: 9 };
+const KANJI_UNITS = { 十: 10, 百: 100, 千: 1000 };
+const KANJI_NUM_RE = /[〇零一二三四五六七八九十百千][〇零一二三四五六七八九十百千ニ]*/g;
+function kanjiToNumber(s) {
+  if (!/[十百千]/.test(s)) return parseInt([...s].map((c) => KANJI_DIGITS[c]).join(""), 10);
+  let total = 0;
+  let digit = 0;
+  for (const c of s) {
+    if (c in KANJI_UNITS) {
+      total += (digit || 1) * KANJI_UNITS[c];
+      digit = 0;
+    } else digit = KANJI_DIGITS[c];
+  }
+  return total + digit;
+}
+const KANJI_VOLUME_RE =
+  /^(?:[〇零一二三四五六七八九十百千][〇零一二三四五六七八九十百千ニ]*|(?:巻|巻ノ|巻の|第)[〇零一二三四五六七八九十百千][〇零一二三四五六七八九十百千ニ]*|第[〇零一二三四五六七八九十百千][〇零一二三四五六七八九十百千ニ]*[巻集]|[〇零一二三四五六七八九十百千][〇零一二三四五六七八九十百千ニ]*巻)$/;
+function volSort(raw) {
+  const s = String(raw ?? "").trim();
+  const m = s.match(/\d+/);
+  if (m) return parseInt(m[0], 10);
+  return KANJI_VOLUME_RE.test(s) ? kanjiToNumber(s.match(KANJI_NUM_RE)[0]) : 0;
 }
 
 // ISBN normalize → ISBN13. Accepts ISBN10/13 with hyphens; converts 10→13.
@@ -275,6 +296,9 @@ function isbn13(raw) {
     return "";
   }
   if (raw && typeof raw === "object") raw = raw["@value"];
+  // Box-set ISBNs ("9784099430115(set)") are shared by every book in the box, so they
+  // never identify a single volume; skip them (src/madbLive.ts liveIsbn does the same).
+  if (/\(set\)/i.test(String(raw ?? ""))) return "";
   const s = String(raw ?? "").replace(/[^0-9Xx]/g, "").toUpperCase();
   if (s.length === 13 && /^\d{13}$/.test(s)) return s;
   if (s.length === 10) {

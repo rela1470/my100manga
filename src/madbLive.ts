@@ -1,4 +1,5 @@
 import { Env } from "./types";
+import { toIsbn13, volSort } from "./util";
 
 // The MADB monthly dump (see scripts/ingest.mjs) links volumes to series via
 // schema:isPartOf, but the newest tankobon frequently lack that edge upstream, so
@@ -33,12 +34,6 @@ function cleanCreator(s: string): string {
     .trim();
 }
 
-// Mirror scripts/ingest.mjs volSort: first run of digits, else 0.
-function volSort(s: string): number {
-  const m = s.match(/\d+/);
-  return m ? parseInt(m[0], 10) : 0;
-}
-
 // Standard tankobon numbering styles we trust for supplementing. "巻107" (KAN) and
 // plain "12" (NUM). Anything else — arc labels like "6 (アラバスタ編)", 総集編, etc. —
 // is NOT a supplementable format: several distinct same-titled editions use those,
@@ -68,6 +63,15 @@ export function seriesFormat(volumeNumbers: string[]): NumFmt | null {
 
 function sparqlString(s: string): string {
   return '"' + s.replace(/\\/g, "\\\\").replace(/"/g, '\\"').replace(/\n/g, "\\n") + '"';
+}
+
+// Normalize a live schema:isbn literal to ISBN13. Box-set ISBNs ("9784099430115(set)",
+// e.g. the bonus Banana fish 20 inside the 2018 復刻版BOX) are shared by every book in
+// the box and never identify a single volume, so they're dropped ("" = skip). A volume
+// whose only ISBN is a set one is therefore not offered at all.
+function liveIsbn(raw: string | undefined): string {
+  if (!raw || /\(set\)/i.test(raw)) return "";
+  return toIsbn13(raw);
 }
 
 interface Binding {
@@ -147,7 +151,7 @@ SELECT ?name ?isbn ?vol ?creator ?publisher ?date WHERE {
   const byName = new Map<string, NameAgg>();
   for (const b of rows) {
     const name = b.name?.value;
-    const isbn = b.isbn?.value;
+    const isbn = liveIsbn(b.isbn?.value);
     const vol = b.vol?.value;
     if (!name || !isbn || !vol) continue;
     let n = byName.get(name);
@@ -225,7 +229,7 @@ async function probeNewerVolumes(
     { isbns: Set<string>; creators: Set<string>; publisher: string; date: string }
   >();
   for (const b of rows) {
-    const isbn = b.isbn?.value;
+    const isbn = liveIsbn(b.isbn?.value);
     const vol = b.vol?.value;
     if (!isbn || !vol) continue;
     let g = byVol.get(vol);

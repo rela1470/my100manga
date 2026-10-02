@@ -1,5 +1,6 @@
-import { Env, ListItem } from "./types";
-import { json, notFound } from "./util";
+import { Env, StoredListItem } from "./types";
+import { resolveBooks, resolveListItems } from "./listItems";
+import { json, notFound, readJsonObject, toIsbn13 } from "./util";
 import { getMostCommonVolumeTitle } from "./series";
 
 // 管理画面用のエンドポイント群。認証は呼び出し側（src/index.ts）が Cloudflare Access +
@@ -69,18 +70,23 @@ export async function adminListLists(env: Env, opts: PageOpts): Promise<Response
       last_country: string | null;
     }>();
 
-  const lists: AdminListRow[] = (results ?? []).map((row) => {
-    let items: ListItem[] = [];
+  const parsed = (results ?? []).map((row) => {
+    let items: StoredListItem[] = [];
     try {
-      items = JSON.parse(row.items_json) as ListItem[];
+      items = JSON.parse(row.items_json) as StoredListItem[];
     } catch {
       items = [];
     }
+    return { row, items };
+  });
+  // Covers are site-wide, so count them by resolving every ISBN on this page at once.
+  const books = await resolveBooks(env, parsed.flatMap((p) => p.items.map((i) => i?.isbn ?? "")));
+  const lists: AdminListRow[] = parsed.map(({ row, items }) => {
     return {
       slug: row.slug,
       owner_name: row.owner_name ?? "",
       item_count: items.length,
-      cover_count: items.filter((i) => i && typeof i.cover_url === "string" && i.cover_url).length,
+      cover_count: items.filter((i) => i && books.get(toIsbn13(i.isbn))?.cover_url).length,
       created_at: row.created_at,
       updated_at: row.updated_at,
       publish_count: row.publish_count ?? 0,
@@ -166,6 +172,9 @@ const DEV_RESET_TABLES = [
   "volume_hidden",
   "series_report",
   "series_name_override",
+  "series_merge",
+  "series_merge_request",
+  "series_merge_dismissed",
   "volume_title_report",
   "volume_title_override",
   "cover_suggestion",
@@ -214,7 +223,7 @@ export async function adminDevReset(env: Env): Promise<Response> {
 
 export async function adminGetList(env: Env, slug: string): Promise<Response> {
   const row = await env.DB.prepare(
-    `SELECT slug, edit_token, owner_name, items_json, created_at, updated_at
+    `SELECT slug, edit_token, owner_name, bio, items_json, created_at, updated_at
        FROM lists WHERE slug = ?`
   )
     .bind(slug)
@@ -222,18 +231,20 @@ export async function adminGetList(env: Env, slug: string): Promise<Response> {
       slug: string;
       edit_token: string;
       owner_name: string | null;
+      bio: string | null;
       items_json: string;
       created_at: number;
       updated_at: number;
     }>();
   if (!row) return notFound("リストが見つかりません");
 
-  let items: ListItem[] = [];
+  let stored: StoredListItem[] = [];
   try {
-    items = JSON.parse(row.items_json) as ListItem[];
+    stored = JSON.parse(row.items_json) as StoredListItem[];
   } catch {
-    items = [];
+    stored = [];
   }
+  const items = await resolveListItems(env, stored);
 
   // 管理用途なので公開APIと違い edit_token も返す（運営者が編集リンクを再取得できる）。
   return json(
@@ -242,6 +253,7 @@ export async function adminGetList(env: Env, slug: string): Promise<Response> {
         slug: row.slug,
         edit_token: row.edit_token,
         owner_name: row.owner_name ?? "",
+        bio: row.bio ?? "",
         items,
         created_at: row.created_at,
         updated_at: row.updated_at,
@@ -479,6 +491,7 @@ export async function adminListHiddenVolumes(env: Env, opts: PageOpts): Promise<
 interface AdminSeriesReportRow {
   series_id: string;
   reported_name: string;
+  suggested_name: string;        // 通報者が任意で添えた正しい名前の提案（最新の非空値）
   report_count: number;
   first_reported_at: number;
   last_reported_at: number;
@@ -493,7 +506,7 @@ interface AdminSeriesReportRow {
 export async function adminListSeriesReports(env: Env, opts: PageOpts): Promise<Response> {
   const total = await countRows(env, `SELECT COUNT(*) AS n FROM series_report`);
   const { results } = await env.DB.prepare(
-    `SELECT r.series_id, r.reported_name, r.report_count,
+    `SELECT r.series_id, r.reported_name, r.suggested_name, r.report_count,
             r.first_reported_at, r.last_reported_at,
             s.name AS current_name, s.name_kana AS name_kana,
             (SELECT v.title FROM volumes v
@@ -510,6 +523,7 @@ export async function adminListSeriesReports(env: Env, opts: PageOpts): Promise<
   const reports = (results ?? []).map((r) => ({
     series_id: r.series_id,
     reported_name: r.reported_name ?? "",
+    suggested_name: r.suggested_name ?? "",
     report_count: r.report_count ?? 0,
     first_reported_at: r.first_reported_at ?? 0,
     last_reported_at: r.last_reported_at ?? 0,
@@ -545,7 +559,7 @@ export async function adminOverrideSeriesName(
     .first<{ id: string }>();
   if (!meta) return notFound("シリーズが見つかりません");
 
-  const body = (await request.json().catch(() => ({}))) as { name?: unknown };
+  const body = (await readJsonObject(request)) as { name?: unknown };
   const name = typeof body.name === "string" ? body.name.trim() : "";
   if (!name) return json({ ok: false, error: "名前を指定してください" }, 400);
   if (name.length > 200) return json({ ok: false, error: "名前が長すぎます" }, 400);
@@ -670,7 +684,7 @@ export async function adminOverrideVolumeTitle(
   env: Env,
   isbn: string
 ): Promise<Response> {
-  const body = (await request.json().catch(() => ({}))) as { title?: unknown };
+  const body = (await readJsonObject(request)) as { title?: unknown };
   const title = typeof body.title === "string" ? body.title.trim() : "";
   if (!title) return json({ ok: false, error: "タイトルを指定してください" }, 400);
   if (title.length > 200) return json({ ok: false, error: "タイトルが長すぎます" }, 400);
@@ -825,7 +839,7 @@ export async function adminDeleteCover(env: Env, isbn: string): Promise<Response
 }
 
 export async function adminPurgeCovers(request: Request, env: Env): Promise<Response> {
-  const body = (await request.json().catch(() => ({}))) as { mode?: unknown };
+  const body = (await readJsonObject(request)) as { mode?: unknown };
   const mode = body.mode;
   if (mode !== "empty" && mode !== "all") {
     return json({ error: "mode は 'empty' か 'all' を指定してください" }, 400);
@@ -907,7 +921,7 @@ export async function adminApproveCoverSuggestion(
   env: Env,
   isbn: string
 ): Promise<Response> {
-  const body = (await request.json().catch(() => ({}))) as { cover_url?: unknown };
+  const body = (await readJsonObject(request)) as { cover_url?: unknown };
   const coverUrl = typeof body.cover_url === "string" ? body.cover_url.trim() : "";
   if (!/^https?:\/\//i.test(coverUrl)) return json({ error: "表紙URLが不正です" }, 400);
 
@@ -948,7 +962,7 @@ export async function adminDismissCoverSuggestion(
   env: Env,
   isbn: string
 ): Promise<Response> {
-  const body = (await request.json().catch(() => ({}))) as { cover_url?: unknown };
+  const body = (await readJsonObject(request)) as { cover_url?: unknown };
   const coverUrl = typeof body.cover_url === "string" ? body.cover_url.trim() : "";
   if (!coverUrl) return json({ error: "cover_url を指定してください" }, 400);
 
@@ -1029,7 +1043,7 @@ export async function adminDeleteSupplement(env: Env, seriesId: string): Promise
 }
 
 export async function adminPurgeSupplements(request: Request, env: Env): Promise<Response> {
-  const body = (await request.json().catch(() => ({}))) as { mode?: unknown };
+  const body = (await readJsonObject(request)) as { mode?: unknown };
   const mode = body.mode;
   if (mode !== "empty" && mode !== "all") {
     return json({ error: "mode は 'empty' か 'all' を指定してください" }, 400);
@@ -1136,7 +1150,7 @@ export async function adminDeleteBookMeta(env: Env, isbn: string): Promise<Respo
 }
 
 export async function adminPurgeBookMeta(request: Request, env: Env): Promise<Response> {
-  const body = (await request.json().catch(() => ({}))) as { mode?: unknown };
+  const body = (await readJsonObject(request)) as { mode?: unknown };
   const mode = body.mode;
   if (mode !== "empty" && mode !== "all") {
     return json({ error: "mode は 'empty' か 'all' を指定してください" }, 400);
@@ -1159,6 +1173,7 @@ interface ReportRow {
   resolved_at: number;
   resolution: string;
   owner_name: string | null;
+  bio: string | null;
   items_json: string | null;
 }
 
@@ -1178,7 +1193,7 @@ export async function adminListReports(
   const { results } = await env.DB.prepare(
     `SELECT r.id, r.slug, r.target_type, r.position, r.reported_text,
             r.report_count, r.first_at, r.last_at, r.resolved_at, r.resolution,
-            l.owner_name, l.items_json
+            l.owner_name, l.bio, l.items_json
        FROM reports r
        LEFT JOIN lists l ON l.slug = r.slug
       WHERE ${where}
@@ -1187,22 +1202,33 @@ export async function adminListReports(
     .bind(opts.per, opts.offset)
     .all<ReportRow>();
 
-  const reports = (results ?? []).map((r) => {
+  // Item titles / covers are site-wide: resolve every referenced item's ISBN at once.
+  const itemOf = (r: ReportRow): StoredListItem | undefined => {
+    if (!r.items_json || r.target_type === "owner_name" || r.target_type === "bio") return undefined;
+    let items: StoredListItem[] = [];
+    try {
+      items = JSON.parse(r.items_json) as StoredListItem[];
+    } catch {
+      items = [];
+    }
+    return items.find((i) => i.position === r.position) ?? items[r.position - 1];
+  };
+  const rowItems = (results ?? []).map(itemOf);
+  const books = await resolveBooks(env, rowItems.map((i) => i?.isbn ?? ""));
+
+  const reports = (results ?? []).map((r, k) => {
     const listExists = r.items_json !== null || r.owner_name !== null;
     let currentText = "";
     let itemTitle = "";
     if (r.target_type === "owner_name") {
       currentText = r.owner_name ?? "";
+    } else if (r.target_type === "bio") {
+      currentText = r.bio ?? "";
     } else if (r.items_json) {
-      let items: ListItem[] = [];
-      try {
-        items = JSON.parse(r.items_json) as ListItem[];
-      } catch {
-        items = [];
-      }
-      const item = items.find((i) => i.position === r.position) ?? items[r.position - 1];
-      currentText = r.target_type === "cover" ? (item?.cover_url ?? "") : (item?.comment ?? "");
-      itemTitle = item?.title ?? "";
+      const item = rowItems[k];
+      const book = item ? books.get(toIsbn13(item.isbn)) : undefined;
+      currentText = r.target_type === "cover" ? (book?.cover_url ?? "") : (item?.comment ?? "");
+      itemTitle = book?.title ?? "";
     }
     return {
       id: r.id,
@@ -1284,15 +1310,15 @@ export async function adminDismissReport(env: Env, id: number): Promise<Response
   return json({ ok: true, id });
 }
 
-// 通報対象のテキストだけを消す（リスト・作品自体は残す）。owner_name は空文字に、comment は
+// 通報対象のテキストだけを消す（リスト・作品自体は残す）。owner_name / bio は空文字に、comment は
 // 当該作品の comment を空文字にする。処理後、通報行はソフトデリート（resolved_at + resolution）
 // で残し、処理済み履歴から辿れるようにする。未処理（resolved_at = 0）のものだけを対象にする。
 export async function adminRedactReport(env: Env, id: number): Promise<Response> {
   const rep = await env.DB.prepare(
-    `SELECT id, slug, target_type, position FROM reports WHERE id = ? AND resolved_at = 0`
+    `SELECT id, slug, target_type, position, reported_text FROM reports WHERE id = ? AND resolved_at = 0`
   )
     .bind(id)
-    .first<{ id: number; slug: string; target_type: string; position: number }>();
+    .first<{ id: number; slug: string; target_type: string; position: number; reported_text: string }>();
   if (!rep) return notFound("通報が見つかりません");
 
   const now = Date.now();
@@ -1313,22 +1339,54 @@ export async function adminRedactReport(env: Env, id: number): Promise<Response>
     await env.DB.prepare(`UPDATE lists SET owner_name = '', updated_at = ? WHERE slug = ?`)
       .bind(now, rep.slug)
       .run();
+  } else if (rep.target_type === "bio") {
+    await env.DB.prepare(`UPDATE lists SET bio = '', updated_at = ? WHERE slug = ?`)
+      .bind(now, rep.slug)
+      .run();
   } else if (rep.target_type === "comment" || rep.target_type === "cover") {
-    let items: ListItem[] = [];
+    let items: StoredListItem[] = [];
     try {
-      items = JSON.parse(list.items_json) as ListItem[];
+      items = JSON.parse(list.items_json) as StoredListItem[];
     } catch {
       items = [];
     }
     const idx = items.findIndex((i) => i.position === rep.position);
     const target = idx >= 0 ? items[idx] : items[rep.position - 1];
-    if (target) {
-      if (rep.target_type === "cover") target.cover_url = "";
-      else target.comment = "";
+    if (rep.target_type === "cover") {
+      // Covers are site-wide, so redacting a reported cover clears that image for
+      // everyone — on every ISBN carrying it, since a list falls back to a sibling
+      // ISBN's cover (src/listItems.ts). "" = confirmed no cover, which auto-resolution
+      // never re-probes; users can fill it again from store images (suggestCover).
+      // The image is also recorded as 'redacted' in cover_suggestion so suggestCover
+      // refuses to put it back through an unreviewed fill.
+      if (rep.reported_text) {
+        const holders = await env.DB.prepare(`SELECT isbn FROM covers WHERE cover_url = ?`)
+          .bind(rep.reported_text)
+          .all<{ isbn: string }>();
+        const isbns = new Set((holders.results ?? []).map((r) => r.isbn));
+        if (target && toIsbn13(target.isbn)) isbns.add(toIsbn13(target.isbn));
+        await env.DB.batch([
+          env.DB.prepare(`UPDATE covers SET cover_url = '', checked_at = ? WHERE cover_url = ?`).bind(
+            now,
+            rep.reported_text
+          ),
+          ...[...isbns].map((isbn) =>
+            env.DB.prepare(
+              `INSERT INTO cover_suggestion
+                 (isbn, cover_url, old_cover_url, suggest_count, first_at, last_at, resolved_at, resolution)
+               VALUES (?, ?, ?, 0, ?, ?, ?, 'redacted')
+               ON CONFLICT (isbn, cover_url) DO UPDATE SET
+                 resolved_at = excluded.resolved_at, resolution = 'redacted'`
+            ).bind(isbn, rep.reported_text, rep.reported_text, now, now, now)
+          ),
+        ]);
+      }
+    } else {
+      if (target) target.comment = "";
+      await env.DB.prepare(`UPDATE lists SET items_json = ?, updated_at = ? WHERE slug = ?`)
+        .bind(JSON.stringify(items), now, rep.slug)
+        .run();
     }
-    await env.DB.prepare(`UPDATE lists SET items_json = ?, updated_at = ? WHERE slug = ?`)
-      .bind(JSON.stringify(items), now, rep.slug)
-      .run();
   }
 
   await env.DB.prepare(

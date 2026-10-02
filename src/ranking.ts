@@ -1,5 +1,6 @@
 import { Env } from "./types";
-import { json } from "./util";
+import { json, toIsbn13 } from "./util";
+import { resolveBooks } from "./listItems";
 
 // 「本が追加されている回数」ランキング。集計単位は巻 (ISBN)、カウントは COUNT(DISTINCT slug)
 // =「その巻を選んだ人数」。元データは list_item_events (公開時に追記される巻の追加イベント。
@@ -31,9 +32,6 @@ interface RankingPayload {
 
 interface AggRow {
   isbn: string;
-  title: string | null;
-  author: string | null;
-  cover_url: string | null;
   c_all: number;
   c30: number;
   c7: number;
@@ -50,9 +48,6 @@ async function computeRanking(env: Env): Promise<RankingPayload> {
 
   const res = await env.DB.prepare(
     `SELECT isbn,
-            MAX(title)     AS title,
-            MAX(author)    AS author,
-            MAX(cover_url) AS cover_url,
             COUNT(DISTINCT slug)                                  AS c_all,
             COUNT(DISTINCT CASE WHEN added_at >= ?1 THEN slug END) AS c30,
             COUNT(DISTINCT CASE WHEN added_at >= ?2 THEN slug END) AS c7,
@@ -66,27 +61,39 @@ async function computeRanking(env: Env): Promise<RankingPayload> {
 
   const rows = res.results ?? [];
 
-  const build = (pick: (r: AggRow) => number): RankEntry[] =>
+  // Rank by count (ISBN breaks ties so the order is stable), then look up the
+  // site-wide title/author/cover for just the ISBNs that made a top list — events
+  // store only the ISBN (see db/schema.sql list_item_events).
+  const top = (pick: (r: AggRow) => number): AggRow[] =>
     rows
       .filter((r) => pick(r) > 0)
-      .sort((a, b) => pick(b) - pick(a) || (a.title ?? "").localeCompare(b.title ?? ""))
-      .slice(0, TOP_N)
-      .map((r, i) => ({
+      .sort((a, b) => pick(b) - pick(a) || a.isbn.localeCompare(b.isbn))
+      .slice(0, TOP_N);
+  const picks: Record<RankKey, (r: AggRow) => number> = {
+    cumulative: (r) => r.c_all,
+    d30: (r) => r.c30,
+    d7: (r) => r.c7,
+    d24: (r) => r.c24,
+  };
+  const tops = Object.fromEntries(
+    (Object.keys(picks) as RankKey[]).map((k) => [k, top(picks[k])])
+  ) as Record<RankKey, AggRow[]>;
+  const books = await resolveBooks(env, Object.values(tops).flatMap((t) => t.map((r) => r.isbn)));
+  const build = (k: RankKey): RankEntry[] =>
+    tops[k].map((r, i) => {
+      const b = books.get(toIsbn13(r.isbn));
+      return {
         rank: i + 1,
         isbn: r.isbn,
-        title: r.title ?? "",
-        author: r.author ?? "",
-        cover_url: r.cover_url ?? "",
-        count: pick(r),
-      }));
+        title: b?.title || `ISBN ${r.isbn}`,
+        author: b?.author ?? "",
+        cover_url: b?.cover_url ?? "",
+        count: picks[k](r),
+      };
+    });
 
   return {
-    windows: {
-      cumulative: build((r) => r.c_all),
-      d30: build((r) => r.c30),
-      d7: build((r) => r.c7),
-      d24: build((r) => r.c24),
-    },
+    windows: { cumulative: build("cumulative"), d30: build("d30"), d7: build("d7"), d24: build("d24") },
     computed_at: now,
   };
 }

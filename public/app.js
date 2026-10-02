@@ -18,13 +18,14 @@ async function readJson(res) {
 
 const state = {
   owner: "",
+  bio: "", // 作者のひとこと（100文字まで・公開ページ上部に表示）
   items: [], // dynamic list of {isbn,title,author,cover_url,comment,spoiler}
   editIndex: -1, // -1 = adding a new item; >=0 = editing items[editIndex]
   pending: null, // selected book before saving
   fixIndex: -1, // -1 = not in guided missing-cover mode; >=0 = fixing items[fixIndex]
   editSlug: null, // set when editing an existing published list
   editToken: null,
-  published: null, // {owner, items} snapshot of the server (公開) state, for diff/もとに戻す
+  published: null, // {owner, bio, items} snapshot of the server (公開) state, for diff/もとに戻す
 
   customSlug: "", // user-chosen slug for a new list ("" = random)
   fetchingCovers: false, // true while the "表紙を取得" bulk fill is running
@@ -48,7 +49,48 @@ async function init() {
   }
   render();
   renderMyLists();
+  loadSiteStats();
   wireEvents();
+  // /l/:slug が見つからなかったときはサーバがここへリダイレクトしてくる。
+  if (params.get("notfound") === "list") {
+    params.delete("notfound");
+    const qs = params.toString();
+    history.replaceState(null, "", location.pathname + (qs ? `?${qs}` : "") + location.hash);
+    uiAlert("リストが見つかりませんでした。削除されたか、URLが間違っている可能性があります。");
+  }
+}
+
+/* ---------- site stats (収録シリーズ / 巻 / 公開リスト数) ---------- */
+// 管理画面の stat-card と同じ見た目。取得に失敗したら枠ごと出さない（装飾なので黙って諦める）。
+async function loadSiteStats() {
+  const box = document.getElementById("siteStats");
+  try {
+    const res = await fetch("/api/site-stats");
+    if (!res.ok) return;
+    const stats = await res.json();
+    const cards = [
+      ["series", "シリーズ"],
+      ["volumes", "巻(ISBN)"],
+      ["lists", "公開リスト"],
+    ];
+    box.replaceChildren(
+      ...cards.map(([key, label]) => {
+        const card = document.createElement("div");
+        card.className = "stat-card";
+        const n = document.createElement("div");
+        n.className = "n";
+        n.textContent = Number(stats[key] ?? 0).toLocaleString("ja-JP");
+        const k = document.createElement("div");
+        k.className = "k";
+        k.textContent = label;
+        card.append(n, k);
+        return card;
+      })
+    );
+    box.hidden = false;
+  } catch {
+    // ネットワーク失敗時は非表示のまま
+  }
 }
 
 /* ---------- "lists published from this browser" recovery section ---------- */
@@ -106,9 +148,24 @@ function renderMyLists() {
   box.appendChild(ul);
 }
 
+// ISBN-10 / ハイフン付きを ISBN-13 に揃える（サーバ src/util.ts toIsbn13 と同じ）。公開データの
+// ISBN は ISBN-13 で返ってくるので、下書きと比べる差分判定がずれないようこちらでも揃える。
+// ISBN として読めない値はそのまま返す（公開時にサーバが弾く）。
+function toIsbn13(raw) {
+  const s = String(raw || "").replace(/[^0-9Xx]/g, "").toUpperCase();
+  if (/^\d{13}$/.test(s)) return s;
+  if (/^\d{9}[\dX]$/.test(s)) {
+    const core = "978" + s.slice(0, 9);
+    let sum = 0;
+    for (let i = 0; i < 12; i++) sum += (i % 2 === 0 ? 1 : 3) * Number(core[i]);
+    return core + ((10 - (sum % 10)) % 10);
+  }
+  return String(raw || "");
+}
+
 function normItem(it) {
   return {
-    isbn: it.isbn || "",
+    isbn: toIsbn13(it.isbn),
     title: it.title || "",
     author: it.author || "",
     cover_url: it.cover_url || "",
@@ -123,12 +180,13 @@ async function loadExisting(slug, token) {
     if (!res.ok) throw new Error("not found");
     const data = await res.json();
     state.owner = data.owner_name || "";
+    state.bio = data.bio || "";
     state.editSlug = slug;
     state.editToken = token;
     state.items = (data.items || []).map(normItem);
     // Snapshot the server (公開) state before any draft restore so we can show a
     // diff count and offer もとに戻す while editing.
-    state.published = { owner: state.owner, items: state.items.map(normItem) };
+    state.published = { owner: state.owner, bio: state.bio, items: state.items.map(normItem) };
     restoreEditDraft(slug, data.updated_at || 0);
   } catch (e) {
     uiAlert("既存リストの読み込みに失敗しました。新規作成モードで開きます。");
@@ -150,15 +208,17 @@ function restoreEditDraft(slug, serverUpdatedAt) {
       return;
     }
     if (typeof d.owner === "string") state.owner = d.owner;
+    if (typeof d.bio === "string") state.bio = d.bio;
     if (Array.isArray(d.items)) state.items = d.items.filter(Boolean).map(normItem);
   } catch (e) {}
 }
 
 /* ---------- diff vs 公開状態 ---------- */
+// 公開データとして持つのは ISBN・コメント・ネタバレだけ。タイトル/著者/表紙はサーバが ISBN
+// からサイト共通データで引く（src/listItems.ts）ので、表示用の値が違っても差分には数えない。
 function itemsEqual(a, b) {
   if (!a || !b) return false;
-  return a.isbn === b.isbn && a.title === b.title && a.author === b.author &&
-    a.cover_url === b.cover_url && a.comment === b.comment && !!a.spoiler === !!b.spoiler;
+  return a.isbn === b.isbn && a.comment === b.comment && !!a.spoiler === !!b.spoiler;
 }
 
 // Identity of a book, so we can tell "the same book, edited" from "a different
@@ -171,7 +231,7 @@ function itemKey(it) {
 // identities so a delete/insert only counts the touched book(s) — not every book
 // that shifted position after it. Counts = added + removed + content-changed
 // (cover swap, comment, spoiler…) among books present in both, plus the display
-// name if it changed. 0 = current view matches 公開状態.
+// name and ひとこと if they changed. 0 = current view matches 公開状態.
 function diffCount() {
   if (!state.editSlug || !state.published) return 0;
   const A = state.published.items, B = state.items;
@@ -191,6 +251,7 @@ function diffCount() {
   }
   let count = (n - matched) + (m - matched) + changed; // removed + added + changed
   if ((state.published.owner || "") !== (state.owner || "")) count++;
+  if ((state.published.bio || "") !== (state.bio || "")) count++;
   return count;
 }
 
@@ -208,6 +269,7 @@ async function revertToPublished() {
   if (!state.editSlug || !state.published || diffCount() === 0) return;
   if (!(await uiConfirm("編集中の変更を破棄して、公開されている状態にもどします。よろしいですか？"))) return;
   state.owner = state.published.owner || "";
+  state.bio = state.published.bio || "";
   state.items = state.published.items.map(normItem);
   clearEditDraft(state.editSlug); // reverted view == server, so no unsaved draft
   render();
@@ -228,11 +290,11 @@ function saveDraft() {
     if (state.editSlug) {
       localStorage.setItem(
         editDraftKey(state.editSlug),
-        JSON.stringify({ owner: state.owner, items: state.items, savedAt: Date.now() })
+        JSON.stringify({ owner: state.owner, bio: state.bio, items: state.items, savedAt: Date.now() })
       );
       return;
     }
-    localStorage.setItem(DRAFT_KEY, JSON.stringify({ owner: state.owner, items: state.items }));
+    localStorage.setItem(DRAFT_KEY, JSON.stringify({ owner: state.owner, bio: state.bio, items: state.items }));
   } catch (e) {}
 }
 function clearEditDraft(slug) {
@@ -246,6 +308,7 @@ function loadDraft() {
     if (!raw) return;
     const d = JSON.parse(raw);
     state.owner = d.owner || "";
+    state.bio = d.bio || "";
     // filter(Boolean) also migrates the old fixed-100 array (which stored nulls for empty slots).
     if (Array.isArray(d.items)) state.items = d.items.filter(Boolean).map(normItem);
   } catch (e) {}
@@ -552,7 +615,6 @@ function openEdit(index) {
   $("eSynopsisBox").style.display = "none";
   $("eSynopsis").textContent = "";
   renderEditCover(state.pending);
-  $("revertCoverBtn").style.display = it.isbn ? "" : "none";
   const refetch = $("refetchBook");
   refetch.style.display = it.isbn ? "" : "none";
   refetch.disabled = false;
@@ -561,14 +623,33 @@ function openEdit(index) {
   $("spoiler").checked = !!it.spoiler;
   renderEditBuy(it);
   loadEditMeta(it, seq);
+  loadEditCover(index, seq);
 
   $("editModal").classList.add("open");
 }
 
+// The stored item may have no cover yet (lists load with cache-only covers, and
+// /api/book carries no image), so resolve it here like the shelf's 表紙を取得 does.
+async function loadEditCover(index, seq) {
+  const it = state.items[index];
+  if (!it || it.cover_url || !it.isbn) return;
+  const url = firstCoverFrom([it.isbn], await fetchCovers([it.isbn]));
+  if (!url || seq !== editSeq || state.pending.cover_url) return;
+  state.pending.cover_url = url;
+  renderEditCover(state.pending);
+  if (state.items[index] === it && !it.cover_url) {
+    it.cover_url = url;
+    state.coverTried.add(it.isbn);
+    saveDraft();
+    render();
+  }
+}
+
 // 購入リンク（閲覧画面と同じ affiliate.js / buildBuyLinks を使用）。
-function renderEditBuy(it) {
-  const box = $("eBuy");
-  const groups = { print: $("eBuyPrint"), ebook: $("eBuyEbook"), used: $("eBuyUsed") };
+// `p` is the element-id prefix: "e" = edit modal, "v" = volume detail modal.
+function renderEditBuy(it, p = "e") {
+  const box = $(p + "Buy");
+  const groups = { print: $(p + "BuyPrint"), ebook: $(p + "BuyEbook"), used: $(p + "BuyUsed") };
   Object.values(groups).forEach((g) => (g.innerHTML = ""));
 
   const links = typeof window.buildBuyLinks === "function" ? window.buildBuyLinks(it) : [];
@@ -597,7 +678,11 @@ function renderEditBuy(it) {
 }
 
 function renderEditCover(book) {
-  const box = $("eCoverBox");
+  renderCoverInto($("eCoverBox"), book);
+  setMetaRow("eSourceRow", "eSource", coverSource(book.cover_url));
+}
+
+function renderCoverInto(box, book) {
   box.innerHTML = "";
   if (book.cover_url) {
     const img = document.createElement("img");
@@ -617,7 +702,6 @@ function renderEditCover(book) {
     d.textContent = "No Image";
     box.appendChild(d);
   }
-  setMetaRow("eSourceRow", "eSource", coverSource(book.cover_url));
 }
 
 function setMetaRow(rowId, valueId, text) {
@@ -658,19 +742,20 @@ async function loadEditMeta(it, seq) {
 }
 
 // Fill the author / 出版社 / 発行日 / あらすじ rows from an /api/book response.
-function applyBookMeta(data) {
+// `p` is the element-id prefix: "e" = edit modal, "v" = volume detail modal.
+function applyBookMeta(data, p = "e") {
   if (Array.isArray(data.authors) && data.authors.length) {
-    $("eAuthor").textContent = data.authors.join("、");
-    $("eAuthor").style.display = "";
+    $(p + "Author").textContent = data.authors.join("、");
+    $(p + "Author").style.display = "";
   }
-  setMetaRow("ePublisherRow", "ePublisher", data.publisher || "");
-  setMetaRow("ePubdateRow", "ePubdate", data.pubdate || "");
+  setMetaRow(p + "PublisherRow", p + "Publisher", data.publisher || "");
+  setMetaRow(p + "PubdateRow", p + "Pubdate", data.pubdate || "");
   if (data.caption) {
-    $("eSynopsis").textContent = data.caption;
-    $("eSynopsisBox").style.display = "";
+    $(p + "Synopsis").textContent = data.caption;
+    $(p + "SynopsisBox").style.display = "";
   } else {
-    $("eSynopsis").textContent = "";
-    $("eSynopsisBox").style.display = "none";
+    $(p + "Synopsis").textContent = "";
+    $(p + "SynopsisBox").style.display = "none";
   }
 }
 
@@ -770,23 +855,9 @@ async function openCoverPicker() {
   $("skipFix").style.display = "none";
   const it = state.pending;
   $("pickTitle").textContent = it.isbn ? `${it.title}（ISBN: ${it.isbn}）` : it.title;
+  // ISBN のある本の表紙はサイト共通なので、このリストだけ消すことはできない。
+  $("clearCover").style.display = it.isbn ? "none" : "";
   await loadCandidates(it);
-}
-
-// Clear a manually-picked cover and restore the ISBN's shared default (whatever the
-// covers cache resolves for it). No admin suggestion is sent — this only reverts the
-// owner's own override back to the standard cover.
-async function revertCoverToDefault() {
-  if (!state.pending || !state.pending.isbn) return;
-  const btn = $("revertCoverBtn");
-  btn.disabled = true;
-  try {
-    const map = await fetchCovers([state.pending.isbn]);
-    state.pending.cover_url = firstCoverFrom([state.pending.isbn], map);
-    renderEditCover(state.pending);
-  } finally {
-    btn.disabled = false;
-  }
 }
 
 /* ---------- guided missing-cover flow ---------- */
@@ -804,6 +875,7 @@ async function openFixPicker(index) {
   const remaining = state.items.filter((x) => !x.cover_url).length;
   const base = it.isbn ? `${it.title}（ISBN: ${it.isbn}）` : it.title;
   $("pickTitle").textContent = `${index + 1}番目・${base} ／ 残り${remaining}件`;
+  $("clearCover").style.display = it.isbn ? "none" : "";
   await loadCandidates(it);
 }
 
@@ -850,39 +922,69 @@ function renderCandidates(cands) {
   }
 }
 
-function applyPickedCover(url) {
-  if (state.fixIndex >= 0) {
-    const it = state.items[state.fixIndex];
-    suggestCover(it.isbn, url, it.cover_url);
+// 表紙はサイト全体で ISBN ごとに1つ（covers）。リストは表示時にそれを引くので、ISBN の
+// ある本の表紙は「全体に反映された時だけ」変わる。サーバは表紙がまだ無い ISBN なら即反映し、
+// 既にある ISBN は上書きせず管理者への提案に回す（src/corrections.ts suggestCover）。
+// ISBN の無い本は全体のキーが無いので、従来どおりこのリストだけの表紙として持つ。
+async function applyPickedCover(url) {
+  const fixing = state.fixIndex >= 0;
+  const it = fixing ? state.items[state.fixIndex] : state.pending;
+  if (!it) return;
+  if (it.isbn && url) {
+    const res = await submitCover(it.isbn, url);
+    if (!res) {
+      uiAlert("表紙の保存に失敗しました。時間をおいて再度お試しください。");
+      return;
+    }
+    if (res.applied) {
+      it.cover_url = res.cover_url || url;
+    } else if (res.cover_url) {
+      it.cover_url = res.cover_url; // 全体の表紙に揃える
+    }
+    // 全体の表紙が決まったので、編集中ポップアップを閉じても棚の本が古い表紙のまま残らないよう揃える。
+    if (!fixing && state.editIndex >= 0 && state.items[state.editIndex] && it.cover_url) {
+      state.items[state.editIndex].cover_url = it.cover_url;
+      saveDraft();
+      render();
+    }
+    if (!res.applied) {
+      const has = !!res.cover_url;
+      uiAlert(
+        res.queued
+          ? has
+            ? "この本にはすでに表紙があります。変更の提案を送りました（管理者が確認して全体に反映します）。"
+            : "この画像は確認が必要なため、提案として送りました（管理者が確認して全体に反映します）。"
+          : has
+            ? "この本にはすでにサイト共通の表紙があるため、ここでは変更できません。"
+            : "この画像はすぐには反映できません。楽天ブックスの画像を選んでください。"
+      );
+    }
+  } else {
     it.cover_url = url;
+  }
+  if (fixing) {
     saveDraft();
     render();
     advanceFix(state.fixIndex);
     return;
   }
-  if (!state.pending) return;
-  suggestCover(state.pending.isbn, url, state.pending.cover_url);
-  state.pending.cover_url = url;
   renderEditCover(state.pending);
   closeCoverPicker();
 }
 
-// 「表紙を変更」で選び直した表紙は、このリストの items_json にしか保存されない（＝本人の
-// リストにしか反映されない）。同じ本の正しい表紙を全体へ波及させるため、キャッシュと違う表紙を
-// 選んだ瞬間に admin の承認キューへ送る。承認されると covers キャッシュが上書きされ、全リスト/
-// シリーズ閲覧に反映される。ISBN の無い本（キャッシュのキーが無い）やクリア/無変更は送らない。
-// 送信失敗は握りつぶす（表紙選択自体は成功させる）。
-function suggestCover(isbn, url, prevUrl) {
-  if (!urlSubmitEnabled) return; // kill switch: don't propagate picks to the global queue
-  if (!isbn || !url || url === prevUrl) return;
+// POST /api/cover-suggestions。{ applied, queued, cover_url } を返す。失敗時は null。
+async function submitCover(isbn, url) {
   try {
-    fetch("/api/cover-suggestions", {
+    const res = await fetch("/api/cover-suggestions", {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({ isbn, cover_url: url }),
-      keepalive: true,
-    }).catch(() => {});
-  } catch (e) {}
+    });
+    if (!res.ok) return null;
+    return await res.json();
+  } catch {
+    return null;
+  }
 }
 
 function closeCoverPicker() {
@@ -1217,6 +1319,12 @@ async function openSeries(series) {
     const res = await fetch(`/api/series/${encodeURIComponent(series.series_id)}/volumes`);
     const data = await res.json();
     if (!res.ok) throw new Error(data.error || "取得に失敗しました");
+    // 管理者が結合済みのシリーズを開いた場合、サーバは残す側を返す。以降の通報・補完・
+    // ID 表示が残す側に向くよう読み替える。
+    if (data.series_id && data.series_id !== series.series_id) {
+      series.series_id = data.series_id;
+      series.title = data.title || series.title;
+    }
     renderVolumes(series, data.volumes || [], {
       probed: !!data.supplement_probed,
       checkedAt: data.supplement_checked_at || 0,
@@ -1343,10 +1451,18 @@ function renderVolumes(series, volumes, opts) {
     const parts = [];
     if (opts.masterAt) parts.push(`マスター更新 ${fmtDate(opts.masterAt)}`);
     if (opts.probed && opts.checkedAt) parts.push(`最終確認 ${fmtDate(opts.checkedAt)}`);
-    if (parts.length) {
+    // 通報・問い合わせ時に特定しやすいよう、マスタのシリーズID(C-id)を日付と同じ行に控えめに添える。
+    if (parts.length || series.series_id) {
       const stamp = document.createElement("span");
       stamp.className = "hint sup-stamp";
       stamp.textContent = parts.join("・");
+      if (series.series_id) {
+        if (parts.length) stamp.appendChild(document.createTextNode("・"));
+        const sid = document.createElement("span");
+        sid.className = "series-id";
+        sid.textContent = `ID ${series.series_id}`;
+        stamp.appendChild(sid);
+      }
       bar.appendChild(stamp);
     }
     const fetchNew = document.createElement("button");
@@ -1394,6 +1510,31 @@ function renderVolumes(series, volumes, opts) {
     });
     head.appendChild(document.createTextNode(" "));
     head.appendChild(nameFlag);
+
+    // 同じ作品がマスタ上で別シリーズに分裂している（例: One piece SJR 版が 1巻だけ別 C-id）
+    // ときの結合依頼。名前の通報と同じく collect-only で、結合は管理者が確定してから。
+    const mergeFlag = document.createElement("button");
+    mergeFlag.type = "button";
+    mergeFlag.className = "report-flag name-report-flag";
+    mergeFlag.title = "同じ作品が別のシリーズに分かれている場合に結合を依頼（管理者が確認して結合します）";
+    mergeFlag.setAttribute("aria-label", "シリーズが分かれている");
+    const mIcon = document.createElement("span");
+    mIcon.className = "flag-icon";
+    mIcon.textContent = "⇄";
+    const mText = document.createElement("span");
+    mText.className = "flag-text";
+    mText.textContent = "シリーズが分かれている？";
+    mergeFlag.appendChild(mIcon);
+    mergeFlag.appendChild(mText);
+    mergeFlag.addEventListener("click", (e) => {
+      e.stopPropagation();
+      if (noHover() && !mergeFlag.classList.contains("revealed")) {
+        mergeFlag.classList.add("revealed");
+        return;
+      }
+      openMergeRequest(series, volumes, opts);
+    });
+    head.appendChild(mergeFlag);
   }
   box.appendChild(head);
 
@@ -1461,7 +1602,7 @@ function renderVolumes(series, volumes, opts) {
       reportWrongVolume(series, v, volumes, wrong, opts);
     });
     row.appendChild(wrong);
-    row.addEventListener("click", () => selectVolume(v));
+    row.addEventListener("click", () => openVolumeDetail(v));
     box.appendChild(row);
     if (!v.cover_url && v.isbns && v.isbns.length) {
       pending.push({
@@ -1482,18 +1623,22 @@ function volLabel(v) {
   return v.volume_number ? `${v.title} ${v.volume_number}` : v.title;
 }
 
-// Interior gaps in a series' volume numbering. Tolerates a few oddly-labeled volumes
-// (e.g. ゴルゴ13 mixes "50巻" / "第100巻" / "volume. 155" in among bare "1".."202"):
-// their embedded number still counts as present, so those aren't reported as gaps.
-// The trusted range comes from the dominant clean format (巻N or N); odd labels only
-// mark presence, never extend the range (so a stray "2020年版" can't invent gaps).
-// Bails on genuinely mixed formats or when there's no clean numbering to trust.
+// Gaps in a series' volume numbering. Tolerates oddly-labeled volumes (e.g. ゴルゴ13
+// mixes "50巻" / "第100巻" / "volume. 155" in among bare "1".."202"): their embedded
+// number still counts as present, so those aren't reported as gaps. The range comes
+// from clean labels (巻N / N) plus unmistakable volume labels (第N巻 / N巻 / vol. N /
+// "170　／　第170巻" / arc-suffixed "2 (東の海編)"), so a series filed mostly as 第N巻
+// (こち亀) or entirely with arc labels (One piece SJR 版 C451211) is still judged; any
+// other odd label only marks presence, never extends the range (so a stray "2020年版"
+// can't invent gaps). Missing leading volumes are reported too when the series starts
+// at 2〜3 (こち亀 lacks 1巻 upstream) — a later start is more likely a continuation
+// numbering than a hole. Bails on genuinely mixed clean formats or too little numbering.
 // Returns [{ n, vol, disp }] where `vol` is the server-accepted volume_number to
 // store ("巻110" / "110") and `disp` is the human label ("110巻").
 function detectGaps(volumes) {
   let kan = 0;
   let num = 0;
-  const cleanInts = [];
+  const rangeInts = [];
   const present = new Set();
   for (const v of volumes) {
     const s = (v.volume_number || "").trim();
@@ -1501,24 +1646,31 @@ function detectGaps(volumes) {
     let m;
     if ((m = /^巻(\d+)$/.exec(s))) {
       kan++;
-      cleanInts.push(parseInt(m[1], 10));
-      present.add(parseInt(m[1], 10));
+      rangeInts.push(parseInt(m[1], 10));
     } else if ((m = /^(\d+)$/.exec(s))) {
       num++;
-      cleanInts.push(parseInt(m[1], 10));
-      present.add(parseInt(m[1], 10));
+      rangeInts.push(parseInt(m[1], 10));
+    } else if (
+      (m = /第\s*(\d+)\s*巻/.exec(s)) ||
+      (m = /^(\d+)\s*巻$/.exec(s)) ||
+      (m = /^vol(?:ume)?\.?\s*(\d+)$/i.exec(s)) ||
+      (m = /^(\d+)\s*[(（][^()（）]*[)）]$/.exec(s))
+    ) {
+      rangeInts.push(parseInt(m[1], 10));
     } else {
-      const mm = s.match(/\d+/); // odd label: count its number as present only
+      const mm = s.match(/\d+/); // other odd label: count its number as present only
       if (mm) present.add(parseInt(mm[0], 10));
     }
   }
+  for (const n of rangeInts) present.add(n);
   if (kan > 0 && num > 0) return []; // genuinely mixed formats ⇒ ambiguous
-  if (cleanInts.length < 2) return []; // no trustworthy numbering to judge gaps
+  if (rangeInts.length < 2) return []; // no trustworthy numbering to judge gaps
   const fmt = kan > 0 ? "KAN" : "NUM";
-  const min = Math.min(...cleanInts);
-  const max = Math.max(...cleanInts);
+  const min = Math.min(...rangeInts);
+  const max = Math.max(...rangeInts);
+  const from = min >= 2 && min <= 3 ? 1 : min + 1;
   const gaps = [];
-  for (let i = min + 1; i < max; i++) {
+  for (let i = from; i < max; i++) {
     if (!present.has(i)) {
       gaps.push({ n: i, vol: fmt === "KAN" ? `巻${i}` : `${i}`, disp: `${i}巻` });
     }
@@ -1546,6 +1698,40 @@ async function openGapPicker(series, gap, volumes) {
   head.textContent = `${series.title} ${gap.disp} の候補を検索中...`;
   box.appendChild(head);
 
+  // Rakuten's title search can't reach every volume (こち亀 1巻 is stocked but no
+  // "<title> 1" phrase lands on it), so always offer a direct ISBN entry as the
+  // fallback. The server re-resolves the cover and rejects ISBNs without one.
+  const isbnHint = document.createElement("p");
+  isbnHint.className = "hint";
+  isbnHint.textContent = "候補に無い場合は ISBN を直接指定できます。";
+  const isbnRow = document.createElement("div");
+  isbnRow.className = "share-url";
+  const isbnInput = document.createElement("input");
+  isbnInput.type = "text";
+  isbnInput.inputMode = "numeric";
+  isbnInput.placeholder = "ISBN13（例: 9784088528113）";
+  const isbnBtn = document.createElement("button");
+  isbnBtn.type = "button";
+  isbnBtn.textContent = "このISBNで追加";
+  const submitIsbn = () => {
+    const isbn = isbnInput.value.replace(/[^0-9]/g, "");
+    if (isbn.length !== 13) {
+      uiAlert("ISBN は13桁（978…）で入力してください");
+      return;
+    }
+    pickManualVolume(series, gap, { isbn, cover_url: "" }, volumes);
+  };
+  isbnBtn.addEventListener("click", submitIsbn);
+  isbnInput.addEventListener("keydown", (e) => {
+    if (e.key === "Enter" && !e.isComposing) submitIsbn();
+  });
+  isbnRow.appendChild(isbnInput);
+  isbnRow.appendChild(isbnBtn);
+  const appendIsbnRow = () => {
+    box.appendChild(isbnHint);
+    box.appendChild(isbnRow);
+  };
+
   let candidates = [];
   try {
     const res = await fetch(
@@ -1556,11 +1742,13 @@ async function openGapPicker(series, gap, volumes) {
     candidates = data.candidates || [];
   } catch (e) {
     head.textContent = e.message || "検索に失敗しました";
+    appendIsbnRow();
     return;
   }
 
   if (!candidates.length) {
     head.textContent = `${series.title} ${gap.disp} の候補が見つかりませんでした。`;
+    appendIsbnRow();
     return;
   }
   head.textContent = `${series.title} ${gap.disp} の候補（該当するものを選んで追加）`;
@@ -1583,6 +1771,7 @@ async function openGapPicker(series, gap, volumes) {
     row.addEventListener("click", () => pickManualVolume(series, gap, c, volumes));
     box.appendChild(row);
   }
+  appendIsbnRow();
 }
 
 // Fill a missing volume: persist it as a correction (so it's cached for everyone),
@@ -1689,13 +1878,27 @@ function buildHiddenRestore(series, allVolumes, hidden, opts) {
 // 名前の修正（全体反映）は管理者が確定するまで行わない。この端末では通報済みとして覚え、
 // ボタンを「通報済み」表示に切り替える（名前自体はこの端末でも変わらない）。
 async function reportWrongSeriesName(series, btn, textEl) {
-  if (!(await uiConfirm(`このシリーズ名「${series.title}」が誤っていると通報します。管理者が確認して修正します。よろしいですか？`))) return;
+  // 正しい名前の提案は任意。入力欄は現在のタイトルを初期値にして部分修正しやすくする。
+  // 空にして送れば従来どおり「名前が違う」だけの通報。現在と同じ名前のままでは送れない。
+  const normalize = (v) => v.replace(/\s+/g, " ").trim();
+  const current = normalize(series.title);
+  const input = await uiPrompt(
+    `このシリーズ名「${series.title}」が誤っていると通報します。管理者が確認して修正します。\n正しい名前を入力してください（分からなければ空欄のまま送れます）。`,
+    series.title,
+    {
+      placeholder: "正しいシリーズ名（任意・100文字まで）",
+      okLabel: "通報する",
+      validate: (v) => (normalize(v) === current ? "現在と同じ名前です。正しい名前に修正するか、空欄にしてください。" : ""),
+    }
+  );
+  if (input === null) return;
+  const suggested = normalize(input);
   btn.disabled = true;
   try {
     const res = await fetch(`/api/series/${encodeURIComponent(series.series_id)}/report`, {
       method: "POST",
       headers: { "content-type": "application/json" },
-      body: JSON.stringify({}),
+      body: JSON.stringify({ suggested_name: suggested.slice(0, 100) }),
     });
     const data = await res.json().catch(() => ({}));
     if (!res.ok) throw new Error(data.error || "通報に失敗しました");
@@ -1708,6 +1911,245 @@ async function reportWrongSeriesName(series, btn, textEl) {
   btn.classList.add("reported");
   btn.disabled = false;
   textEl.textContent = "シリーズ名の誤りを通報済み";
+}
+
+// 「シリーズが分かれている？」: 同じ作品の別シリーズを選んで結合を依頼する画面。候補は
+// サーバが同じタイトル・同じ著者のシリーズから出す。候補に無ければシリーズID（巻一覧の
+// 右上に出している C-id）で直接指定できる。依頼は件数だけ記録され、結合は管理者が確定する。
+async function openMergeRequest(series, volumes, opts) {
+  const box = $("results");
+  box.innerHTML = "";
+  const bar = document.createElement("div");
+  bar.className = "vol-bar";
+  const back = document.createElement("button");
+  back.type = "button";
+  back.className = "linkbtn";
+  back.textContent = "‹ 巻一覧へ戻る";
+  back.addEventListener("click", () => renderVolumes(series, volumes, opts));
+  bar.appendChild(back);
+  box.appendChild(bar);
+
+  const head = document.createElement("p");
+  head.className = "hint";
+  head.textContent = `「${series.title}」と同じ作品なのに別シリーズに分かれているものを選んで、結合を依頼してください。管理者が確認して1つにまとめます。`;
+  box.appendChild(head);
+
+  const status = document.createElement("p");
+  status.className = "hint";
+  status.textContent = "候補を検索中...";
+  box.appendChild(status);
+
+  const list = document.createElement("div");
+  box.appendChild(list);
+
+  const idHint = document.createElement("p");
+  idHint.className = "hint";
+  idHint.textContent = "候補に無い場合は、相手のシリーズIDで指定できます（巻一覧の右上に「ID C…」と表示されています）。";
+  const idRow = document.createElement("div");
+  idRow.className = "share-url";
+  const idInput = document.createElement("input");
+  idInput.type = "text";
+  idInput.placeholder = "シリーズID（例: C451211）";
+  const idBtn = document.createElement("button");
+  idBtn.type = "button";
+  idBtn.textContent = "結合を依頼";
+  const submitId = () => {
+    const other = idInput.value.trim().toUpperCase();
+    if (!/^[A-Z0-9]+$/.test(other)) {
+      uiAlert("シリーズIDを入力してください（例: C451211）");
+      return;
+    }
+    if (other === series.series_id) {
+      uiAlert("このシリーズ自身のIDです");
+      return;
+    }
+    sendMergeRequest(series, other, idBtn);
+  };
+  idBtn.addEventListener("click", submitId);
+  idInput.addEventListener("keydown", (e) => {
+    if (e.key === "Enter" && !e.isComposing) submitId();
+  });
+  idRow.appendChild(idInput);
+  idRow.appendChild(idBtn);
+  box.appendChild(idHint);
+  box.appendChild(idRow);
+
+  let candidates = [];
+  try {
+    const res = await fetch(`/api/series/${encodeURIComponent(series.series_id)}/merge-candidates`);
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || "候補の取得に失敗しました");
+    candidates = data.candidates || [];
+  } catch (e) {
+    status.textContent = e.message || "候補の取得に失敗しました";
+    return;
+  }
+  if (!candidates.length) {
+    status.textContent = "同じタイトル・同じ著者の別シリーズは見つかりませんでした。";
+    return;
+  }
+  status.textContent = "同じタイトル・同じ著者の別シリーズ:";
+  for (const c of candidates) {
+    const row = document.createElement("div");
+    row.className = "result merge-cand";
+    const info = document.createElement("div");
+    info.className = "info";
+    const t = document.createElement("div");
+    t.className = "t";
+    t.textContent = c.title;
+    const sid = document.createElement("span");
+    sid.className = "series-id";
+    sid.textContent = ` ID ${c.series_id}`;
+    t.appendChild(sid);
+    const a = document.createElement("div");
+    a.className = "a";
+    a.textContent = [c.creator, c.publisher, c.label].filter(Boolean).join(" / ");
+    const v = document.createElement("div");
+    v.className = "a merge-vols";
+    const more = c.volume_count > c.labels.length ? " …" : "";
+    v.textContent = `全${c.volume_count}巻: ${c.labels.join(", ")}${more}`;
+    info.appendChild(t);
+    info.appendChild(a);
+    info.appendChild(v);
+    row.appendChild(info);
+    const btn = document.createElement("button");
+    btn.type = "button";
+    btn.className = "merge-btn";
+    if (isMergeRequested(series.series_id, c.series_id)) {
+      btn.textContent = "依頼済み";
+      btn.disabled = true;
+    } else {
+      btn.textContent = "結合を依頼";
+      btn.addEventListener("click", () => sendMergeRequest(series, c.series_id, btn));
+    }
+    row.appendChild(btn);
+    btn.addEventListener("click", (e) => e.stopPropagation());
+    // 行を押すと、その候補の巻（表紙）をすぐ下にプレビューする。もう一度押すと閉じる。
+    let preview = null;
+    row.addEventListener("click", () => {
+      if (preview) {
+        preview.remove();
+        preview = null;
+        row.classList.remove("open");
+        return;
+      }
+      preview = buildMergePreview(c.series_id);
+      row.classList.add("open");
+      row.after(preview);
+    });
+    list.appendChild(row);
+  }
+}
+
+// 結合候補のプレビュー: 巻一覧 API から巻を取り、表紙と巻ラベルを横並びで見せる。表紙は
+// キャッシュ分を即表示し、未取得は先頭の数件だけ解決して埋める（閲覧で楽天を叩きすぎない）。
+function buildMergePreview(seriesId) {
+  const box = document.createElement("div");
+  box.className = "merge-preview";
+  const msg = document.createElement("p");
+  msg.className = "hint";
+  msg.textContent = "読み込み中...";
+  box.appendChild(msg);
+  (async () => {
+    let data;
+    try {
+      const res = await fetch(`/api/series/${encodeURIComponent(seriesId)}/volumes`);
+      data = await res.json();
+      if (!res.ok) throw new Error(data.error || "取得に失敗しました");
+    } catch (e) {
+      msg.textContent = e.message || "取得に失敗しました";
+      return;
+    }
+    const vols = data.volumes || [];
+    if (!vols.length) {
+      msg.textContent = "巻が見つかりませんでした。";
+      return;
+    }
+    msg.remove();
+    const strip = document.createElement("div");
+    strip.className = "merge-preview-strip";
+    const missing = [];
+    for (const v of vols) {
+      const cell = document.createElement("div");
+      cell.className = "merge-preview-vol";
+      let cover = coverImg(v.cover_url, v.title);
+      cell.appendChild(cover);
+      const lab = document.createElement("div");
+      lab.className = "merge-preview-label";
+      lab.textContent = v.volume_number || "-";
+      lab.title = v.title;
+      cell.appendChild(lab);
+      strip.appendChild(cell);
+      if (!v.cover_url) {
+        missing.push({
+          isbns: v.isbns || [v.isbn],
+          set: (url) => {
+            const img = coverImg(url, v.title);
+            cover.replaceWith(img);
+            cover = img;
+          },
+        });
+      }
+    }
+    box.appendChild(strip);
+    const first = missing.slice(0, COVER_CHUNK);
+    if (first.length) {
+      const map = await fetchCovers(first.flatMap((m) => m.isbns));
+      for (const m of first) {
+        const url = firstCoverFrom(m.isbns, map);
+        if (url) m.set(url);
+      }
+    }
+  })();
+  return box;
+}
+
+async function sendMergeRequest(series, otherId, btn) {
+  if (isMergeRequested(series.series_id, otherId)) {
+    uiAlert("このシリーズとの結合は依頼済みです。");
+    return;
+  }
+  btn.disabled = true;
+  try {
+    const res = await fetch(`/api/series/${encodeURIComponent(series.series_id)}/merge-request`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ other_id: otherId }),
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(data.error || "依頼に失敗しました");
+  } catch (e) {
+    uiAlert(e.message || "依頼に失敗しました");
+    btn.disabled = false;
+    return;
+  }
+  markMergeRequested(series.series_id, otherId);
+  btn.textContent = "依頼済み";
+  uiAlert("結合を依頼しました。管理者が確認して反映します。");
+}
+
+// 結合を依頼したシリーズの組の端末ローカル台帳（localStorage）。二重依頼を防ぐ。
+const MERGE_REQUESTS_KEY = "my100manga_merge_requests_v1";
+function mergePairKey(a, b) {
+  return a < b ? `${a}|${b}` : `${b}|${a}`;
+}
+function mergeRequestedSet() {
+  try {
+    const raw = localStorage.getItem(MERGE_REQUESTS_KEY);
+    return new Set(raw ? JSON.parse(raw) : []);
+  } catch {
+    return new Set();
+  }
+}
+function isMergeRequested(a, b) {
+  return mergeRequestedSet().has(mergePairKey(a, b));
+}
+function markMergeRequested(a, b) {
+  const s = mergeRequestedSet();
+  s.add(mergePairKey(a, b));
+  try {
+    localStorage.setItem(MERGE_REQUESTS_KEY, JSON.stringify([...s]));
+  } catch {}
 }
 
 // シリーズ名を通報した端末ローカル台帳（localStorage）。二重通報を防ぎ、通報済み表示に使う。
@@ -1782,10 +2224,69 @@ function isDuplicate(isbn, exceptIndex = -1) {
   return state.items.some((it, idx) => idx !== exceptIndex && it.isbn === isbn);
 }
 
-// 検索結果から 1 巻を選ぶと即リストへ追加する。コメント/ネタバレ/表紙はあとで編集
-// ポップアップから設定する（本の差し替えは「削除して再追加」の運用）。
+/* ---------- volume detail (巻一覧 → 詳細 → 追加) ---------- */
+// 巻一覧で本を押しても即追加はせず、詳細（表紙・著者・出版社・発行日・あらすじ）を見せて
+// 「リストに追加」を押したときだけ selectVolume する。巻一覧（searchModal）は開いたまま
+// 上に重ねるので、閉じれば同じ一覧に戻って別の巻を見られる。
+let volSeq = 0;
+let volCurrent = null;
+
+function openVolumeDetail(v) {
+  volCurrent = v;
+  const seq = ++volSeq;
+  $("vTitle").textContent = volLabel(v);
+  $("vAuthor").textContent = v.author || "";
+  $("vAuthor").style.display = v.author ? "" : "none";
+  setMetaRow("vPublisherRow", "vPublisher", v.publisher || "");
+  setMetaRow("vPubdateRow", "vPubdate", v.pubdate || "");
+  setMetaRow("vIsbnRow", "vIsbn", v.isbn || "");
+  $("vSynopsis").textContent = "";
+  $("vSynopsisBox").style.display = "none";
+  renderCoverInto($("vCoverBox"), v);
+  renderEditBuy({ isbn: v.isbn || "", title: volLabel(v), author: v.author || "" }, "v");
+
+  const add = $("vAdd");
+  const dup = !!(v.isbn && isDuplicate(toIsbn13(v.isbn)));
+  add.disabled = dup;
+  add.textContent = dup ? "追加済み" : "リストに追加";
+  $("volModal").classList.add("open");
+
+  if (!v.cover_url && v.isbns && v.isbns.length) {
+    fetchCovers(v.isbns).then((covers) => {
+      const url = firstCoverFrom(v.isbns, covers);
+      if (!url) return;
+      v.cover_url = url;
+      if (seq === volSeq) renderCoverInto($("vCoverBox"), v);
+    }).catch(() => {});
+  }
+  if (v.isbn) {
+    fetch(`/api/book?isbn=${encodeURIComponent(v.isbn)}`)
+      .then((res) => (res.ok ? res.json() : null))
+      .then((data) => {
+        if (data && seq === volSeq) applyBookMeta(data, "v");
+      })
+      .catch(() => {});
+  }
+}
+
+function closeVolumeDetail() {
+  $("volModal").classList.remove("open");
+  volCurrent = null;
+  volSeq++;
+}
+
+async function addFromVolumeDetail() {
+  const v = volCurrent;
+  if (!v) return;
+  closeVolumeDetail();
+  await selectVolume(v);
+}
+
+// 1 巻をリストへ追加する（巻一覧では詳細ポップアップの「リストに追加」から呼ばれる）。
+// コメント/ネタバレ/表紙はあとで編集ポップアップから設定する（本の差し替えは「削除して
+// 再追加」の運用）。
 async function selectVolume(v) {
-  const isbn = v.isbn || "";
+  const isbn = toIsbn13(v.isbn);
   if (isbn && isDuplicate(isbn)) { uiAlert("この本はすでに追加されています。"); return; }
   if (state.items.length >= MAX_ITEMS) {
     uiAlert(`追加できるのは${MAX_ITEMS}作品までです。`);
@@ -1819,9 +2320,10 @@ function bulkAddSeries(volumes) {
   // Dedup against the current list AND within this batch, so two volume entries
   // that carry the same ISBN can't both slip in and create an in-list duplicate.
   const fresh = volumes.filter((v) => {
-    if (!v.isbn) return true;
-    if (existing.has(v.isbn)) return false;
-    existing.add(v.isbn);
+    const isbn = toIsbn13(v.isbn);
+    if (!isbn) return true;
+    if (existing.has(isbn)) return false;
+    existing.add(isbn);
     return true;
   });
   const skipped = volumes.length - fresh.length;
@@ -1840,7 +2342,7 @@ function bulkAddSeries(volumes) {
   // fetched here — the "表紙を取得" button (fetchMissingCovers) does it on demand.
   for (const v of toAdd) {
     state.items.push({
-      isbn: v.isbn || "",
+      isbn: toIsbn13(v.isbn),
       title: volLabel(v),
       author: v.author || "",
       cover_url: v.cover_url || "",
@@ -2031,13 +2533,14 @@ function collectItems() {
   }));
 }
 
-// Publish button: ask for the display name first, then publish/update.
+// Publish button: ask for the display name (and ひとこと) first, then publish/update.
 function openPublishModal() {
   if (state.items.length !== TARGET) {
     uiAlert(`公開にはちょうど${TARGET}作品が必要です（現在${state.items.length}作品）。`);
     return;
   }
   $("ownerInput").value = state.owner || "";
+  $("bioInput").value = state.bio || "";
   // お好みURLは新規公開時のみ。既存リストの更新では slug は変えられない。
   const slugField = $("slugField");
   if (slugField) {
@@ -2058,6 +2561,12 @@ function confirmPublish() {
     uiAlert("表示名にURLは入力できません。URLを削除してください。");
     return;
   }
+  // ひとことは 1 行表示なので改行は空白に潰す（サーバ側でも同じ正規化をする）。
+  const bio = $("bioInput").value.replace(/\s*[\r\n]+\s*/g, " ").trim();
+  if (/https?:\/\/|www\./i.test(bio)) {
+    uiAlert("ひとことにURLは入力できません。URLを削除してください。");
+    return;
+  }
   if (!state.editSlug) {
     const slug = $("slugInput").value.trim();
     if (slug && !/^[a-zA-Z0-9_-]{1,15}$/.test(slug)) {
@@ -2067,6 +2576,7 @@ function confirmPublish() {
     state.customSlug = slug;
   }
   state.owner = name.slice(0, 40);
+  state.bio = bio.slice(0, 100);
   $("publishModal").classList.remove("open");
   doPublish();
 }
@@ -2084,17 +2594,17 @@ async function doPublish() {
       res = await fetch(`/api/lists/${state.editSlug}`, {
         method: "PUT",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({ owner_name: state.owner, items, edit_token: state.editToken }),
+        body: JSON.stringify({ owner_name: state.owner, bio: state.bio, items, edit_token: state.editToken }),
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data.error || "更新に失敗しました");
       clearEditDraft(state.editSlug);
       // What we just PUT is now the 公開状態 — rebase the diff on it.
-      state.published = { owner: state.owner, items: items.map(normItem) };
+      state.published = { owner: state.owner, bio: state.bio, items: items.map(normItem) };
       window.MyLists?.save({ slug: state.editSlug, token: state.editToken, owner: state.owner });
       showShare(state.editSlug, state.editToken);
     } else {
-      const payload = { owner_name: state.owner, items };
+      const payload = { owner_name: state.owner, bio: state.bio, items };
       if (state.customSlug) payload.slug = state.customSlug;
       res = await fetch(`/api/lists`, {
         method: "POST",
@@ -2153,7 +2663,6 @@ function wireEvents() {
   $("cancelEdit").addEventListener("click", closeEdit);
 
   $("changeCoverBtn").addEventListener("click", openCoverPicker);
-  $("revertCoverBtn").addEventListener("click", revertCoverToDefault);
   $("refetchBook").addEventListener("click", (e) => refetchBook(e.currentTarget));
   $("cancelPick").addEventListener("click", closeCoverPicker);
   $("useUrl").addEventListener("click", () => {
@@ -2173,6 +2682,9 @@ function wireEvents() {
   $("closeShare").addEventListener("click", () => $("shareModal").classList.remove("open"));
 
   $("searchModal").addEventListener("click", (e) => { if (e.target.id === "searchModal") closeSearch(); });
+  $("volModal").addEventListener("click", (e) => { if (e.target.id === "volModal") closeVolumeDetail(); });
+  $("vClose").addEventListener("click", closeVolumeDetail);
+  $("vAdd").addEventListener("click", addFromVolumeDetail);
   $("editModal").addEventListener("click", (e) => { if (e.target.id === "editModal") closeEdit(); });
   wireEditSwipe($("editModal").querySelector(".modal"));
 

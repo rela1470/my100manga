@@ -69,8 +69,9 @@ npm run ingest:remote:dev
 投入は **blue-green 方式**でサイトを止めない。シャドウテーブル `series_new` / `volumes_new`
 に全件ロードし終えてから、最後に一回の `ALTER TABLE ... RENAME`（瞬時のメタ操作）で
 現行テーブルと差し替える。ロード中は本番の検索・シリーズ表示は旧マスタをそのまま参照し続け、
-空や中途半端な状態を一切見せない。差し替え後に正規のインデックスを張り直し、旧マスタ基準で
-作られた `series_supplement` キャッシュを破棄して再計算させる。
+空や中途半端な状態を一切見せない。差し替え後に正規のインデックスを張り直し、`series_supplement`
+キャッシュからは新マスタに入った巻（ISBN 一致、または同シリーズの同じ巻番号）だけを取り除く。
+新マスタにまだ無い巻は残すので、取り込み直後に最新巻が巻一覧から消えることはない。
 
 主なフラグ:
 
@@ -79,7 +80,7 @@ npm run ingest:remote:dev
 | `--local` / `--remote` | 投入先 D1（既定 `--local`） |
 | `--tag <v>` | MADB リリースタグ指定（既定は最新） |
 | `--skip-download --work <dir>` | 既にダウンロード済みのファイルを再利用 |
-| `--limit <n>` | 先頭 n 件だけ（スモークテスト） |
+| `--limit <n>` | 先頭 n 件だけ（スモークテスト）。`series_new` / `volumes_new` への投入までで止め、本番テーブルとの差し替えはしない |
 | `--no-apply` | SQL 生成のみ（wrangler を実行しない） |
 
 > ⚠️ **D1 の書き込み上限に注意**。初回シードは概算で **series 約 14 万行 + volumes 約 36 万行 ≒ 50 万 rows written**。
@@ -268,9 +269,11 @@ wrangler d1 execute DB --env dev --remote --file db/backfill-events.sql # 開発
 - `series` — MADB シリーズ。`id`(PK, C-id), `name`, `name_norm`, `name_kana`, `name_kana_norm`, `creator`, `publisher`, `label`, `num_items`
 - `volumes` — MADB 単行本。`isbn`(PK), `series_id`, `volume_number`, `vol_sort`, `title`, `creator`, `publisher`, `label`, `pubdate`
 - `covers` — 書影解決結果のキャッシュ。`isbn`(PK), `cover_url`(解決した書影URL。`""` は「どこにも無し」), `checked_at`。詳細は下記。
-- `list_item_events` — 巻の「追加」イベントログ（ランキングの元データ）。`id`(PK), `slug`, `isbn`, `title`, `author`, `cover_url`, `added_at`。公開時に新しく加わった巻を追記（作成は全 item、更新は旧→新差分の新規 isbn のみ）。ランキングは `COUNT(DISTINCT slug)` で人数を数え `added_at` で窓を切る。リスト削除時は `slug` 単位で掃除。集計結果は `meta` に `book_ranking_json` / `book_ranking_at` として 10 分 TTL キャッシュ。`src/ranking.ts`。
+- `list_item_events` — 巻の「追加」イベントログ（ランキングの元データ）。`id`(PK), `slug`, `isbn`, `added_at`。表示名・著者・表紙は持たず、ランキング計算時に ISBN から引く。公開時に新しく加わった巻を追記（作成は全 item、更新は旧→新差分の新規 isbn のみ）。ランキングは `COUNT(DISTINCT slug)` で人数を数え `added_at` で窓を切る。リスト削除時は `slug` 単位で掃除。集計結果は `meta` に `book_ranking_json` / `book_ranking_at` として 10 分 TTL キャッシュ。`src/ranking.ts`。
 
-`items_json` は `{position,isbn,title,author,cover_url,comment,spoiler}` の配列（最大100件）。
+- `live_volumes` — 検索画面の「最新DBから取得」で取れた、マスタに無い巻。`isbn`(PK), `title`, `volume_number`, `author`, `fetched_at`。サーバが MADB から取得した値だけを保存し、リストの本のタイトル解決に使う。
+
+`items_json` は `{position,isbn,comment,spoiler}` の配列（100件、ISBN は ISBN13 必須）。表示名・著者・表紙は保存せず、読み出し時に ISBN から 1 クエリでサイト共通データを引く（`src/listItems.ts` `resolveBooks`）。タイトルはマスタ → 手動補正 → ライブ補完 → `live_volumes` の順に探し、管理者のシリーズ名/巻タイトル修正と巻数表記の統一を反映する。表紙は `covers`（ISBN ごとに 1 つ）で、その ISBN に無ければ同じ巻の別 ISBN の表紙を使う。ランキング・公開ページ・管理画面も同じ関数で引く。既存 DB は `db/migrate-list-data-by-isbn.sql` で移行する。
 
 ## 既知の制約 / TODO
 
@@ -287,7 +290,7 @@ wrangler d1 execute DB --env dev --remote --file db/backfill-events.sql # 開発
   - タイトル検索による救済は行わない（同名の別シリーズが複数あり、巻番号一致で別作品の書影を割り当てる事故があったため。ISBN 厳密一致のみで解決する）。
   - 同一巻が複数 ISBN（通常版/重版/特装版）で登録されている場合、**書影のある ISBN を優先採用**する（`firstCover`）。
   - どの経路でも書影が無い巻は自前の No Image を出す（グレーの偽書影を出さない）。
-- **表紙は追加時点で確定**: 書影URLは作品追加時に `items_json` に焼き込まれる。フォールバックを後から改善しても既存リストには自動反映されない。編集画面の「表紙がない本を指定」で No Image の巻に候補画像や任意URLを手動指定して上書きできる。
+- **表紙はサイト共通（ISBN ごとに 1 つ）**: リストは表紙を保存せず、表示時に `covers` から引く。編集画面で表紙を選ぶと、その ISBN に表紙がまだ無ければ（楽天/Yahoo!/Google の画像に限り）即座に全体へ反映し、既に表紙がある ISBN は上書きせず管理者への提案に回す（`COVER_SUGGESTIONS_ENABLED` 有効時のみ。`src/corrections.ts` `suggestCover`）。管理者が表紙の通報を伏字にすると、その画像は全 ISBN から消える。
 - 著者名: MADB の `schema:creator` は先頭が編集ロール（例 `[編]ホーム社`）のことがあるため、ingest 側で著者ロール（著/作画/原作 等）を優先抽出している（`pickCreator`）。同様にカナ読みは複数の ja-hrkt から全て取り込む（`kanaReadings`）。
 
 ## 今後（MVP外）

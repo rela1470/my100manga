@@ -10,14 +10,14 @@
 <body>
   <!--GTM_BODY-->
   <header class="site">
-    <h1><a href="/" style="text-decoration:none;color:inherit">My <span class="accent">100</span> Manga</a></h1>
+    <h1><span class="owner-line" id="ownerLine" hidden><span class="owner-title" id="ownerTitle"></span><button class="report-flag" id="reportOwner" title="このユーザー名を通報"><span class="flag-icon">⚐</span><span class="flag-text">名前を通報</span></button></span><a href="/" style="text-decoration:none;color:inherit">My <span class="accent">100</span> Manga</a></h1>
     <p class="tagline" id="subtitle">私を構成する100の漫画</p>
   </header>
 
   <div class="wrap">
     <div class="toolbar" id="viewToolbar">
-      <span class="count"><span id="filled">0</span> 作品</span>
-      <button class="report-link" id="reportOwner" style="display:none" title="このユーザー名を通報">⚐ 名前を通報</button>
+      <p class="owner-bio" id="ownerBio" style="display:none"></p>
+      <button class="report-flag" id="reportBio" style="display:none" title="このひとことを通報"><span class="flag-icon">⚐</span><span class="flag-text">ひとことを通報</span></button>
       <div style="flex:1"></div>
       <a href="/"><button>自分でも作る</button></a>
       <button id="editLink" style="display:none">このリストを編集</button>
@@ -34,7 +34,7 @@
       <div class="report-menu" id="reportMenu" style="display:none">
         <button type="button" class="report-toggle" id="reportToggle" title="通報する" aria-haspopup="true" aria-expanded="false">⚐</button>
         <div class="report-pop" id="reportPop" hidden>
-          <button type="button" class="report-item" id="reportTitle" style="display:none">このタイトルを通報</button>
+          <button type="button" class="report-item" id="reportTitle" style="display:none">本のタイトルを修正</button>
           <button type="button" class="report-item" id="reportCover" style="display:none">この表紙を通報</button>
           <button type="button" class="report-item" id="reportComment" style="display:none">このコメントを通報</button>
         </div>

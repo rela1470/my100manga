@@ -11,7 +11,8 @@
 //   node scripts/ingest.mjs --local            # apply to local D1
 //   node scripts/ingest.mjs --remote           # apply to remote D1
 //   node scripts/ingest.mjs --local --skip-download --work /tmp   # reuse files
-//   node scripts/ingest.mjs --local --limit 5000   # smoke test with a subset
+//   node scripts/ingest.mjs --local --limit 5000   # smoke test with a subset (loads
+//                                                  # series_new/volumes_new only, no swap)
 //
 // Flags:
 //   --local | --remote   target D1 (default: --local)
@@ -20,7 +21,8 @@
 //   --skip-download      reuse already-extracted metadata10{1,4}.json under work
 //   --out <dir>          where to write seed SQL chunks (default: <work>/seed)
 //   --chunk <n>          rows per INSERT statement file group (default: 25000)
-//   --limit <n>          only process first n volumes (testing)
+//   --limit <n>          only process first n volumes (testing). Stops after loading
+//                        the shadow tables: never swaps a partial master into place
 //   --env <name>         wrangler environment (e.g. dev → targets my100manga-dev)
 //   --no-apply           generate SQL but do not run wrangler
 
@@ -54,6 +56,19 @@ const DROP_AND_CREATE_SHADOW_SQL =
   `CREATE TABLE series_new (${SERIES_COLS}); ` +
   `CREATE TABLE volumes_new (${VOLUMES_COLS});`;
 
+// Drop supplement volumes the new master now carries (same ISBN, or the same volume
+// number within the series) so they aren't counted/listed twice. Volumes the master
+// still lacks — MADB often leaves new tankobon unlinked for months — are kept, so a
+// series doesn't lose its newest volumes until someone presses 取得 again.
+// checked_at is left alone so the "probed" state survives the ingest.
+const PRUNE_SUPPLEMENT_SQL =
+  "UPDATE series_supplement SET volumes_json = COALESCE((" +
+  "SELECT json_group_array(json(j.value)) FROM json_each(series_supplement.volumes_json) j " +
+  "WHERE NOT EXISTS (SELECT 1 FROM volumes v WHERE " +
+  "v.isbn IN (SELECT value FROM json_each(j.value, '$.isbns')) " +
+  "OR (v.series_id = series_supplement.series_id AND v.vol_sort = json_extract(j.value, '$.vol_sort')))" +
+  "), '[]');";
+
 // Blue-green cutover. RENAMEs are instant metadata ops, so the window where the live
 // `series`/`volumes` names point at anything other than a fully-loaded table is
 // negligible. Old tables are dropped first to free the global index names, then the
@@ -73,7 +88,7 @@ const SWAP_SQL = [
   "CREATE INDEX IF NOT EXISTS idx_series_kana_norm ON series (name_kana_norm);",
   "CREATE INDEX IF NOT EXISTS idx_volumes_series ON volumes (series_id, vol_sort);",
   "CREATE TABLE IF NOT EXISTS series_supplement (series_id TEXT PRIMARY KEY, volumes_json TEXT NOT NULL, checked_at INTEGER NOT NULL);",
-  "DELETE FROM series_supplement;",
+  PRUNE_SUPPLEMENT_SQL,
 ].join(" ");
 
 function parseArgs(argv) {
@@ -234,7 +249,18 @@ function volSort(s) {
 }
 
 // ISBN normalize → ISBN13. Accepts ISBN10/13 with hyphens; converts 10→13.
+// schema:isbn can be multi-valued, sometimes with a malformed sibling (e.g.
+// ["088701424", "9784088701424"] on こち亀 172巻). Stringifying the array would glue
+// them into one invalid run and drop the volume, so take the first valid value.
 function isbn13(raw) {
+  if (Array.isArray(raw)) {
+    for (const x of raw) {
+      const r = isbn13(x);
+      if (r) return r;
+    }
+    return "";
+  }
+  if (raw && typeof raw === "object") raw = raw["@value"];
   const s = String(raw ?? "").replace(/[^0-9Xx]/g, "").toUpperCase();
   if (s.length === 13 && /^\d{13}$/.test(s)) return s;
   if (s.length === 10) {
@@ -469,11 +495,20 @@ async function main() {
   }
 
   // 3. Atomic cutover: rename shadow → live, drop the old tables (freeing the index
-  //    names), recreate indexes, and reset series_supplement. The supplement is a
-  //    live-SPARQL cache of volumes the *old* master lacked; once the master is
-  //    replaced those rows can duplicate freshly-ingested volumes, so we drop it and
-  //    let it recompute against the new master. CREATE IF NOT EXISTS on the live
-  //    tables keeps this working on a first-ever ingest where they don't exist yet.
+  //    names), recreate indexes, and prune series_supplement. The supplement is a
+  //    live-SPARQL cache of volumes the *old* master lacked; entries the new master
+  //    now carries would duplicate it, so they're removed (see PRUNE_SUPPLEMENT_SQL)
+  //    while still-missing ones are kept. CREATE IF NOT EXISTS on the live tables
+  //    keeps this working on a first-ever ingest where they don't exist yet.
+  // A --limit run is a partial master by definition. Swapping it in would silently
+  // replace the full live data with a few thousand volumes (this wiped the local DB
+  // once), so stop here and leave the shadow tables for inspection; the next ingest's
+  // step 1 drops them.
+  if (a.limit) {
+    log(`--limit ${a.limit}: loaded series_new / volumes_new only; skipped swap (live tables untouched).`);
+    return;
+  }
+
   log("swap shadow tables into place");
   execWrangler(envArgs, targetFlag, "--command", SWAP_SQL);
 

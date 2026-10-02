@@ -20,9 +20,10 @@
       <a href="#lists" data-page="lists">公開リスト</a>
       <a href="#audit" data-page="audit">監査ログ</a>
       <a href="#volume-reports" data-page="volume-reports">巻の通報</a>
-      <a href="#series-reports" data-page="series-reports">シリーズ名の通報</a>
-      <a href="#volume-title-reports" data-page="volume-title-reports">本のタイトルの通報</a>
-      <a href="#corrections" data-page="corrections">巻の修正</a>
+      <a href="#series-reports" data-page="series-reports">シリーズ名の修正</a>
+      <a href="#series-merges" data-page="series-merges">シリーズの結合</a>
+      <a href="#volume-title-reports" data-page="volume-title-reports">本のタイトルの修正</a>
+      <a href="#corrections" data-page="corrections">シリーズへの手動追加</a>
       <a href="#cover-suggestions" data-page="cover-suggestions">表紙の修正</a>
       <a href="#covers" data-page="covers">表紙キャッシュ</a>
       <a href="#supplements" data-page="supplements">補完キャッシュ</a>
@@ -189,10 +190,10 @@
       <div class="pager" id="volHiddenPager" style="display:none"></div>
     </section>
 
-    <!-- シリーズ名の通報 -->
+    <!-- シリーズ名の修正 -->
     <section class="admin-page" id="page-series-reports" hidden>
       <div class="toolbar">
-        <strong>シリーズ名の通報</strong>
+        <strong>シリーズ名の修正</strong>
         <span class="count" id="seriesReportCount"></span>
         <div style="flex:1"></div>
         <button id="toggleNameOverrides">修正した名前を表示</button>
@@ -211,6 +212,7 @@
           <tr>
             <th>C-id</th>
             <th>通報された名前</th>
+            <th>提案</th>
             <th>現在の名前</th>
             <th>ヒント（かな / 巻タイトル）</th>
             <th class="num">通報</th>
@@ -238,10 +240,34 @@
       <div class="pager" id="nameOverridePager" style="display:none"></div>
     </section>
 
-    <!-- 本のタイトルの通報 -->
+    <!-- シリーズの結合 -->
+    <section class="admin-page" id="page-series-merges" hidden>
+      <div class="toolbar">
+        <strong>シリーズの結合</strong>
+        <span class="count" id="mergeCount"></span>
+        <div style="flex:1"></div>
+        <button data-merge-mode="requests" class="merge-mode">依頼</button>
+        <button data-merge-mode="candidates" class="merge-mode">自動検出の候補</button>
+        <button data-merge-mode="merges" class="merge-mode">結合済み</button>
+        <button id="reloadMerge">再読み込み</button>
+      </div>
+      <p class="hint">
+        上流マスターで同じ作品が複数のシリーズ（C-id）に分かれているものを 1 つにまとめます
+        （例: 「One piece」SJR 版が 1巻だけ別シリーズ）。「残す」を選んで「結合」すると、
+        <strong>全ての閲覧者の検索・巻一覧・リスト表示で 1 シリーズとして扱われます</strong>
+        （再取り込みでも維持され、「結合済み」から解除できます）。
+        「自動検出の候補」は名前・著者・出版社・レーベルが同じで巻番号が重ならない組です。
+        新装版/通常版のような別の版なら「却下」してください。
+      </p>
+      <p class="hint" id="mergeHint" style="display:none"></p>
+      <div id="mergeList"></div>
+      <div class="pager" id="mergePager" style="display:none"></div>
+    </section>
+
+    <!-- 本のタイトルの修正 -->
     <section class="admin-page" id="page-volume-title-reports" hidden>
       <div class="toolbar">
-        <strong>本のタイトルの通報</strong>
+        <strong>本のタイトルの修正</strong>
         <span class="count" id="volTitleReportCount"></span>
         <div style="flex:1"></div>
         <button id="toggleTitleOverrides">修正したタイトルを表示</button>
@@ -291,10 +317,10 @@
       <div class="pager" id="titleOverridePager" style="display:none"></div>
     </section>
 
-    <!-- 巻の修正（ユーザ投稿） -->
+    <!-- シリーズへの手動追加（ユーザ投稿） -->
     <section class="admin-page" id="page-corrections" hidden>
       <div class="toolbar">
-        <strong>巻の修正（ユーザ投稿）</strong>
+        <strong>シリーズへの手動追加（ユーザ投稿）</strong>
         <span class="count" id="corrCount"></span>
         <div style="flex:1"></div>
         <button id="toggleCorrReviewed">確定した修正を表示</button>

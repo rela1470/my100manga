@@ -4,7 +4,8 @@ CREATE TABLE IF NOT EXISTS lists (
   slug        TEXT PRIMARY KEY,
   edit_token  TEXT NOT NULL,
   owner_name  TEXT,
-  items_json  TEXT NOT NULL,
+  bio         TEXT NOT NULL DEFAULT '',  -- 作者のひとこと（100文字まで・公開ページ上部に表示）
+  items_json  TEXT NOT NULL,             -- [{position, isbn(ISBN13), comment, spoiler}]。表示名・著者・表紙は持たず読み出し時に ISBN から引く (src/listItems.ts)
   created_at  INTEGER NOT NULL,
   updated_at  INTEGER NOT NULL
 );
@@ -19,14 +20,12 @@ CREATE INDEX IF NOT EXISTS idx_lists_created_at ON lists (created_at);
 -- 「選んだ人数」を数え、added_at の絞り込みで窓を出す。累計も同じテーブルから (窓なし) 出す
 -- ので 4 窓が一貫する。リスト削除時 (adminDeleteList) は幻レコードを残さないよう slug 単位で
 -- まとめて削除する。既存リストの seed は db/backfill-events.sql を一度だけ実行する。
--- isbn 未確定 (作品単位追加) の item は集計対象外なので記録もしない。See src/ranking.ts。
+-- 表示名・著者・表紙は持たない。ランキング表示時に ISBN からサイト共通データで引く
+-- (src/listItems.ts resolveBooks)。See src/ranking.ts。
 CREATE TABLE IF NOT EXISTS list_item_events (
   id         INTEGER PRIMARY KEY AUTOINCREMENT,
   slug       TEXT NOT NULL,            -- 追加元リストの slug (リスト削除時にこの単位で掃除)
   isbn       TEXT NOT NULL,            -- 追加された巻の ISBN13 (集計キー)
-  title      TEXT NOT NULL,            -- 追加時点の表示名スナップショット (「シリーズ名 巻番号」)
-  author     TEXT,                     -- 追加時点の著者スナップショット
-  cover_url  TEXT,                     -- 追加時点の表紙 URL スナップショット
   added_at   INTEGER NOT NULL          -- 追加時刻 (epoch ms)。窓の絞り込みに使う
 );
 CREATE INDEX IF NOT EXISTS idx_lie_added_at ON list_item_events (added_at);
@@ -54,6 +53,20 @@ CREATE TABLE IF NOT EXISTS book_meta (
   pubdate    TEXT NOT NULL DEFAULT '',  -- already display-formatted
   caption    TEXT NOT NULL DEFAULT '',
   checked_at INTEGER NOT NULL
+);
+
+-- Volumes fetched from live MADB by the search page's 最新DBから取得 (src/search.ts
+-- handleLiveSearch) that the master lacks. Server-fetched (never client-supplied), so
+-- list items picked from those results can still resolve a title/author by ISBN
+-- (src/listItems.ts). One row per ISBN (each sibling ISBN of a volume gets its own row);
+-- refreshed on every live search. Rows the master later carries are simply shadowed
+-- (the master wins in resolution).
+CREATE TABLE IF NOT EXISTS live_volumes (
+  isbn          TEXT PRIMARY KEY,   -- normalized ISBN13
+  title         TEXT NOT NULL,      -- schema:name (series title, without the volume label)
+  volume_number TEXT NOT NULL DEFAULT '',
+  author        TEXT NOT NULL DEFAULT '',
+  fetched_at    INTEGER NOT NULL
 );
 
 -- Key/value metadata. Currently holds the MADB dump provenance written by each
@@ -169,6 +182,7 @@ CREATE INDEX IF NOT EXISTS idx_volume_hidden_series ON volume_hidden (series_id)
 CREATE TABLE IF NOT EXISTS series_report (
   series_id         TEXT PRIMARY KEY,          -- MADB collection C-id reported
   reported_name     TEXT NOT NULL DEFAULT '',  -- name snapshot at report time
+  suggested_name    TEXT NOT NULL DEFAULT '',  -- 通報者が任意で入力した正しい名前の提案（最新の非空値）
   report_count      INTEGER NOT NULL DEFAULT 0,
   first_reported_at INTEGER NOT NULL,
   last_reported_at  INTEGER NOT NULL
@@ -220,6 +234,47 @@ CREATE TABLE IF NOT EXISTS volume_title_override (
   created_at INTEGER NOT NULL
 );
 
+-- ── シリーズの結合 (分裂したシリーズを 1 つにまとめる) ─────────────────────
+-- 上流 MADB では同一作品が複数の C-id に分裂していることがある（例: 「One piece」SJR 版が
+-- C451457 = 1巻 と C451211 = 2〜5巻 に分かれている）。名前・著者・出版社・レーベルが同じ
+-- でも新装版/通常版のような別の版も多い（本番で同条件 1,320 組中 843 組は巻番号が重なる）ので
+-- 自動では結合せず、閲覧者の依頼 or 管理画面の候補一覧から管理者が確定する。
+-- 確定した結合は series_merge に記録し READ 時に適用する（月次再取り込みでも残る）:
+--   ・getSeriesVolumes … target を開くと全 member の巻をまとめて返す。absorbed を開くと
+--     target を返す（series_id も target になる）。訂正/非表示も member 横断で効く。
+--   ・検索 … absorbed は結果から外し、ヒットしていれば target に置き換える。
+--   ・リスト表示 (listItems) … absorbed の巻も target のシリーズ名/巻数表記で表示する。
+-- 連鎖はさせない: target は常に「どこにも吸収されていない」シリーズ。結合時に正規化する。
+-- See src/merge.ts.
+CREATE TABLE IF NOT EXISTS series_merge (
+  absorbed_id TEXT PRIMARY KEY,   -- 吸収される側の C-id（検索から消え、target に読み替える）
+  target_id   TEXT NOT NULL,      -- 残す側の C-id
+  created_at  INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_series_merge_target ON series_merge (target_id);
+
+-- 閲覧者の「シリーズが分かれている？」依頼。series_report と同じ collect-only 方針で、
+-- 全体反映は管理者の確定まで行わない。ペアは (series_a < series_b) に正規化して 1 行、
+-- 繰り返しの依頼は report_count を増やす。管理者は 結合（series_merge を書いて行を消す）
+-- か 却下（行を消す）。See src/merge.ts (requestSeriesMerge) と管理画面「シリーズの結合」。
+CREATE TABLE IF NOT EXISTS series_merge_request (
+  series_a          TEXT NOT NULL,   -- 小さい方の C-id
+  series_b          TEXT NOT NULL,   -- 大きい方の C-id
+  report_count      INTEGER NOT NULL DEFAULT 0,
+  first_reported_at INTEGER NOT NULL,
+  last_reported_at  INTEGER NOT NULL,
+  PRIMARY KEY (series_a, series_b)
+);
+CREATE INDEX IF NOT EXISTS idx_series_merge_request_last ON series_merge_request (last_reported_at);
+
+-- 管理画面の自動検出候補（名前・著者・出版社・レーベルが同じで巻番号が重ならない組）を
+-- 「別の版なので結合しない」と却下した記録。group_key は候補グループの未結合メンバーの
+-- C-id をソートして "," で連結したもの。メンバーが増減すると key が変わり候補に再浮上する。
+CREATE TABLE IF NOT EXISTS series_merge_dismissed (
+  group_key  TEXT PRIMARY KEY,
+  created_at INTEGER NOT NULL
+);
+
 -- ── User-submitted reports of free-text content (通報) ───────────────────────
 -- Visitors can flag a list's owner_name or an item's comment as inappropriate.
 -- One row per (slug, target_type, position); repeated reports bump report_count
@@ -230,8 +285,8 @@ CREATE TABLE IF NOT EXISTS volume_title_override (
 CREATE TABLE IF NOT EXISTS reports (
   id            INTEGER PRIMARY KEY AUTOINCREMENT,
   slug          TEXT NOT NULL,
-  target_type   TEXT NOT NULL,              -- 'owner_name' | 'comment' | 'cover'
-  position      INTEGER NOT NULL DEFAULT 0, -- comment/cover: item position (1-based); owner_name: 0
+  target_type   TEXT NOT NULL,              -- 'owner_name' | 'bio' | 'comment' | 'cover'
+  position      INTEGER NOT NULL DEFAULT 0, -- comment/cover: item position (1-based); owner_name/bio: 0
   reported_text TEXT NOT NULL,              -- snapshot at report time (comment text / cover_url)
   report_count  INTEGER NOT NULL DEFAULT 1,
   first_at      INTEGER NOT NULL,
@@ -260,7 +315,7 @@ CREATE TABLE IF NOT EXISTS cover_suggestion (
   first_at      INTEGER NOT NULL,
   last_at       INTEGER NOT NULL,
   resolved_at   INTEGER NOT NULL DEFAULT 0, -- 管理者が処理した時刻。0 = 未処理（ソフトデリート）
-  resolution    TEXT NOT NULL DEFAULT '',   -- '' | 'approved'(採用) | 'superseded'(別候補採用) | 'dismissed'(却下)
+  resolution    TEXT NOT NULL DEFAULT '',   -- '' | 'approved'(採用) | 'superseded'(別候補採用) | 'dismissed'(却下) | 'redacted'(表紙通報で伏字。この画像での空欄補完を拒否)
   PRIMARY KEY (isbn, cover_url)
 );
 CREATE INDEX IF NOT EXISTS idx_cover_suggestion_last ON cover_suggestion (last_at);

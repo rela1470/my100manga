@@ -16,6 +16,8 @@
   </header>
 
   <div class="wrap">
+    <div class="stat-grid site-stats" id="siteStats" hidden></div>
+
     <div class="toolbar">
       <div class="name-field">
         <input type="text" id="topSearch" placeholder="漫画のタイトルで検索して追加（2文字以上）">
@@ -78,6 +80,40 @@
     </div>
   </div>
 
+  <!-- volume detail modal: 巻一覧で本を押したときに詳細を見せ、「リストに追加」で初めて追加する -->
+  <div class="modal-backdrop" id="volModal">
+    <div class="modal">
+      <h2 id="vTitle"></h2>
+      <div class="detail-body">
+        <div id="vCoverBox"></div>
+        <div class="dinfo">
+          <div class="dauthor" id="vAuthor"></div>
+          <dl class="dmeta">
+            <div class="dmeta-row" id="vPublisherRow" style="display:none"><dt>出版社</dt><dd id="vPublisher"></dd></div>
+            <div class="dmeta-row" id="vPubdateRow" style="display:none"><dt>発行日</dt><dd id="vPubdate"></dd></div>
+            <div class="dmeta-row" id="vIsbnRow" style="display:none"><dt>ISBN</dt><dd id="vIsbn"></dd></div>
+          </dl>
+        </div>
+      </div>
+      <div class="dsynopsis" id="vSynopsisBox" style="display:none">
+        <div class="dsynopsis-title">あらすじ</div>
+        <p class="dsynopsis-text" id="vSynopsis"></p>
+      </div>
+      <div class="buy" id="vBuy" style="display:none">
+        <div class="buy-title">購入する</div>
+        <div class="buy-group" id="vBuyPrint"></div>
+        <div class="buy-group" id="vBuyEbook"></div>
+        <div class="buy-group" id="vBuyUsed"></div>
+        <p class="buy-note">[AD]絶版でも電子書籍なら手に入ることがあります。リンクは各社アフィリエイトを含みます。</p>
+      </div>
+      <div class="modal-actions">
+        <div style="flex:1"></div>
+        <button id="vClose">閉じる</button>
+        <button class="primary" id="vAdd">リストに追加</button>
+      </div>
+    </div>
+  </div>
+
   <!-- edit slot modal (閲覧画面と同じ表示＋コメント/ネタバレ/表紙の編集) -->
   <div class="modal-backdrop" id="editModal">
     <div class="modal">
@@ -94,7 +130,6 @@
           </dl>
           <div class="sel-cover">
             <button type="button" class="linkbtn" id="changeCoverBtn">表紙を変更</button>
-            <button type="button" class="linkbtn" id="revertCoverBtn" style="display:none">デフォルトに戻す</button>
             <button type="button" class="linkbtn" id="refetchBook" style="display:none">本データを再取得</button>
           </div>
         </div>
@@ -128,6 +163,8 @@
       <h2>公開する</h2>
       <p class="hint">表示名（任意・40文字まで）。リストの作者名として表示されます。URLは入力できません。</p>
       <input type="text" id="ownerInput" placeholder="例: じゅん" maxlength="40">
+      <p class="hint">ひとこと（任意・100文字まで）。公開ページの上部に表示されます。URLは入力できません。</p>
+      <textarea id="bioInput" rows="2" maxlength="100" placeholder="例: 人生を変えた漫画から最近ハマった作品まで、全部入りです。"></textarea>
       <div id="slugField">
         <p class="hint">お好みのURL（任意・15文字まで）。空欄ならランダムに決まります。英数字・ハイフン・アンダースコアのみ。</p>
         <div class="share-url">

@@ -3,13 +3,15 @@
 // スマホで扱いづらいブラウザ標準の alert/confirm/prompt を、サイト内モーダルに置き換える。
 // Promise ベースで、呼び出し側は await uiConfirm(...) のように同期的な見た目で書ける。
 // window.uiAlert / uiConfirm / uiPrompt として公開する。
+// uiPrompt は opts.validate(value) を渡すと、エラー文言（文字列）を返す間は決定できない。
 (function () {
   let host = null;
   let msgEl = null;
   let inputEl = null;
+  let errorEl = null;
   let okBtn = null;
   let cancelBtn = null;
-  let current = null; // { resolve, mode }
+  let current = null; // { resolve, mode, validate }
 
   function build() {
     if (host) return;
@@ -19,6 +21,7 @@
       '<div class="ui-dialog" role="dialog" aria-modal="true" aria-labelledby="uiDialogMsg">' +
       '<p class="ui-dialog-msg" id="uiDialogMsg"></p>' +
       '<input type="text" class="ui-dialog-input" style="display:none">' +
+      '<p class="ui-dialog-error" role="alert" style="display:none"></p>' +
       '<div class="ui-dialog-actions">' +
       '<button type="button" class="ui-dialog-cancel"></button>' +
       '<button type="button" class="ui-dialog-ok"></button>' +
@@ -26,6 +29,7 @@
     document.body.appendChild(host);
     msgEl = host.querySelector(".ui-dialog-msg");
     inputEl = host.querySelector(".ui-dialog-input");
+    errorEl = host.querySelector(".ui-dialog-error");
     okBtn = host.querySelector(".ui-dialog-ok");
     cancelBtn = host.querySelector(".ui-dialog-cancel");
 
@@ -39,22 +43,25 @@
       if (e.key === "Escape") {
         e.preventDefault();
         settle(false);
-      } else if (e.key === "Enter" && current && current.mode !== "alert") {
-        // textarea は無いので Enter は常に決定でよい。
-        e.preventDefault();
-        settle(true);
       }
+      // Enter での決定はしない（IME 確定や編集中の誤送信を防ぐ）。決定は OK ボタンのみ。
+      // confirm/alert は OK ボタンにフォーカスがあるので、ブラウザ標準の Enter=クリックは効く。
     });
-    inputEl.addEventListener("keydown", (e) => {
-      if (e.key === "Enter") {
-        e.preventDefault();
-        settle(true);
-      }
-    });
+    inputEl.addEventListener("input", validate);
+  }
+
+  // prompt の入力値を検証し、エラー表示と OK ボタンの可否を更新する。決定してよければ true。
+  function validate() {
+    const msg = current && current.validate ? current.validate(inputEl.value) || "" : "";
+    errorEl.textContent = msg;
+    errorEl.style.display = msg ? "" : "none";
+    okBtn.disabled = !!msg;
+    return !msg;
   }
 
   function settle(ok) {
     if (!current) return;
+    if (ok && current.mode === "prompt" && !validate()) return;
     const { resolve, mode } = current;
     current = null;
     host.classList.remove("open");
@@ -88,7 +95,8 @@
     host.classList.add("open");
 
     return new Promise((resolve) => {
-      current = { resolve, mode };
+      current = { resolve, mode, validate: mode === "prompt" ? opts.validate : null };
+      validate();
       // フォーカスを移す。prompt は入力欄、それ以外は OK ボタン。
       requestAnimationFrame(() => {
         if (mode === "prompt") {

@@ -13,15 +13,23 @@ function getSlug() {
   return m ? m[1] : null;
 }
 
-// 自由入力（ユーザー名・コメント）の通報。控えめなワンクリック（確認ダイアログのみ）。
+// 自由入力（ユーザー名・ひとこと・コメント）の通報。控えめなワンクリック（確認ダイアログのみ）。
 async function sendReport(slug, target, position, btn) {
   if (!slug) return;
   const label =
-    target === "owner_name" ? "このユーザー名" : target === "cover" ? "この表紙画像" : "このコメント";
+    target === "owner_name"
+      ? "このユーザー名"
+      : target === "bio"
+        ? "このひとこと"
+        : target === "cover"
+          ? "この表紙画像"
+          : "このコメント";
   if (!(await uiConfirm(`${label}を不適切として通報します。よろしいですか？`))) return;
-  const orig = btn.textContent;
+  // 旗アイコン型（.report-flag）は文言部分だけ差し替えて、アイコンを残す。
+  const textEl = btn.querySelector(".flag-text") || btn;
+  const orig = textEl.textContent;
   btn.disabled = true;
-  btn.textContent = "通報中…";
+  textEl.textContent = "通報中…";
   try {
     const res = await fetch(`/api/lists/${encodeURIComponent(slug)}/reports`, {
       method: "POST",
@@ -32,21 +40,36 @@ async function sendReport(slug, target, position, btn) {
       const data = await res.json().catch(() => ({}));
       throw new Error(data.error || `HTTP ${res.status}`);
     }
-    btn.textContent = "通報しました";
+    textEl.textContent = "通報しました";
+    btn.classList.add("revealed");
   } catch (e) {
     await uiAlert("通報に失敗しました: " + e.message);
     btn.disabled = false;
-    btn.textContent = orig;
+    textEl.textContent = orig;
   }
+}
+
+// 旗アイコン型の通報ボタン。ホバーの無いタッチ端末では初回タップで文言を展開するだけにし、
+// 次のタップで通報する（誤タップでいきなり確認ダイアログを出さない）。
+function wireReportFlag(btn, onReport) {
+  btn.style.display = "";
+  btn.addEventListener("click", () => {
+    const noHover = window.matchMedia && window.matchMedia("(hover: none)").matches;
+    if (noHover && !btn.classList.contains("revealed")) {
+      btn.classList.add("revealed");
+      return;
+    }
+    onReport();
+  });
 }
 
 // 本のタイトルの通報（巻 ISBN 単位・グローバル）。リストに紐づかないので slug 不要。
 async function sendTitleReport(isbn, btn) {
   if (!isbn) return;
-  if (!(await uiConfirm("この本のタイトルが間違っていると通報します。よろしいですか？"))) return;
+  if (!(await uiConfirm("この本のタイトルの修正を依頼します。管理者が確認して修正します。よろしいですか？"))) return;
   const orig = btn.textContent;
   btn.disabled = true;
-  btn.textContent = "通報中…";
+  btn.textContent = "送信中…";
   try {
     const res = await fetch(`/api/volume-title-reports`, {
       method: "POST",
@@ -57,9 +80,9 @@ async function sendTitleReport(isbn, btn) {
       const data = await res.json().catch(() => ({}));
       throw new Error(data.error || `HTTP ${res.status}`);
     }
-    btn.textContent = "通報しました";
+    btn.textContent = "修正を依頼しました";
   } catch (e) {
-    await uiAlert("通報に失敗しました: " + e.message);
+    await uiAlert("修正依頼の送信に失敗しました: " + e.message);
     btn.disabled = false;
     btn.textContent = orig;
   }
@@ -87,6 +110,10 @@ function render(data) {
   currentSlug = data.slug || getSlug();
   const owner = data.owner_name ? `${data.owner_name}さん` : "誰か";
   $("subtitle").textContent = `${owner}を構成する${data.items.length}の漫画`;
+  if (data.owner_name) {
+    $("ownerTitle").textContent = `${data.owner_name}'s`;
+    $("ownerLine").hidden = false;
+  }
   document.title = `${owner}を構成する100の漫画 | My 100 Manga`;
 
   const params = new URLSearchParams(location.search);
@@ -105,15 +132,21 @@ function render(data) {
     });
   }
 
-  const reportOwner = $("reportOwner");
   if (data.owner_name) {
-    reportOwner.style.display = "";
-    reportOwner.addEventListener("click", () => sendReport(data.slug, "owner_name", 0, reportOwner));
+    const reportOwner = $("reportOwner");
+    wireReportFlag(reportOwner, () => sendReport(data.slug, "owner_name", 0, reportOwner));
+  }
+
+  if (data.bio) {
+    const bio = $("ownerBio");
+    bio.textContent = data.bio;
+    bio.style.display = "";
+    const reportBio = $("reportBio");
+    wireReportFlag(reportBio, () => sendReport(data.slug, "bio", 0, reportBio));
   }
 
   const grid = $("grid");
   grid.innerHTML = "";
-  $("filled").textContent = String(data.items.length);
   viewItems = data.items;
 
   data.items.forEach((it, idx) => {
@@ -310,7 +343,7 @@ function wireReportMenu(it) {
   if (it.isbn) {
     title.style.display = "";
     title.disabled = false;
-    title.textContent = "このタイトルを通報";
+    title.textContent = "本のタイトルを修正";
     title.onclick = () => {
       closeReportMenu();
       sendTitleReport(it.isbn, title);

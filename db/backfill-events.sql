@@ -6,13 +6,10 @@
 --
 -- 実行例 (本番):   wrangler d1 execute <DB名> --remote --file db/backfill-events.sql
 --         (ローカル): wrangler d1 execute <DB名> --local  --file db/backfill-events.sql
-INSERT INTO list_item_events (slug, isbn, title, author, cover_url, added_at)
+INSERT INTO list_item_events (slug, isbn, added_at)
 SELECT
   lists.slug,
-  json_extract(j.value, '$.isbn')      AS isbn,
-  json_extract(j.value, '$.title')     AS title,
-  json_extract(j.value, '$.author')    AS author,
-  json_extract(j.value, '$.cover_url') AS cover_url,
+  json_extract(j.value, '$.isbn') AS isbn,
   lists.created_at
 FROM lists, json_each(lists.items_json) AS j
 WHERE json_extract(j.value, '$.isbn') <> ''

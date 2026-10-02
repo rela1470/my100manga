@@ -67,13 +67,15 @@ export function findNgWord(text: string): string | null {
   return null;
 }
 
-/** owner_name と各コメントを走査し、NG ワードを含む場合は日本語のエラーメッセージを返す。
+/** owner_name・ひとこと（bio）と各コメントを走査し、NG ワードを含む場合は日本語のエラーメッセージを返す。
  *  問題なければ null。NG ワード自体はエラー文に含めない（画面にそのまま出さない）。 */
 export function checkListContent(
   owner_name: string,
+  bio: string,
   comments: string[]
 ): string | null {
   if (findNgWord(owner_name)) return "お名前に不適切な表現が含まれています";
+  if (findNgWord(bio)) return "ひとことに不適切な表現が含まれています";
   for (let i = 0; i < comments.length; i++) {
     if (findNgWord(comments[i])) {
       return `${i + 1}番目の作品のコメントに不適切な表現が含まれています`;

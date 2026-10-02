@@ -19,6 +19,7 @@ const pageState = {
   volHidden: 1,
   corrReviewed: 1,
   nameOverrides: 1,
+  merge: 1,
   volTitleReports: 1,
   titleOverrides: 1,
   reportResolved: 1,
@@ -29,11 +30,11 @@ const STAT_LABELS = [
   ["lists", "公開リスト"],
   ["reports", "通報"],
   ["volume_reports", "巻の通報"],
-  ["series_reports", "シリーズ名の通報"],
+  ["series_reports", "シリーズ名の修正"],
   ["series", "シリーズ"],
   ["volumes", "巻(ISBN)"],
   ["covers", "表紙キャッシュ"],
-  ["corrections", "巻の修正"],
+  ["corrections", "シリーズへの手動追加"],
   ["cover_suggestions", "表紙の修正"],
 ];
 
@@ -287,6 +288,9 @@ async function openDetail(slug) {
     document.createTextNode(" ｜ "),
     el("a", { href: editUrl, target: "_blank", rel: "noopener", textContent: "編集リンク" })
   );
+  if (list.bio) {
+    meta.append(el("br"), document.createTextNode(`ひとこと: ${list.bio}`));
+  }
 
   for (const it of list.items) {
     const flags = [];
@@ -423,7 +427,7 @@ async function loadCorrections(page = pageState.corr) {
     const res = await fetch(`/api/admin/corrections?page=${page}&per=${PER}`);
     data = await res.json();
   } catch {
-    hint.textContent = "巻の修正の取得に失敗しました";
+    hint.textContent = "シリーズへの手動追加の取得に失敗しました";
     hint.style.display = "";
     return;
   }
@@ -437,7 +441,7 @@ async function loadCorrections(page = pageState.corr) {
   count.textContent = `${total.toLocaleString("ja-JP")}件`;
 
   if (total === 0) {
-    hint.textContent = "ユーザ投稿による巻の修正はまだありません。";
+    hint.textContent = "ユーザ投稿によるシリーズへの手動追加はまだありません。";
     hint.style.display = "";
     return;
   }
@@ -780,7 +784,7 @@ async function loadSeriesReports(page = pageState.seriesReports) {
     const res = await fetch(`/api/admin/series-reports?page=${page}&per=${PER}`);
     data = await res.json();
   } catch {
-    hint.textContent = "シリーズ名の通報の取得に失敗しました";
+    hint.textContent = "シリーズ名の修正の取得に失敗しました";
     hint.style.display = "";
     return;
   }
@@ -794,7 +798,7 @@ async function loadSeriesReports(page = pageState.seriesReports) {
   count.textContent = `${total.toLocaleString("ja-JP")}件`;
 
   if (total === 0) {
-    hint.textContent = "シリーズ名の通報はまだありません。";
+    hint.textContent = "シリーズ名の修正はまだありません。";
     hint.style.display = "";
     return;
   }
@@ -838,9 +842,10 @@ async function loadSeriesReports(page = pageState.seriesReports) {
     body.append(
       el("tr", { dataset: { srkey: r.series_id } }, [
         el("td", { className: "owner" }, [cidLink]),
-        el("td", { textContent: r.reported_name || "-" }),
-        el("td", { textContent: currentText }),
-        el("td", { className: "muted", textContent: hints }),
+        el("td", { className: "wrap", textContent: r.reported_name || "-" }),
+        el("td", { className: "wrap", textContent: r.suggested_name || "-" }),
+        el("td", { className: "wrap", textContent: currentText }),
+        el("td", { className: "muted" }, [el("span", { className: "clip", textContent: hints, title: hints })]),
         el("td", { className: countCls, textContent: String(r.report_count) }),
         dateCell,
         el("td", { className: "report-actions" }, [overrideBtn, dismissBtn]),
@@ -853,7 +858,7 @@ async function loadSeriesReports(page = pageState.seriesReports) {
 }
 
 async function overrideSeriesName(r, btn) {
-  const suggested = r.override_name || r.name_kana || r.vol_title || "";
+  const suggested = r.override_name || r.suggested_name || r.name_kana || r.vol_title || "";
   const name = await uiPrompt(
     `シリーズ「${r.reported_name || r.series_id}」の正しい名前を入力してください。\n全ての閲覧者の検索/詳細表示に反映されます。`,
     suggested
@@ -915,7 +920,7 @@ async function loadVolumeTitleReports(page = pageState.volTitleReports) {
     const res = await fetch(`/api/admin/volume-title-reports?page=${page}&per=${PER}`);
     data = await res.json();
   } catch {
-    hint.textContent = "本のタイトルの通報の取得に失敗しました";
+    hint.textContent = "本のタイトルの修正の取得に失敗しました";
     hint.style.display = "";
     return;
   }
@@ -929,7 +934,7 @@ async function loadVolumeTitleReports(page = pageState.volTitleReports) {
   count.textContent = `${total.toLocaleString("ja-JP")}件`;
 
   if (total === 0) {
-    hint.textContent = "本のタイトルの通報はまだありません。";
+    hint.textContent = "本のタイトルの修正はまだありません。";
     hint.style.display = "";
     return;
   }
@@ -1058,8 +1063,8 @@ async function dismissVolumeTitleReport(isbn, btn) {
 
 // --- 確定済み（処理済み）履歴のビュー ----------------------------------------
 // 各 moderation ページは通常「未処理キュー」だけを出す。確定するとキューから消えて
-// 追跡できなくなるため、永続記録が残る 3 種（巻の通報→volume_hidden、巻の修正→
-// reviewed_at、シリーズ名の通報→series_name_override）を後から振り返る読み取り専用の一覧。
+// 追跡できなくなるため、永続記録が残る 3 種（巻の通報→volume_hidden、シリーズへの手動追加→
+// reviewed_at、シリーズ名の修正→series_name_override）を後から振り返る読み取り専用の一覧。
 
 // 確定して全体から非表示にした巻（volume_hidden）。
 async function loadHiddenVolumes(page = pageState.volHidden) {
@@ -1121,7 +1126,7 @@ async function loadHiddenVolumes(page = pageState.volHidden) {
   renderPager("volHiddenPager", page, total, loadHiddenVolumes);
 }
 
-// 確定(承認)済みの巻の修正（series_correction.reviewed_at > 0）。
+// 確定(承認)済みのシリーズへの手動追加（series_correction.reviewed_at > 0）。
 async function loadReviewedCorrections(page = pageState.corrReviewed) {
   const table = $("corrReviewedTable");
   const body = $("corrReviewedBody");
@@ -1290,6 +1295,241 @@ async function loadTitleOverrides(page = pageState.titleOverrides) {
 
   table.style.display = "";
   renderPager("titleOverridePager", page, total, loadTitleOverrides);
+}
+
+// --- シリーズの結合 ------------------------------------------------------
+// 依頼（閲覧者の「シリーズが分かれている？」）/ 自動検出の候補 / 結合済み の 3 表示を切り替える。
+let mergeMode = "requests";
+let mergeSeq = 0; // 表示切替が速いときに古い応答で上書きしないための世代番号
+
+const MERGE_MODES = {
+  requests: { url: "/api/admin/merge-requests", key: "requests", empty: "結合の依頼はありません。" },
+  candidates: { url: "/api/admin/merge-candidates", key: "candidates", empty: "自動検出の候補はありません。" },
+  merges: { url: "/api/admin/series-merges", key: "merges", empty: "結合済みのシリーズはありません。" },
+};
+
+function setMergeMode(mode) {
+  mergeMode = mode;
+  document.querySelectorAll(".merge-mode").forEach((b) => {
+    b.classList.toggle("primary", b.dataset.mergeMode === mode);
+  });
+  loadMerge(1);
+}
+
+async function loadMerge(page = pageState.merge) {
+  const list = $("mergeList");
+  const hint = $("mergeHint");
+  const count = $("mergeCount");
+  const mode = MERGE_MODES[mergeMode];
+  const seq = ++mergeSeq;
+  list.textContent = "";
+  $("mergePager").style.display = "none";
+  hint.textContent = "読み込み中…";
+  hint.style.display = "";
+
+  let data;
+  try {
+    const res = await fetch(`${mode.url}?page=${page}&per=${PER}`);
+    data = await res.json();
+    if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
+  } catch (e) {
+    if (seq !== mergeSeq) return;
+    hint.textContent = "取得に失敗しました: " + e.message;
+    return;
+  }
+  if (seq !== mergeSeq) return;
+
+  const rows = data[mode.key] || [];
+  const total = data.total ?? rows.length;
+  if (rows.length === 0 && page > 1 && total > 0) {
+    return loadMerge(Math.min(page - 1, Math.max(1, Math.ceil(total / PER))));
+  }
+  pageState.merge = page;
+  count.textContent = `${total.toLocaleString("ja-JP")}件`;
+  if (total === 0) {
+    hint.textContent = mode.empty;
+    return;
+  }
+  hint.style.display = "none";
+
+  if (mergeMode === "merges") {
+    renderMergedTable(list, rows);
+  } else {
+    for (const r of rows) list.append(mergeGroupCard(r));
+  }
+  renderPager("mergePager", page, total, loadMerge);
+}
+
+// 依頼 1 件 / 候補 1 グループを、シリーズごとの行（残す＝ラジオ、結合する＝チェック）で描く。
+function mergeGroupCard(r) {
+  const isRequest = mergeMode === "requests";
+  const series = r.series || [];
+  const name = `merge-${isRequest ? r.series_a + "-" + r.series_b : r.group_key}`;
+  const body = el("tbody");
+  const radios = [];
+  const checks = [];
+  series.forEach((s, i) => {
+    const radio = el("input", { type: "radio", name, value: s.series_id, checked: i === 0 });
+    const check = el("input", { type: "checkbox", value: s.series_id, checked: true });
+    radios.push(radio);
+    checks.push(check);
+    const cid = el("a", { className: "slug detail", textContent: s.series_id, title: "このシリーズの巻一覧を表示" });
+    cid.addEventListener("click", () => openSeriesVolumes(s.series_id, s.title));
+    const titleLink = el("a", { className: "detail", textContent: s.title, title: "このシリーズの巻一覧を表示" });
+    titleLink.addEventListener("click", () => openSeriesVolumes(s.series_id, s.title));
+    const more = s.volume_count > s.labels.length ? " …" : "";
+    body.append(
+      el("tr", {}, [
+        el("td", {}, [el("label", {}, [radio, " 残す"])]),
+        el("td", {}, [el("label", {}, [check, " 含める"])]),
+        el("td", { className: "owner" }, [cid]),
+        el("td", { className: "wrap" }, [titleLink]),
+        el("td", { className: "wrap muted", textContent: [s.creator, s.publisher, s.label].filter(Boolean).join(" / ") }),
+        el("td", { className: "wrap", textContent: `全${s.volume_count}巻: ${s.labels.join(", ")}${more}` }),
+      ])
+    );
+  });
+
+  const mergeBtn = el("button", { className: "ok", textContent: "結合" });
+  mergeBtn.addEventListener("click", () => {
+    const target = radios.find((x) => x.checked)?.value;
+    const absorbed = checks.filter((x) => x.checked && x.value !== target).map((x) => x.value);
+    mergeSeries(target, absorbed, series, mergeBtn);
+  });
+  const dismissBtn = el("button", { className: "danger", textContent: isRequest ? "却下" : "却下（別の版）" });
+  dismissBtn.addEventListener("click", () =>
+    isRequest ? dismissMergeRequest(r, dismissBtn) : dismissMergeCandidate(r, dismissBtn)
+  );
+
+  const meta = [];
+  if (isRequest) {
+    meta.push(`依頼 ${r.report_count}件・最終 ${fmtDate(r.last_reported_at)}`);
+    if (r.overlap) meta.push("⚠ 巻番号が重なっています（別の版の可能性）");
+  } else {
+    meta.push(`合計 ${r.total}巻`);
+  }
+
+  return el("div", { className: "merge-group" }, [
+    el("div", { className: "merge-group-head" }, [
+      el("span", { className: r.overlap ? "warn-text" : "muted", textContent: meta.join(" ｜ ") }),
+      el("div", { style: "flex:1" }),
+      mergeBtn,
+      dismissBtn,
+    ]),
+    el("table", { className: "admin-table" }, [body]),
+  ]);
+}
+
+async function mergeSeries(target, absorbed, series, btn) {
+  if (!target || !absorbed.length) {
+    uiAlert("「残す」以外に「含める」シリーズを1つ以上選んでください");
+    return;
+  }
+  const label = (id) => {
+    const s = series.find((x) => x.series_id === id);
+    return s ? `${id}「${s.title}」` : id;
+  };
+  const ok = await uiConfirm(
+    `${absorbed.map(label).join("、")} を ${label(target)} に結合します。\n全ての閲覧者の検索・巻一覧・リスト表示に反映されます。よろしいですか？`,
+    { okLabel: "結合する" }
+  );
+  if (!ok) return;
+  btn.disabled = true;
+  btn.textContent = "結合中…";
+  try {
+    const res = await fetch("/api/admin/series-merges", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ target_id: target, absorbed_ids: absorbed }),
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
+    await loadMerge(pageState.merge);
+  } catch (e) {
+    uiAlert("結合に失敗しました: " + e.message);
+    btn.disabled = false;
+    btn.textContent = "結合";
+  }
+}
+
+async function dismissMergeRequest(r, btn) {
+  if (!(await uiConfirm("この依頼を却下（削除）します。シリーズは結合されません。よろしいですか？", { okLabel: "却下する" }))) return;
+  btn.disabled = true;
+  try {
+    const res = await fetch(
+      `/api/admin/merge-requests/${encodeURIComponent(r.series_a)}/${encodeURIComponent(r.series_b)}`,
+      { method: "DELETE" }
+    );
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
+    await loadMerge(pageState.merge);
+  } catch (e) {
+    uiAlert("却下に失敗しました: " + e.message);
+    btn.disabled = false;
+  }
+}
+
+async function dismissMergeCandidate(r, btn) {
+  if (!(await uiConfirm("この組を別の版として候補から外します。よろしいですか？", { okLabel: "却下する" }))) return;
+  btn.disabled = true;
+  try {
+    const res = await fetch("/api/admin/merge-candidates/dismiss", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ group_key: r.group_key }),
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
+    await loadMerge(pageState.merge);
+  } catch (e) {
+    uiAlert("却下に失敗しました: " + e.message);
+    btn.disabled = false;
+  }
+}
+
+function renderMergedTable(list, merges) {
+  const body = el("tbody");
+  for (const m of merges) {
+    const btn = el("button", { className: "danger", textContent: "解除" });
+    btn.addEventListener("click", () => unmergeSeries(m, btn));
+    const link = (id, name) => {
+      const a = el("a", { className: "slug detail", textContent: id, title: "このシリーズの巻一覧を表示" });
+      a.addEventListener("click", () => openSeriesVolumes(id, name));
+      return a;
+    };
+    body.append(
+      el("tr", {}, [
+        el("td", { className: "owner" }, [link(m.absorbed_id, m.absorbed_name)]),
+        el("td", { className: "wrap", textContent: m.absorbed_name || "-" }),
+        el("td", { className: "owner" }, [link(m.target_id, m.target_name)]),
+        el("td", { className: "wrap", textContent: m.target_name || "-" }),
+        el("td", { textContent: fmtDate(m.created_at) }),
+        el("td", { className: "report-actions" }, [btn]),
+      ])
+    );
+  }
+  list.append(
+    el("table", { className: "admin-table" }, [
+      el("thead", {}, [
+        el("tr", {}, ["吸収した C-id", "名前", "残した C-id", "名前", "結合日時", ""].map((t) => el("th", { textContent: t }))),
+      ]),
+      body,
+    ])
+  );
+}
+
+async function unmergeSeries(m, btn) {
+  if (!(await uiConfirm(`${m.absorbed_id} を ${m.target_id} から切り離し、独立したシリーズに戻します。よろしいですか？`, { okLabel: "解除する" }))) return;
+  btn.disabled = true;
+  try {
+    const res = await fetch(`/api/admin/series-merges/${encodeURIComponent(m.absorbed_id)}`, { method: "DELETE" });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
+    await loadMerge(pageState.merge);
+  } catch (e) {
+    uiAlert("解除に失敗しました: " + e.message);
+    btn.disabled = false;
+  }
 }
 
 // 未処理キュー ⇄ 確定済み履歴の切り替え。一度に片方だけを表示する。
@@ -1497,7 +1737,7 @@ async function deleteList(slug, owner, btn) {
   }
 }
 
-const TARGET_LABEL = { owner_name: "ユーザー名", comment: "コメント", cover: "表紙画像" };
+const TARGET_LABEL = { owner_name: "ユーザー名", bio: "ひとこと", comment: "コメント", cover: "表紙画像" };
 
 async function loadReports(page = pageState.reports) {
   const table = $("reportTable");
@@ -2233,6 +2473,7 @@ const PAGES = {
     resetHistory("seriesReports");
     loadSeriesReports(1);
   },
+  "series-merges": () => setMergeMode(mergeMode),
   "volume-title-reports": () => {
     resetHistory("volumeTitleReports");
     loadVolumeTitleReports(1);
@@ -2297,6 +2538,10 @@ $("reloadVolReport").addEventListener("click", () =>
 $("reloadSeriesReport").addEventListener("click", () =>
   HISTORY.seriesReports.on ? loadNameOverrides(pageState.nameOverrides) : loadSeriesReports(pageState.seriesReports)
 );
+$("reloadMerge").addEventListener("click", () => loadMerge(pageState.merge));
+document.querySelectorAll(".merge-mode").forEach((b) => {
+  b.addEventListener("click", () => setMergeMode(b.dataset.mergeMode));
+});
 $("reloadVolTitleReport").addEventListener("click", () =>
   HISTORY.volumeTitleReports.on ? loadTitleOverrides(pageState.titleOverrides) : loadVolumeTitleReports(pageState.volTitleReports)
 );

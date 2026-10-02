@@ -1,7 +1,8 @@
 import { Env } from "./types";
-import { badRequest, json, normTitle, escapeLikeClamped, baseTitle, LIKE_MAX_BYTES } from "./util";
+import { badRequest, json, normTitle, escapeLikeClamped, baseTitle, LIKE_MAX_BYTES, toIsbn13 } from "./util";
 import { readCachedCovers } from "./covers";
 import { liveSearchByKeyword } from "./madbLive";
+import { mergeTargetsFor } from "./merge";
 
 interface SeriesResult {
   series_id: string;
@@ -39,20 +40,23 @@ interface SeriesRow {
 // still needs Phase-2 promotion to be reachable from search. name is COALESCE(override,
 // master) so an admin-corrected title (series_name_override) shows here; search MATCHING
 // stays on the original name_norm / name_kana_norm columns below.
+// Volume-derived columns span the merge group (MEMBERS: the series plus any series an admin
+// merged into it, see src/merge.ts) so a merged card shows the combined count/cover.
+const MEMBERS = `(SELECT s.id UNION ALL SELECT m.absorbed_id FROM series_merge m WHERE m.target_id = s.id)`;
 const SERIES_COLS = `s.id, COALESCE(o.name, s.name) AS name, s.publisher, s.label,
-        COALESCE((SELECT v.creator FROM volumes v WHERE v.series_id = s.id AND v.creator != ''
+        COALESCE((SELECT v.creator FROM volumes v WHERE v.series_id IN ${MEMBERS} AND v.creator != ''
            ORDER BY v.vol_sort, v.pubdate LIMIT 1), s.creator) AS creator,
-        (SELECT v.isbn FROM volumes v WHERE v.series_id = s.id
+        (SELECT v.isbn FROM volumes v WHERE v.series_id IN ${MEMBERS}
            ORDER BY v.vol_sort, v.pubdate LIMIT 1) AS first_isbn,
         ((SELECT COUNT(DISTINCT CASE WHEN v.volume_number IS NULL OR v.volume_number = ''
                    THEN v.isbn ELSE v.volume_number END)
-           FROM volumes v WHERE v.series_id = s.id)
+           FROM volumes v WHERE v.series_id IN ${MEMBERS})
          + COALESCE((SELECT json_array_length(sp.volumes_json)
                       FROM series_supplement sp WHERE sp.series_id = s.id), 0)
          + COALESCE((SELECT COUNT(*) FROM series_correction sc
-                      WHERE sc.series_id = s.id), 0)) AS vol_count,
+                      WHERE sc.series_id IN ${MEMBERS}), 0)) AS vol_count,
         EXISTS(SELECT 1 FROM series_supplement sp WHERE sp.series_id = s.id) AS probed,
-        EXISTS(SELECT 1 FROM volumes v WHERE v.series_id = s.id
+        EXISTS(SELECT 1 FROM volumes v WHERE v.series_id IN ${MEMBERS}
                  AND ((v.volume_number GLOB '[0-9]*' AND NOT v.volume_number GLOB '*[^0-9]*')
                       OR v.volume_number GLOB '巻[0-9]*')) AS numbered`;
 
@@ -120,7 +124,13 @@ export async function handleSearch(request: Request, env: Env): Promise<Response
     .bind(nq, kanaExact, prefix, kanaPrefix, like, like, like, like, like)
     .all<SeriesRow & { mt: number }>();
 
-  const rows = res.results ?? [];
+  // Series an admin merged away (series_merge) never show as their own card: drop them and
+  // surface their target instead (fetched with the promoted rows below).
+  const keywordRows = res.results ?? [];
+  const absorbedTo = await mergeTargetsFor(env, keywordRows.map((r) => r.id));
+  const rows = keywordRows.filter((r) => !absorbedTo.has(r.id));
+  const keptIds = new Set(rows.map((r) => r.id));
+  const mergedTargets = [...new Set(absorbedTo.values())].filter((id) => !keptIds.has(id));
 
   // ~20% of the MADB dump's volumes carry no schema:isPartOf, so they never join a
   // series row and are invisible to the series-based query above. Two cases, handled by
@@ -132,14 +142,18 @@ export async function handleSearch(request: Request, env: Env): Promise<Response
   //       "Promote" to that series id so opening it folds the unlinked volumes back in
   //       (getSeriesVolumes), giving the complete work instead of a partial card.
   const seriesTitles = new Set(rows.map((r) => normTitle(r.name)));
-  const existingIds = new Set(rows.map((r) => r.id));
-  const { promoteIds, standalone } = await discoverUnlinked(
+  const existingIds = new Set([...keptIds, ...mergedTargets]);
+  const { promoteIds: discovered, standalone } = await discoverUnlinked(
     env,
     like,
     seriesTitles,
     existingIds,
-    30 - rows.length
+    30 - rows.length - mergedTargets.length
   );
+  const discoveredTo = await mergeTargetsFor(env, discovered);
+  const promoteIds = [
+    ...new Set([...mergedTargets, ...discovered.map((id) => discoveredTo.get(id) ?? id)]),
+  ].filter((id) => !keptIds.has(id));
 
   // Fetch the promoted series with the same columns as the keyword query so they render
   // as ordinary series cards. Ordered longest-first, mirroring the keyword tie-break.
@@ -413,6 +427,8 @@ export async function handleLiveSearch(request: Request, env: Env): Promise<Resp
     return json({ error: "最新データベースに接続できませんでした。時間をおいて再試行してください。" }, 502);
   }
 
+  await rememberLiveVolumes(env, series);
+
   const allIsbns: string[] = [];
   for (const s of series) for (const v of s.volumes) allIsbns.push(...v.isbns);
   const covers = await readCachedCovers(env, allIsbns);
@@ -439,4 +455,38 @@ export async function handleLiveSearch(request: Request, env: Env): Promise<Resp
   }));
 
   return json({ results }, 200, { "cache-control": "no-store" });
+}
+
+/** Persist live-search volumes the master lacks into live_volumes, so a book picked
+ *  from these results can still resolve its title/author by ISBN once it's in a list
+ *  (lists store only the ISBN — see src/listItems.ts). The data is what this server
+ *  just fetched from MADB, never client input. One statement: the rows go in as one
+ *  JSON parameter. Failures are logged and ignored — search results still render. */
+async function rememberLiveVolumes(
+  env: Env,
+  series: Awaited<ReturnType<typeof liveSearchByKeyword>>
+): Promise<void> {
+  const rows: { isbn: string; title: string; volume_number: string; author: string }[] = [];
+  for (const s of series) {
+    for (const v of s.volumes) {
+      for (const raw of v.isbns) {
+        const isbn = toIsbn13(raw);
+        if (isbn) rows.push({ isbn, title: v.title, volume_number: v.volume_number, author: v.author });
+      }
+    }
+  }
+  if (!rows.length) return;
+  try {
+    await env.DB.prepare(
+      `INSERT OR REPLACE INTO live_volumes (isbn, title, volume_number, author, fetched_at)
+       SELECT json_extract(value, '$.isbn'), json_extract(value, '$.title'),
+              json_extract(value, '$.volume_number'), json_extract(value, '$.author'), ?2
+         FROM json_each(?1)
+        WHERE NOT EXISTS (SELECT 1 FROM volumes v WHERE v.isbn = json_extract(value, '$.isbn'))`
+    )
+      .bind(JSON.stringify(rows), Date.now())
+      .run();
+  } catch (err) {
+    console.error("live_volumes write failed", err);
+  }
 }

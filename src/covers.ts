@@ -145,6 +145,12 @@ export async function resolveCovers(env: Env, isbns: string[]): Promise<Map<stri
     for (const isbn of needGoogle) determined.set(isbn, "");
   }
 
+  // A store can hand back an image an admin redacted (same URL under another ISBN of
+  // the volume, which the list showed via the sibling fallback). Cache those as "no
+  // cover" so auto-resolution can't undo the redaction.
+  const redacted = await redactedCoverUrls(env, [...determined.values()]);
+  for (const [isbn, url] of determined) if (redacted.has(url)) determined.set(isbn, "");
+
   const writes = [];
   for (const [isbn, url] of determined) {
     out.set(isbn, url);
@@ -156,6 +162,22 @@ export async function resolveCovers(env: Env, isbns: string[]): Promise<Map<stri
   if (writes.length) await env.DB.batch(writes);
   if (metaWrites.length) await env.DB.batch(metaWrites);
 
+  return out;
+}
+
+/** Which of `urls` an admin redacted via a cover report (cover_suggestion
+ *  resolution 'redacted', for any ISBN). */
+export async function redactedCoverUrls(env: Env, urls: string[]): Promise<Set<string>> {
+  const out = new Set<string>();
+  const uniq = [...new Set(urls.filter(Boolean))];
+  if (uniq.length === 0) return out;
+  const res = await env.DB.prepare(
+    `SELECT DISTINCT cover_url FROM cover_suggestion
+      WHERE resolution = 'redacted' AND cover_url IN (SELECT value FROM json_each(?))`
+  )
+    .bind(JSON.stringify(uniq))
+    .all<{ cover_url: string }>();
+  for (const r of res.results ?? []) out.add(r.cover_url);
   return out;
 }
 

@@ -88,19 +88,26 @@ export interface Book {
   cover_url: string;
 }
 
-export interface ListItem {
+/** What lists.items_json stores per book: only the owner's own input. Title, author
+ *  and cover are site-wide data looked up by ISBN on read (src/listItems.ts). */
+export interface StoredListItem {
   position: number;
-  isbn: string;
+  isbn: string; // ISBN13
+  comment: string;
+  spoiler: boolean;
+}
+
+/** A list item as served (API / view page): the stored item plus the resolved book. */
+export interface ListItem extends StoredListItem {
   title: string;
   author: string;
   cover_url: string;
-  comment: string;
-  spoiler: boolean;
 }
 
 export interface MangaList {
   slug: string;
   owner_name: string;
+  bio: string;
   items: ListItem[];
   created_at: number;
   updated_at: number;

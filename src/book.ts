@@ -1,6 +1,7 @@
 import { Env } from "./types";
 import { badRequest, json } from "./util";
 import { rakutenResolveFull, RakutenBookFull } from "./rakuten";
+import { redactedCoverUrls } from "./covers";
 
 interface VolumeRow {
   title: string;
@@ -72,8 +73,8 @@ export async function handleBook(request: Request, env: Env): Promise<Response> 
   // it's a real cover, fill the covers cache if absent so a later list render skips
   // re-resolving this ISBN. INSERT OR IGNORE never clobbers an admin-corrected
   // cover; an empty/undetermined result is left alone so resolveCovers' full
-  // Rakuten+Google tiering still runs later.
-  if (res.cover) {
+  // Rakuten+Google tiering still runs later. A redacted image is never cached.
+  if (res.cover && !(await redactedCoverUrls(env, [res.cover])).has(res.cover)) {
     await env.DB.prepare(
       `INSERT OR IGNORE INTO covers (isbn, cover_url, checked_at) VALUES (?, ?, ?)`
     )

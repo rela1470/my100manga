@@ -1,5 +1,6 @@
 import { Env } from "./types";
-import { badRequest, json, notFound } from "./util";
+import { badRequest, json, notFound, volumeLabelTemplate, formatVolumeLabel, readJsonObject, toIsbn13 } from "./util";
+import { findNgWord } from "./ngwords";
 import { readCachedCovers, resolveCovers } from "./covers";
 
 // A correction volume as merged into the series volume list. title/author are filled
@@ -16,6 +17,8 @@ export interface CorrectionVolume {
 // only needs a few (欠番埋め; ONE PIECE でも巻110 の1件だけ) so 20 is well above the
 // legitimate ceiling while keeping a single series from being flooded.
 const MAX_CORRECTIONS = 20;
+// Cap on the optional "正しい名前" suggestion attached to a series-name report.
+const MAX_SUGGESTED_NAME = 100;
 
 /** Standard tankobon labels we accept for a correction ("巻110" or "110"). Anything
  *  else is rejected: arc labels etc. can't be numerically placed and invite noise. */
@@ -64,7 +67,7 @@ export async function addCorrection(request: Request, env: Env, seriesId: string
     .first<{ id: string; name: string; creator: string | null }>();
   if (!meta) return notFound("シリーズが見つかりません");
 
-  const body = (await request.json().catch(() => ({}))) as { isbn?: unknown; volume_number?: unknown };
+  const body = (await readJsonObject(request)) as { isbn?: unknown; volume_number?: unknown };
   const isbn = typeof body.isbn === "string" ? normalizeIsbn(body.isbn) : null;
   const volume = typeof body.volume_number === "string" ? normalizeVolume(body.volume_number) : null;
   if (!isbn) return badRequest("ISBN13 を指定してください");
@@ -92,12 +95,21 @@ export async function addCorrection(request: Request, env: Env, seriesId: string
     .bind(seriesId, isbn, volume, vol_sort, cover, Date.now())
     .run();
 
+  // Echo the label in the series' style so the client's immediate re-render matches
+  // what GET /volumes returns (see the correction merge in src/series.ts).
+  const labels = await env.DB.prepare(
+    `SELECT DISTINCT volume_number FROM volumes WHERE series_id = ? AND volume_number IS NOT NULL`
+  )
+    .bind(seriesId)
+    .all<{ volume_number: string }>();
+  const template = volumeLabelTemplate((labels.results ?? []).map((r) => r.volume_number));
+
   return json(
     {
       volume: {
         isbn,
         isbns: [isbn],
-        volume_number: volume,
+        volume_number: formatVolumeLabel(template, vol_sort, volume),
         vol_sort,
         title: meta.name,
         author: meta.creator ?? "",
@@ -125,35 +137,77 @@ export function coverSuggestionsEnabled(env: Env): boolean {
   return env.COVER_SUGGESTIONS_ENABLED === "true" || env.COVER_SUGGESTIONS_ENABLED === "1";
 }
 
-/** POST /api/cover-suggestions — collect a user-chosen cover that differs from the
- *  global cache. When a list editor uses 「表紙を変更」to fix a wrong/missing cover,
- *  that URL is only saved into their own list (items_json), so the master covers cache
- *  and everyone else's view keep the old cover. We queue the pick here for admin review;
- *  on approve the admin overwrites the covers cache so the fix propagates to everyone.
- *  Nothing is auto-applied — same "collect only, admin finalizes" policy as volume
- *  reports. Only { isbn, cover_url } is trusted; both are validated and a pick that
- *  already equals the cached cover is ignored (no correction needed). */
+/** Whether a picked image may fill an empty global cover without review: a book image
+ *  from 楽天ブックス (its thumbnail host serves every Rakuten product, so only the
+ *  books cabinet path counts) or Google Books (book covers only). Yahoo!ショッピング
+ *  images can be any product, so they go through review. An unreviewed fill can then
+ *  at worst be a different book's cover, never an arbitrary image. */
+function isTrustedCoverUrl(url: string): boolean {
+  try {
+    const u = new URL(url);
+    if (u.protocol !== "https:") return false;
+    if (u.hostname === "thumbnail.image.rakuten.co.jp") return u.pathname.startsWith("/@0_mall/book/cabinet/");
+    return u.hostname === "books.google.com";
+  } catch {
+    return false;
+  }
+}
+
+/** POST /api/cover-suggestions — a list editor picked a cover for a book. Covers are
+ *  site-wide (one per ISBN in `covers`; lists resolve them on read), so the pick is
+ *  applied to everyone or not at all:
+ *   - the ISBN has no cover yet ("" or never resolved even after probing) and the pick
+ *     is a book image (isTrustedCoverUrl) that an admin hasn't rejected/redacted →
+ *     written to `covers` immediately (applied). This is the 「表紙がない本を指定」 flow.
+ *   - the ISBN already has a cover → never overwritten here. The pick is queued for
+ *     admin review instead (when COVER_SUGGESTIONS_ENABLED); on approve the admin
+ *     overwrites `covers`. Same "collect only, admin finalizes" policy as reports.
+ *  Responds { applied, queued, cover_url } where cover_url is the cover everyone now
+ *  sees, so the client can show it. Only { isbn, cover_url } is trusted. */
 export async function suggestCover(request: Request, env: Env): Promise<Response> {
-  // Kill switch (default off): accept silently without queuing so the client's local
-  // cover change still works, but no user-supplied URL ever reaches the review queue
-  // or the global covers cache. This is the authoritative boundary — a direct POST
-  // can't bypass it. See coverSuggestionsEnabled.
-  if (!coverSuggestionsEnabled(env)) {
-    return json({ ok: true, queued: false }, 200, { "cache-control": "no-store" });
-  }
-
-  const body = (await request.json().catch(() => ({}))) as { isbn?: unknown; cover_url?: unknown };
-  const isbn = typeof body.isbn === "string" ? normalizeIsbn(body.isbn) : null;
+  const body = (await readJsonObject(request)) as { isbn?: unknown; cover_url?: unknown };
+  // Older list items carry an ISBN-10 ("4088725093"); covers are keyed by ISBN-13.
+  const isbn = typeof body.isbn === "string" ? toIsbn13(body.isbn) || null : null;
   const coverUrl = typeof body.cover_url === "string" ? normalizeCoverUrl(body.cover_url) : null;
-  if (!isbn) return badRequest("ISBN13 を指定してください");
+  if (!isbn) return badRequest("ISBN を指定してください");
   if (!coverUrl) return badRequest("表紙URLが不正です");
+  const reply = (applied: boolean, queued: boolean, current: string) =>
+    json({ ok: true, applied, queued, cover_url: current }, 200, { "cache-control": "no-store" });
 
-  // Compare against the current cache. If the pick matches what everyone already sees,
-  // there's nothing to correct — accept silently so the client can fire freely.
-  const cached = (await readCachedCovers(env, [isbn])).get(isbn);
-  if (cached !== undefined && cached === coverUrl) {
-    return json({ ok: true, queued: false }, 200, { "cache-control": "no-store" });
+  // Probe first if this ISBN was never resolved, so an auto-found store cover wins over
+  // the pick instead of being shadowed by it (the cache is permanent once written).
+  let cached = (await readCachedCovers(env, [isbn])).get(isbn);
+  if (cached === undefined) cached = (await resolveCovers(env, [isbn])).get(isbn);
+  if (cached === coverUrl) return reply(true, false, coverUrl);
+
+  if (!cached) {
+    // An image an admin redacted or dismissed must not come straight back through an
+    // unreviewed fill — it's still offered by the candidate search. Pending rows count
+    // too: re-suggesting a rejected image reopens its row (resolution reset to ''), so
+    // only images never seen in review, or ones an admin approved, may fill unreviewed.
+    if (isTrustedCoverUrl(coverUrl)) {
+      const rejected = await env.DB.prepare(
+        `SELECT 1 FROM cover_suggestion
+          WHERE cover_url = ? AND resolution <> 'approved' LIMIT 1`
+      )
+        .bind(coverUrl)
+        .first();
+      if (!rejected) {
+        await env.DB.prepare(`INSERT OR REPLACE INTO covers (isbn, cover_url, checked_at) VALUES (?, ?, ?)`)
+          .bind(isbn, coverUrl, Date.now())
+          .run();
+        return reply(true, false, coverUrl);
+      }
+    }
+    cached = "";
   }
+
+  // Everything else goes through review: changing an existing cover, or filling an
+  // empty one with an image that can't be applied unreviewed (non-book host, or
+  // previously rejected). Kill switch (default off): don't queue at all, so no
+  // user-supplied URL reaches the queue or, on approve, `covers`. See
+  // coverSuggestionsEnabled.
+  if (!coverSuggestionsEnabled(env)) return reply(false, false, cached);
 
   // New (isbn, cover_url) pairs are capped; an already-queued pair just bumps its count.
   const existing = await env.DB.prepare(
@@ -169,7 +223,7 @@ export async function suggestCover(request: Request, env: Env): Promise<Response
       .bind(isbn)
       .first<{ n: number }>();
     if ((count?.n ?? 0) >= MAX_COVER_SUGGESTIONS_PER_ISBN) {
-      return json({ ok: true, queued: false }, 200, { "cache-control": "no-store" });
+      return reply(false, false, cached);
     }
   }
 
@@ -188,7 +242,7 @@ export async function suggestCover(request: Request, env: Env): Promise<Response
     .bind(isbn, coverUrl, cached ?? "", now, now)
     .run();
 
-  return json({ ok: true, queued: true }, 200, { "cache-control": "no-store" });
+  return reply(false, true, cached);
 }
 
 /** POST /api/series/:id/report — flag the SERIES NAME as wrong (e.g. a corrupt master
@@ -197,23 +251,40 @@ export async function suggestCover(request: Request, env: Env): Promise<Response
  *  the admin audit. Nothing is trusted from the client — the name snapshot is read from
  *  the series row server-side. The admin later 却下 (deletes) or 名前修正 (writes an
  *  override applied at read time). Repeated flags just bump the count. */
-export async function reportSeriesName(_request: Request, env: Env, seriesId: string): Promise<Response> {
+export async function reportSeriesName(request: Request, env: Env, seriesId: string): Promise<Response> {
   const meta = await env.DB.prepare(`SELECT id, name FROM series WHERE id = ?`)
     .bind(seriesId)
     .first<{ id: string; name: string }>();
   if (!meta) return notFound("シリーズが見つかりません");
 
+  // Optional free-text suggestion of the correct name. Only a hint for the admin
+  // (never applied automatically), but still length-capped and NG-word checked since
+  // it's anonymous input shown in the admin UI.
+  const body = (await readJsonObject(request)) as { suggested_name?: unknown };
+  const suggested =
+    typeof body.suggested_name === "string" ? body.suggested_name.replace(/\s+/g, " ").trim() : "";
+  if (suggested.length > MAX_SUGGESTED_NAME) {
+    return badRequest(`提案する名前は${MAX_SUGGESTED_NAME}文字以内で入力してください`);
+  }
+  if (suggested && findNgWord(suggested)) return badRequest("提案する名前に使用できない語句が含まれています");
+  if (suggested && suggested === (meta.name ?? "").replace(/\s+/g, " ").trim()) {
+    return badRequest("提案する名前が現在のシリーズ名と同じです");
+  }
+
   const now = Date.now();
+  // An empty suggestion (plain "名前が違う" report) keeps any earlier one.
   await env.DB.prepare(
     `INSERT INTO series_report
-       (series_id, reported_name, report_count, first_reported_at, last_reported_at)
-     VALUES (?, ?, 1, ?, ?)
+       (series_id, reported_name, suggested_name, report_count, first_reported_at, last_reported_at)
+     VALUES (?, ?, ?, 1, ?, ?)
      ON CONFLICT (series_id) DO UPDATE SET
        report_count = report_count + 1,
        last_reported_at = excluded.last_reported_at,
-       reported_name = excluded.reported_name`
+       reported_name = excluded.reported_name,
+       suggested_name = CASE WHEN excluded.suggested_name <> '' THEN excluded.suggested_name
+                             ELSE series_report.suggested_name END`
   )
-    .bind(seriesId, meta.name ?? "", now, now)
+    .bind(seriesId, meta.name ?? "", suggested, now, now)
     .run();
 
   return json({ ok: true }, 200, { "cache-control": "no-store" });
@@ -232,7 +303,7 @@ export async function reportVolume(request: Request, env: Env, seriesId: string)
     .first<{ id: string }>();
   if (!meta) return notFound("シリーズが見つかりません");
 
-  const body = (await request.json().catch(() => ({}))) as { isbn?: unknown };
+  const body = (await readJsonObject(request)) as { isbn?: unknown };
   const isbn = typeof body.isbn === "string" ? normalizeIsbn(body.isbn) : null;
   if (!isbn) return badRequest("ISBN13 を指定してください");
 
@@ -275,7 +346,7 @@ export async function reportVolume(request: Request, env: Env, seriesId: string)
  *  server-side from the master volumes row (empty if unknown). Admin later 却下 or
  *  修正 (writes volume_title_override / snaps to the series' most-common title). */
 export async function reportVolumeTitle(request: Request, env: Env): Promise<Response> {
-  const body = (await request.json().catch(() => ({}))) as { isbn?: unknown };
+  const body = (await readJsonObject(request)) as { isbn?: unknown };
   const isbn = typeof body.isbn === "string" ? normalizeIsbn(body.isbn) : null;
   if (!isbn) return badRequest("ISBN13 を指定してください");
 

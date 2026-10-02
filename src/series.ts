@@ -1,5 +1,15 @@
 import { Env } from "./types";
-import { json, notFound, normTitle, baseTitle, escapeLikeClamped, LIKE_MAX_BYTES } from "./util";
+import {
+  json,
+  notFound,
+  normTitle,
+  baseTitle,
+  escapeLikeClamped,
+  LIKE_MAX_BYTES,
+  volumeLabelTemplate,
+  plainVolumeNumber,
+  unifyVolumeLabel,
+} from "./util";
 import { readCachedCovers, firstCover } from "./covers";
 import {
   getSupplementVolumes,
@@ -10,6 +20,7 @@ import {
   SupplementVolume,
 } from "./madbLive";
 import { getCorrectionVolumes } from "./corrections";
+import { resolveMergeTarget, mergeMembers } from "./merge";
 
 interface VolumeRow {
   isbn: string;
@@ -46,12 +57,17 @@ export async function getSeriesVolumes(
   seriesId: string,
   probe = false
 ): Promise<Response> {
+  // 管理者が結合したシリーズ（series_merge）: 吸収された側を開いたら残す側を返し、残す側は
+  // 全 member の巻・訂正・非表示をまとめて扱う。補完(SPARQL)だけは target 単位のまま。
+  const targetId = await resolveMergeTarget(env, seriesId);
+  const members = await mergeMembers(env, targetId);
+  const inMembers = members.map(() => "?").join(",");
   const meta = await env.DB.prepare(
     `SELECT s.id, s.name, s.creator, s.publisher, o.name AS override_name
        FROM series s LEFT JOIN series_name_override o ON o.series_id = s.id
       WHERE s.id = ?`
   )
-    .bind(seriesId)
+    .bind(targetId)
     .first<{
       id: string;
       name: string;
@@ -68,9 +84,9 @@ export async function getSeriesVolumes(
 
   const res = await env.DB.prepare(
     `SELECT isbn, volume_number, vol_sort, title, creator, publisher, label, pubdate
-     FROM volumes WHERE series_id = ? ORDER BY vol_sort, pubdate, isbn`
+     FROM volumes WHERE series_id IN (${inMembers}) ORDER BY vol_sort, pubdate, isbn`
   )
-    .bind(seriesId)
+    .bind(...members)
     .all<VolumeRow>();
 
   // MADB lists the same volume under several ISBNs (通常版/重版/特装版). Group them
@@ -102,7 +118,7 @@ export async function getSeriesVolumes(
     }
   };
 
-  if (await isSoleSeriesForName(env, meta.id, meta.name)) {
+  if (await isSoleSeriesForName(env, members, meta.name)) {
     const unlinked = await env.DB.prepare(
       `SELECT isbn, volume_number, vol_sort, title, creator, publisher, label, pubdate
        FROM volumes WHERE series_id IS NULL AND title = ? ORDER BY vol_sort, pubdate, isbn`
@@ -122,7 +138,7 @@ export async function getSeriesVolumes(
   // fold already covered everything. Duplicate volume_numbers just collapse into sibling
   // ISBNs, so nothing is double-counted.
   const base = baseTitle(meta.name);
-  if (base && base !== normTitle(meta.name) && (await isSoleSeriesForBase(env, meta.id, base))) {
+  if (base && base !== normTitle(meta.name) && (await isSoleSeriesForBase(env, members, base))) {
     const variants = await env.DB.prepare(
       `SELECT isbn, volume_number, vol_sort, title, creator, publisher, label, pubdate
        FROM volumes
@@ -173,7 +189,7 @@ export async function getSeriesVolumes(
   const eligible =
     !!fmt &&
     !!meta.creator &&
-    (await isUnambiguousForSupplement(env, meta.id, meta.name, meta.creator, fmt));
+    (await isUnambiguousForSupplement(env, members, meta.name, meta.creator, fmt));
 
   // probe=false: merge only what a prior probe already cached (no network). null ⇒
   // never probed, which the search card surfaces as an "未確認" marker.
@@ -205,7 +221,17 @@ export async function getSeriesVolumes(
     probed = cached !== null;
     checkedAt = cached?.checkedAt ?? 0;
   }
+  // The cache survives ingests (only entries the new master carries are pruned, see
+  // scripts/ingest.mjs), so still skip anything already present by ISBN or by volume
+  // number in case the master caught up between ingest and this read.
+  const masterIsbns = new Set<string>();
+  const masterSorts = new Set<number>();
+  for (const e of entries) {
+    for (const i of e.isbns) masterIsbns.add(i);
+    if (e.volume_number && e.vol_sort > 0) masterSorts.add(e.vol_sort);
+  }
   for (const s of supplement) {
+    if ((s.isbns ?? [s.isbn]).some((i) => masterIsbns.has(i)) || masterSorts.has(s.vol_sort)) continue;
     entries.push({
       isbn: s.isbn,
       isbns: s.isbns,
@@ -224,12 +250,26 @@ export async function getSeriesVolumes(
   // MADB, e.g. ONE PIECE 巻110). Keyed on this exact series C-id, so unlike the
   // SPARQL supplement there's no same-name/different-series ambiguity. Title/author
   // come from the series row; cover was resolved server-side at submit time.
+  // Corrections are stored as "N" / "巻N" only while the master may say "第N巻", so
+  // duplicates are detected on the plain volume number, not the label string.
   const knownNumbers = new Set(entries.map((e) => e.volume_number).filter(Boolean));
+  const knownPlain = new Set<number>();
+  for (const n of knownNumbers) {
+    const p = plainVolumeNumber(n);
+    if (p !== null) knownPlain.add(p);
+  }
   const knownIsbns = new Set<string>();
   for (const e of entries) for (const i of e.isbns) knownIsbns.add(i);
-  for (const c of await getCorrectionVolumes(env, meta.id)) {
+  // The series' dominant plain label style, applied to every plain label on output
+  // (こち亀: corrections' "1" and the master's stray "9" / "170　／　第170巻" all
+  // become "第N巻"). Arc / edition labels are left as-is. See util.unifyVolumeLabel.
+  const labelTemplate = volumeLabelTemplate([...knownNumbers]);
+  const corrections = (await Promise.all(members.map((m) => getCorrectionVolumes(env, m)))).flat();
+  for (const c of corrections) {
     if (knownIsbns.has(c.isbn)) continue;
     if (c.volume_number && knownNumbers.has(c.volume_number)) continue;
+    const plain = plainVolumeNumber(c.volume_number);
+    if (plain !== null && knownPlain.has(plain)) continue;
     entries.push({
       isbn: c.isbn,
       isbns: [c.isbn],
@@ -247,9 +287,9 @@ export async function getSeriesVolumes(
   // 管理者が「確定」した巻は volume_hidden に載る。source を問わず全閲覧者から除外する
   // （マスター/補完は元データを消せないので、ここでのフィルタが唯一の全体非表示手段）。
   const hiddenRows = await env.DB.prepare(
-    `SELECT isbn FROM volume_hidden WHERE series_id = ?`
+    `SELECT isbn FROM volume_hidden WHERE series_id IN (${inMembers})`
   )
-    .bind(seriesId)
+    .bind(...members)
     .all<{ isbn: string }>();
   const hiddenIsbns = new Set((hiddenRows.results ?? []).map((r) => r.isbn));
   const shown = hiddenIsbns.size
@@ -303,7 +343,7 @@ export async function getSeriesVolumes(
   const volumes: OutVolume[] = shown.map((e) => ({
     isbn: e.isbn,
     isbns: e.isbns,
-    volume_number: e.volume_number,
+    volume_number: unifyVolumeLabel(labelTemplate, e.volume_number),
     vol_sort: e.vol_sort,
     title: titleFor(e),
     author: e.author,
@@ -418,37 +458,41 @@ export async function readVolumeTitleOverrides(
   return out;
 }
 
-/** True when no OTHER series shares this exact name — so unlinked volumes carrying the
- *  same schema:name can be safely attributed to this one series (see the local merge in
+/** True when no OTHER series (outside this merge group, see src/merge.ts) shares this
+ *  exact name — so unlinked volumes carrying the same schema:name can be safely attributed to this one series (see the local merge in
  *  getSeriesVolumes). If a sibling series shares the name (新装版/総集編/別作品), a loose
  *  volume can't be attributed, so we skip the merge. */
-async function isSoleSeriesForName(env: Env, seriesId: string, name: string): Promise<boolean> {
-  const row = await env.DB.prepare(`SELECT COUNT(*) AS n FROM series WHERE name = ? AND id != ?`)
-    .bind(name, seriesId)
+async function isSoleSeriesForName(env: Env, members: string[], name: string): Promise<boolean> {
+  const row = await env.DB.prepare(
+    `SELECT COUNT(*) AS n FROM series WHERE name = ? AND id NOT IN (${members.map(() => "?").join(",")})`
+  )
+    .bind(name, ...members)
     .first<{ n: number }>();
   return (row?.n ?? 0) === 0;
 }
 
-/** True when no OTHER series shares this exact BASE title (see util.baseTitle) — so the
- *  loose variants carrying it can be safely attributed to this one series (base-title
+/** True when no OTHER series (outside this merge group) shares this exact BASE title
+ *  (see util.baseTitle) — so the loose variants carrying it can be safely attributed to this one series (base-title
  *  fold in getSeriesVolumes). base is a prefix of name_norm, so name_norm LIKE base||'%'
  *  (index-backed) narrows the scan; we re-check baseTitle(name) === base in JS to drop a
  *  longer-based sibling (「…外伝」/「…:re」) that merely shares the prefix. */
-async function isSoleSeriesForBase(env: Env, seriesId: string, base: string): Promise<boolean> {
+async function isSoleSeriesForBase(env: Env, members: string[], base: string): Promise<boolean> {
   const res = await env.DB.prepare(
-    `SELECT id, name FROM series WHERE name_norm LIKE ? ESCAPE '\\' AND id != ?`
+    `SELECT id, name FROM series WHERE name_norm LIKE ? ESCAPE '\\'
+       AND id NOT IN (${members.map(() => "?").join(",")})`
   )
-    .bind(escapeLikeClamped(base, LIKE_MAX_BYTES - 1) + "%", seriesId)
+    .bind(escapeLikeClamped(base, LIKE_MAX_BYTES - 1) + "%", ...members)
     .all<{ id: string; name: string }>();
   return !(res.results ?? []).some((r) => baseTitle(r.name) === base);
 }
 
-/** True when no OTHER series with the same exact name and creator also uses `fmt`.
+/** True when no OTHER series (outside this merge group) with the same exact name and
+ *  creator also uses `fmt`.
  *  If a sibling shares the numbering style (e.g. two 「One piece」 by 尾田栄一郎), a
  *  loose live volume can't be attributed to one of them, so we skip supplementing. */
 async function isUnambiguousForSupplement(
   env: Env,
-  seriesId: string,
+  members: string[],
   name: string,
   creator: string,
   fmt: NumFmt
@@ -459,10 +503,11 @@ async function isUnambiguousForSupplement(
       : "(v.volume_number GLOB '[0-9]*' AND NOT v.volume_number GLOB '*[^0-9]*')";
   const row = await env.DB.prepare(
     `SELECT COUNT(*) AS n FROM series s2
-       WHERE s2.name = ? AND COALESCE(s2.creator, '') = ? AND s2.id != ?
+       WHERE s2.name = ? AND COALESCE(s2.creator, '') = ?
+         AND s2.id NOT IN (${members.map(() => "?").join(",")})
          AND EXISTS (SELECT 1 FROM volumes v WHERE v.series_id = s2.id AND ${cond})`
   )
-    .bind(name, creator, seriesId)
+    .bind(name, creator, ...members)
     .first<{ n: number }>();
   return (row?.n ?? 0) === 0;
 }

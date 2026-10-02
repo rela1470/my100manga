@@ -66,6 +66,14 @@ export function json(data: unknown, status = 200, headers: Record<string, string
   });
 }
 
+/** Parse a JSON request body as a plain object for optional-field handlers. Anything
+ *  else — unparseable text, or valid JSON that isn't an object such as `null` / `[]` /
+ *  `"x"` — yields {} so reading `body.foo` can't throw (a `null` body used to 500). */
+export async function readJsonObject(request: Request): Promise<Record<string, unknown>> {
+  const body: unknown = await request.json().catch(() => null);
+  return body && typeof body === "object" && !Array.isArray(body) ? (body as Record<string, unknown>) : {};
+}
+
 export function badRequest(message: string): Response {
   return json({ error: message }, 400);
 }
@@ -112,4 +120,66 @@ export function escapeHtml(input: string): string {
     .replace(/>/g, "&gt;")
     .replace(/"/g, "&quot;")
     .replace(/'/g, "&#39;");
+}
+
+// Plain volume labels we know how to read and rewrite. Arc / edition labels like
+// "6 (アラバスタ編)" or "2020年版" deliberately don't match and are left untouched.
+const VOLUME_LABEL_TEMPLATES = ["{n}", "巻{n}", "第{n}巻", "{n}巻"];
+
+/** The volume number in a plain volume label, or null for anything else. Accepts
+ *  "12" / "巻12" / "第12巻" / "12巻" and MADB's doubled form "170　／　第170巻"
+ *  (only when both numbers agree). */
+export function plainVolumeNumber(label: string): number | null {
+  const s = (label ?? "").trim();
+  const m =
+    /^(\d+)$/.exec(s) || /^巻(\d+)$/.exec(s) || /^第(\d+)巻$/.exec(s) || /^(\d+)巻$/.exec(s);
+  if (m) return parseInt(m[1], 10);
+  const d = /^(\d+)[\s　]*[／/][\s　]*第(\d+)巻$/.exec(s);
+  if (d && d[1] === d[2]) return parseInt(d[1], 10);
+  return null;
+}
+
+/** The series' dominant plain volume-label template, e.g. "第{n}巻" for こち亀 (mostly
+ *  「第2巻」, with stray "9" / "170　／　第170巻") or "巻{n}" for ONE PIECE. null when
+ *  no plain label is present. */
+export function volumeLabelTemplate(labels: string[]): string | null {
+  const counts = new Map<string, number>();
+  for (const l of labels) {
+    const s = (l ?? "").trim();
+    if (!/^\D*\d+\D*$/.test(s)) continue;
+    const t = s.replace(/\d+/, "{n}");
+    if (!VOLUME_LABEL_TEMPLATES.includes(t)) continue;
+    counts.set(t, (counts.get(t) ?? 0) + 1);
+  }
+  let best: string | null = null;
+  let bestN = 0;
+  for (const [t, n] of counts) if (n > bestN) ((best = t), (bestN = n));
+  return best;
+}
+
+/** Render volume `n` in a template from volumeLabelTemplate ("第{n}巻" + 1 → "第1巻"). */
+export function formatVolumeLabel(template: string | null, n: number, fallback: string): string {
+  return template && n > 0 ? template.replace("{n}", String(n)) : fallback;
+}
+
+/** Rewrite a plain volume label into the series template ("9" → "第9巻"); any other
+ *  label (arc names, 総集編, …) is returned unchanged. */
+export function unifyVolumeLabel(template: string | null, label: string): string {
+  const n = plainVolumeNumber(label);
+  return n === null ? label : formatVolumeLabel(template, n, label);
+}
+
+/** Normalize an ISBN-10/13 (hyphens allowed) to ISBN-13, mirroring scripts/ingest.mjs
+ *  isbn13 so list items saved with an ISBN-10 ("4088725093") match master rows. "" if
+ *  it isn't an ISBN. */
+export function toIsbn13(raw: string): string {
+  const s = String(raw ?? "").replace(/[^0-9Xx]/g, "").toUpperCase();
+  if (/^\d{13}$/.test(s)) return s;
+  if (/^\d{9}[\dX]$/.test(s)) {
+    const core = "978" + s.slice(0, 9);
+    let sum = 0;
+    for (let i = 0; i < 12; i++) sum += (i % 2 === 0 ? 1 : 3) * Number(core[i]);
+    return core + ((10 - (sum % 10)) % 10);
+  }
+  return "";
 }

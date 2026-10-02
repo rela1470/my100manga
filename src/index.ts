@@ -2,6 +2,17 @@ import { handleSearch, handleLiveSearch } from "./search";
 import { getSeriesVolumes, handleMasterInfo } from "./series";
 import { addCorrection, reportVolume, reportSeriesName, reportVolumeTitle, suggestCover } from "./corrections";
 import { coverCandidates, volumeCandidates } from "./candidates";
+import {
+  getMergeCandidates,
+  requestSeriesMerge,
+  adminListMergeRequests,
+  adminDismissMergeRequest,
+  adminListMergeCandidates,
+  adminDismissMergeCandidate,
+  adminMergeSeries,
+  adminListMerges,
+  adminUnmergeSeries,
+} from "./merge";
 import { handleBook } from "./book";
 import { resolveCovers } from "./covers";
 import { createList, getList, getListData, updateList } from "./lists";
@@ -52,13 +63,14 @@ import {
 import { addReport } from "./reports";
 import { requireAdmin } from "./adminAuth";
 import { handleRanking } from "./ranking";
+import { handleSiteStats } from "./siteStats";
 import { analyticsTags, gtmBody, injectAnalytics, appVersion, affIds } from "./analytics";
 import { footerHtml } from "./footer";
 import { bumpPopularity } from "./popularity";
 import { Env, MangaList } from "./types";
 import { rateLimit } from "./ratelimit";
 import { trimWhitespace } from "./covertrim";
-import { escapeHtml, json, notFound } from "./util";
+import { escapeHtml, json, readJsonObject } from "./util";
 
 export { RakutenRateLimiter } from "./ratelimiter";
 
@@ -167,6 +179,10 @@ export default {
       if (path === "/api/ranking" && request.method === "GET") {
         return await handleRanking(env);
       }
+      // トップページの収録数（シリーズ / 巻 / 公開リスト）。
+      if (path === "/api/site-stats" && request.method === "GET") {
+        return await handleSiteStats(env);
+      }
       // MADB master provenance (release tag/date + last import) for the about page.
       if (path === "/api/master-info" && request.method === "GET") {
         return await handleMasterInfo(env);
@@ -205,6 +221,15 @@ export default {
       const seriesReportMatch = path.match(/^\/api\/series\/([A-Za-z0-9]+)\/report$/);
       if (seriesReportMatch && request.method === "POST") {
         return await reportSeriesName(request, env, seriesReportMatch[1]);
+      }
+      // シリーズの結合（分裂したシリーズ）: 候補の取得と結合依頼（collect-only; 管理者が確定）。
+      const mergeCandMatch = path.match(/^\/api\/series\/([A-Za-z0-9]+)\/merge-candidates$/);
+      if (mergeCandMatch && request.method === "GET") {
+        return await getMergeCandidates(env, mergeCandMatch[1]);
+      }
+      const mergeReqMatch = path.match(/^\/api\/series\/([A-Za-z0-9]+)\/merge-request$/);
+      if (mergeReqMatch && request.method === "POST") {
+        return await requestSeriesMerge(request, env, mergeReqMatch[1]);
       }
       if (path === "/api/cover-candidates" && request.method === "GET") {
         return await coverCandidates(request, env);
@@ -324,6 +349,30 @@ export default {
       if (adminSeriesReportMatch && request.method === "DELETE") {
         // 却下: 通報行だけ削除。名前は変更しない。
         return await adminDismissSeriesReport(env, adminSeriesReportMatch[1]);
+      }
+      // シリーズの結合: 依頼・自動検出候補・確定済みの一覧と、結合/却下/解除。
+      if (path === "/api/admin/merge-requests" && request.method === "GET") {
+        return await adminListMergeRequests(env, parsePage(url));
+      }
+      const adminMergeReqMatch = path.match(/^\/api\/admin\/merge-requests\/([A-Za-z0-9]+)\/([A-Za-z0-9]+)$/);
+      if (adminMergeReqMatch && request.method === "DELETE") {
+        return await adminDismissMergeRequest(env, adminMergeReqMatch[1], adminMergeReqMatch[2]);
+      }
+      if (path === "/api/admin/merge-candidates" && request.method === "GET") {
+        return await adminListMergeCandidates(env, parsePage(url));
+      }
+      if (path === "/api/admin/merge-candidates/dismiss" && request.method === "POST") {
+        return await adminDismissMergeCandidate(request, env);
+      }
+      if (path === "/api/admin/series-merges" && request.method === "GET") {
+        return await adminListMerges(env, parsePage(url));
+      }
+      if (path === "/api/admin/series-merges" && request.method === "POST") {
+        return await adminMergeSeries(request, env);
+      }
+      const adminMergeMatch = path.match(/^\/api\/admin\/series-merges\/([A-Za-z0-9]+)$/);
+      if (adminMergeMatch && request.method === "DELETE") {
+        return await adminUnmergeSeries(env, adminMergeMatch[1]);
       }
       // 本のタイトルの通報（巻 ISBN 単位）。series-reports と同じ構成。
       if (path === "/api/admin/volume-title-reports" && request.method === "GET") {
@@ -451,7 +500,7 @@ export default {
 // endpoints return cache-only covers so they're instant; the client calls this
 // to fill the gaps lazily. Returns isbn → cover URL for the ones that resolved.
 async function resolveCoversApi(request: Request, env: Env): Promise<Response> {
-  const body = (await request.json().catch(() => ({}))) as { isbns?: unknown };
+  const body = (await readJsonObject(request)) as { isbns?: unknown };
   const isbns = Array.isArray(body.isbns)
     ? body.isbns.filter((x): x is string => typeof x === "string").slice(0, 400)
     : [];
@@ -464,7 +513,13 @@ async function resolveCoversApi(request: Request, env: Env): Promise<Response> {
 
 async function renderViewPage(env: Env, slug: string, origin: string): Promise<Response> {
   const data = await getListData(env, slug);
-  if (!data) return notFound("リストが見つかりません");
+  // ブラウザで開かれるページなので JSON の 404 ではなくトップへ戻し、そこでモーダルを出す。
+  if (!data) {
+    return new Response(null, {
+      status: 302,
+      headers: { location: `${origin}/?notfound=list`, "cache-control": "no-store" },
+    });
+  }
   bumpPopularity(env, "list", slug, data.owner_name ?? "");
 
   const templateRes = await env.ASSETS.fetch(new Request(`${origin}/view.html`));

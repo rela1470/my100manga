@@ -1,5 +1,5 @@
 import { Env } from "./types";
-import type { Priority } from "./ratelimiter";
+import { awaitSlot, type Priority } from "./ratelimiter";
 
 // Yahoo!ショッピング 商品検索API V3. A book's ISBN-13 is a JAN code (Bookland EAN,
 // 978/979 prefix), so `jan_code` is an exact-ISBN lookup — the direct-match that
@@ -31,33 +31,13 @@ export function yahooReady(env: Env): boolean {
   return Boolean(env.YAHOO_APP_ID);
 }
 
-// How long a call waits for a rate-limit slot before giving up. Yahoo rate-limits
-// aggressively (observed 429 above ~3 req/s); the shared 1 req/s DO limiter keeps
-// us well under. Same lanes as Rakuten: high = user-initiated picker, low = bulk.
-const MAX_WAIT_MS: Record<Priority, number> = { high: 15000, low: 8000 };
-
-// Reuse the RakutenRateLimiter DO (a generic global 1 req/s spacer) under a
-// separate "yahoo" instance so Yahoo and Rakuten pace independently. The binding
-// name is historical; the DO itself isn't Rakuten-specific.
-async function awaitSlot(env: Env, priority: Priority, maxWaitMs?: number): Promise<boolean> {
-  if (!env.RAKUTEN_LIMITER) return true; // unbound (tests/local) → no pacing
-  const cap = maxWaitMs ?? MAX_WAIT_MS[priority];
-  if (cap <= 0) return false;
-  try {
-    const stub = env.RAKUTEN_LIMITER.getByName("yahoo");
-    const wait = await stub.acquire(cap, priority);
-    if (wait < 0) return false;
-    if (wait > 0) await new Promise((r) => setTimeout(r, wait));
-    return true;
-  } catch {
-    return true;
-  }
-}
+// Yahoo paces on its own "yahoo" instance of the RakutenRateLimiter DO (a generic 1 req/s
+// spacer; the binding name is historical) so Yahoo and Rakuten don't share a lane.
 
 async function call(env: Env, isbn: string, priority: Priority, maxWaitMs?: number): Promise<any | null> {
   const qs = new URLSearchParams({ appid: env.YAHOO_APP_ID!, jan_code: isbn, results: "5" });
   const url = `${V3}?${qs.toString()}`;
-  if (!(await awaitSlot(env, priority, maxWaitMs))) return null;
+  if (!(await awaitSlot(env, "yahoo", priority, maxWaitMs))) return null;
   for (let attempt = 0; attempt < 2; attempt++) {
     const res = await fetch(url);
     if (res.status === 429) {

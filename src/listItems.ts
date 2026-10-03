@@ -123,6 +123,16 @@ export interface Book {
  *  the editor's volume list ("<series title> <volume label>", honoring admin overrides
  *  and the unified 巻数表記), author, and the site-wide cover. ISBN-10 input is
  *  normalized. Used for lists, the ranking and admin views — nothing stores these. */
+/** lists.items_json を読む。壊れた JSON・配列でない値は空リスト扱いにして、表示や集計を落とさない。 */
+export function parseStoredItems(json: string | null | undefined): StoredListItem[] {
+  try {
+    const v = JSON.parse(json ?? "");
+    return Array.isArray(v) ? (v as StoredListItem[]) : [];
+  } catch {
+    return [];
+  }
+}
+
 export async function resolveBooks(env: Env, isbns: string[]): Promise<Map<string, Book>> {
   const out = new Map<string, Book>();
   const want = [...new Set(isbns.map(toIsbn13).filter(Boolean))];

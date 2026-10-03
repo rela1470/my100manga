@@ -97,7 +97,7 @@ function render() {
     num.textContent = e.rank;
     slot.appendChild(num);
 
-    slot.appendChild(coverNode(e));
+    slot.appendChild(coverNode(e.cover_url, e.work));
 
     const meta = document.createElement("div");
     meta.className = "meta";
@@ -119,50 +119,16 @@ function render() {
   }
 }
 
-function coverNode(e) {
-  if (e.cover_url) {
-    const img = document.createElement("img");
-    img.className = "cover";
-    img.loading = "lazy";
-    img.alt = e.work;
-    img.onerror = () => img.replaceWith(placeholder(e.work));
-    applyCover(img, e.cover_url);
-    return img;
-  }
-  return placeholder(e.work);
-}
-
-function placeholder(title) {
-  const d = document.createElement("div");
-  d.className = "cover placeholder";
-  d.textContent = title;
-  return d;
-}
-
 // 表紙の無い作品は、寄せ先の最新巻（cover_isbn）の表紙を /api/covers で引いて差し込む。
 async function fillMissingCovers() {
   const all = Object.values(data.windows || {}).flat();
-  const isbns = [...new Set(all.filter((e) => !e.cover_url && e.cover_isbn).map((e) => e.cover_isbn))];
-  if (!isbns.length) return;
-  let covers = {};
-  try {
-    const res = await fetch("/api/covers", {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({ isbns: isbns.slice(0, 400) }),
-    });
-    if (res.ok) covers = (await res.json()).covers || {};
-  } catch {
-    return;
-  }
+  const covers = await lookupCovers(all.filter((e) => !e.cover_url && e.cover_isbn).map((e) => e.cover_isbn));
   for (const e of all) if (!e.cover_url && covers[e.cover_isbn]) e.cover_url = covers[e.cover_isbn];
   for (const slot of document.querySelectorAll(".rank-slot")) {
     const url = covers[slot.dataset.coverIsbn];
     const ph = slot.querySelector(".cover.placeholder");
     if (!url || !ph) continue;
-    const alt = slot.querySelector(".meta .t")?.textContent || "";
-    ph.replaceWith(coverNode({ cover_url: url, work: alt }));
+    ph.replaceWith(coverNode(url, slot.querySelector(".meta .t")?.textContent || ""));
   }
 }
-
 load();

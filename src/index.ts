@@ -71,11 +71,15 @@ import {
 } from "./admin";
 import { addReport } from "./reports";
 import { requireAdmin } from "./adminAuth";
+import { currentUser, loginCallback, loginStart, logout } from "./auth";
+import { handleAccountApi } from "./account";
 import { handleRanking } from "./ranking";
+import { handleListView, handlePublicLists, purgeListViewSeen } from "./publicLists";
 import { adminSalesSnapshot, adminSalesStatus, handleSalesRanking, runSalesSnapshot } from "./salesRanking";
 import { handleSiteStats } from "./siteStats";
 import { analyticsTags, gtmBody, injectAnalytics, appVersion, affIds } from "./analytics";
 import { footerHtml } from "./footer";
+import { headerLinksHtml } from "./header";
 import { bumpPopularity } from "./popularity";
 import { Env, MangaList } from "./types";
 import { rateLimit } from "./ratelimit";
@@ -127,7 +131,13 @@ export default {
         if (path === "/api/covers") {
           const limited = await rateLimit(request, env.RL_COVERS, "covers");
           if (limited) return limited;
-        } else if (path.startsWith("/api/") && !path.startsWith("/api/admin/")) {
+        } else if (
+          path.startsWith("/api/") &&
+          !path.startsWith("/api/admin/") &&
+          // 作成中のリストの自動保存はログイン必須で 1 行 upsert なので書き込み枠に数えない
+          // （編集のたびに走るので数えると普通の編集で 429 になる）。
+          path !== "/api/me/draft"
+        ) {
           const limited = await rateLimit(request, env.RL_WRITE, "write");
           if (limited) return limited;
         }
@@ -161,6 +171,10 @@ export default {
       // 本が追加されている回数ランキング (累計 / 過去30日 / 7日 / 24時間)。
       if (path === "/api/ranking" && request.method === "GET") {
         return await handleRanking(env);
+      }
+      // 公開リスト一覧（新着 / アクセス数順）。限定公開は含めない。
+      if (path === "/api/public-lists" && request.method === "GET") {
+        return await handlePublicLists(url, env);
       }
       // 売上ランキング（楽天ブックスの売れている順の日次スナップショットを作品単位で集計）。
       if (path === "/api/sales-ranking" && request.method === "GET") {
@@ -264,13 +278,32 @@ export default {
       if (path === "/api/covers" && request.method === "POST") {
         return await resolveCoversApi(request, env);
       }
+      // --- Google ログイン（任意, src/auth.ts）と /api/me*（src/account.ts）---
+      if (path === "/auth/google/login" && request.method === "GET") {
+        return await loginStart(request, env);
+      }
+      if (path === "/auth/google/callback" && request.method === "GET") {
+        return await loginCallback(request, env);
+      }
+      if (path === "/auth/logout" && request.method === "POST") {
+        return await logout(request, env);
+      }
+      if (path === "/api/me" || path.startsWith("/api/me/")) {
+        return await handleAccountApi(request, env, path);
+      }
       if (path === "/api/lists" && request.method === "POST") {
-        const res = await createList(request, env);
+        const user = await currentUser(request, env);
+        const res = await createList(request, env, user?.id ?? null);
         if (res.ok) {
           const { slug } = (await res.clone().json()) as { slug: string };
           prewarmShareImage(env, ctx, slug, url.host);
         }
         return res;
+      }
+      // 閲覧ページのアクセス数ビーコン（src/publicLists.ts）。
+      const listViewMatch = path.match(/^\/api\/lists\/([A-Za-z0-9_-]+)\/view$/);
+      if (listViewMatch && request.method === "POST") {
+        return await handleListView(request, env, listViewMatch[1]);
       }
       const reportMatch = path.match(/^\/api\/lists\/([A-Za-z0-9_-]+)\/reports$/);
       if (reportMatch && request.method === "POST") {
@@ -563,6 +596,8 @@ export default {
         (err) => console.error("sales snapshot failed", err)
       )
     );
+    // 公開リストのアクセス数の重複判定（list_view_seen）の古い記録を消す。
+    ctx.waitUntil(purgeListViewSeen(env).catch((err) => console.error("list view purge failed", err)));
   },
 } satisfies ExportedHandler<Env>;
 
@@ -665,11 +700,13 @@ async function renderViewPage(env: Env, slug: string, origin: string, noCard = f
     .replace("<!--ANALYTICS-->", analyticsTags(env))
     .replace("<!--GTM_BODY-->", gtmBody(env))
     .replace("<!--LIST_DATA-->", injected)
+    .replace("<!--HEADER_LINKS-->", headerLinksHtml())
     .replace("<!--FOOTER_AFF-->", footerHtml(true));
 
-  return new Response(html, {
-    headers: { "content-type": "text/html; charset=utf-8" },
-  });
+  // 限定公開リストは検索エンジンに載せない（URL を知っている人だけが見る想定）。
+  const headers: Record<string, string> = { "content-type": "text/html; charset=utf-8" };
+  if (data.unlisted) headers["x-robots-tag"] = "noindex";
+  return new Response(html, { headers });
 }
 
 function buildOgp(data: MangaList, pageUrl: string, image: string, noCard = false): string {
@@ -681,15 +718,18 @@ function buildOgp(data: MangaList, pageUrl: string, image: string, noCard = fals
     .filter(Boolean)
     .join("、");
   const desc = titles ? `${titles} など${data.items.length}作品` : `${data.items.length}作品のおすすめ漫画リスト`;
+  const robots = data.unlisted ? [`<meta name="robots" content="noindex">`] : [];
 
   if (noCard) {
     return [
+      ...robots,
       `<meta name="description" content="${escapeHtml(desc)}">`,
       `<link rel="canonical" href="${escapeHtml(pageUrl)}">`,
       `<title>${escapeHtml(title)} | My 100 Manga</title>`,
     ].join("\n  ");
   }
   const tags = [
+    ...robots,
     `<meta property="og:type" content="website">`,
     `<meta property="og:site_name" content="My 100 Manga">`,
     `<meta property="og:title" content="${escapeHtml(title)}">`,

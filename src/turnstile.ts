@@ -1,5 +1,5 @@
 import { Env } from "./types";
-import { json } from "./util";
+import { clientIp, json } from "./util";
 
 // 公開書き込みのうち、ボットに連投されると困るもの（リスト公開・通報・データ修正系）を
 // Cloudflare Turnstile で守る。トークンはフロント（public/turnstile.js）が取得して
@@ -52,7 +52,7 @@ export async function verifyTurnstile(request: Request, env: Env, action: string
       body: new URLSearchParams({
         secret,
         response: token,
-        remoteip: request.headers.get("cf-connecting-ip") ?? "",
+        remoteip: clientIp(request),
       }),
     });
     if (!r.ok) return forbidden();

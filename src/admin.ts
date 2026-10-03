@@ -1,5 +1,5 @@
 import { Env, StoredListItem } from "./types";
-import { resolveBooks, resolveListItems } from "./listItems";
+import { parseStoredItems, resolveBooks, resolveListItems } from "./listItems";
 import { json, notFound, readJsonObject, toIsbn13 } from "./util";
 import { getMostCommonVolumeTitle } from "./series";
 
@@ -36,6 +36,7 @@ async function countRows(env: Env, sql: string, binds: unknown[] = []): Promise<
 interface AdminListRow {
   slug: string;
   owner_name: string;
+  unlisted: boolean;          // 限定公開（noindex・運営からの紹介対象外）
   item_count: number;
   cover_count: number;
   created_at: number;
@@ -50,7 +51,7 @@ export async function adminListLists(env: Env, opts: PageOpts): Promise<Response
   // 公開リスト一覧に publish_audit を紐づけ、直近の公開元 IP / 国 / 公開回数を併記する。
   const total = await countRows(env, `SELECT COUNT(*) AS n FROM lists`);
   const { results } = await env.DB.prepare(
-    `SELECT l.slug, l.owner_name, l.items_json, l.created_at, l.updated_at,
+    `SELECT l.slug, l.owner_name, l.unlisted, l.items_json, l.created_at, l.updated_at,
             (SELECT COUNT(*) FROM publish_audit a WHERE a.slug = l.slug) AS publish_count,
             (SELECT MAX(a.created_at) FROM publish_audit a WHERE a.slug = l.slug) AS last_published_at,
             (SELECT a.ip FROM publish_audit a WHERE a.slug = l.slug ORDER BY a.created_at DESC LIMIT 1) AS last_ip,
@@ -61,6 +62,7 @@ export async function adminListLists(env: Env, opts: PageOpts): Promise<Response
     .all<{
       slug: string;
       owner_name: string | null;
+      unlisted: number;
       items_json: string;
       created_at: number;
       updated_at: number;
@@ -71,12 +73,7 @@ export async function adminListLists(env: Env, opts: PageOpts): Promise<Response
     }>();
 
   const parsed = (results ?? []).map((row) => {
-    let items: StoredListItem[] = [];
-    try {
-      items = JSON.parse(row.items_json) as StoredListItem[];
-    } catch {
-      items = [];
-    }
+    const items = parseStoredItems(row.items_json);
     return { row, items };
   });
   // Covers are site-wide, so count them by resolving every ISBN on this page at once.
@@ -85,6 +82,7 @@ export async function adminListLists(env: Env, opts: PageOpts): Promise<Response
     return {
       slug: row.slug,
       owner_name: row.owner_name ?? "",
+      unlisted: row.unlisted === 1,
       item_count: items.length,
       cover_count: items.filter((i) => i && books.get(toIsbn13(i.isbn))?.cover_url).length,
       created_at: row.created_at,
@@ -211,6 +209,8 @@ function devToolsEnabled(env: Env): boolean {
 const DEV_RESET_TABLES = [
   "lists",
   "list_item_events",
+  "list_views",
+  "list_view_seen",
   "covers",
   "book_meta",
   "series_supplement",
@@ -228,6 +228,9 @@ const DEV_RESET_TABLES = [
   "cover_suggestion",
   "reports",
   "publish_audit",
+  "user_drafts",
+  "sessions",
+  "users",
 ];
 
 // R2 のトリム済み表紙（yahoo/*.jpg）を全消去し、消した件数を返す。D1 の covers を
@@ -271,7 +274,7 @@ export async function adminDevReset(env: Env): Promise<Response> {
 
 export async function adminGetList(env: Env, slug: string): Promise<Response> {
   const row = await env.DB.prepare(
-    `SELECT slug, edit_token, owner_name, bio, items_json, created_at, updated_at
+    `SELECT slug, edit_token, owner_name, bio, items_json, unlisted, created_at, updated_at
        FROM lists WHERE slug = ?`
   )
     .bind(slug)
@@ -281,17 +284,13 @@ export async function adminGetList(env: Env, slug: string): Promise<Response> {
       owner_name: string | null;
       bio: string | null;
       items_json: string;
+      unlisted: number;
       created_at: number;
       updated_at: number;
     }>();
   if (!row) return notFound("リストが見つかりません");
 
-  let stored: StoredListItem[] = [];
-  try {
-    stored = JSON.parse(row.items_json) as StoredListItem[];
-  } catch {
-    stored = [];
-  }
+  const stored = parseStoredItems(row.items_json);
   const items = await resolveListItems(env, stored);
 
   // 管理用途なので公開APIと違い edit_token も返す（運営者が編集リンクを再取得できる）。
@@ -303,6 +302,7 @@ export async function adminGetList(env: Env, slug: string): Promise<Response> {
         owner_name: row.owner_name ?? "",
         bio: row.bio ?? "",
         items,
+        unlisted: row.unlisted === 1,
         created_at: row.created_at,
         updated_at: row.updated_at,
       },
@@ -318,6 +318,9 @@ export async function adminDeleteList(env: Env, slug: string): Promise<Response>
   if (!deleted) return notFound("リストが見つかりません");
   // ランキングが消えたリストを数え続けないよう、追加イベントも掃除する (src/ranking.ts)。
   await env.DB.prepare(`DELETE FROM list_item_events WHERE slug = ?`).bind(slug).run();
+  // 一覧のアクセス数順 (src/publicLists.ts) の日別カウンタも同じく掃除する。
+  await env.DB.prepare(`DELETE FROM list_views WHERE slug = ?`).bind(slug).run();
+  await env.DB.prepare(`DELETE FROM list_view_seen WHERE slug = ?`).bind(slug).run();
   return json({ ok: true, slug });
 }
 
@@ -1253,12 +1256,7 @@ export async function adminListReports(
   // Item titles / covers are site-wide: resolve every referenced item's ISBN at once.
   const itemOf = (r: ReportRow): StoredListItem | undefined => {
     if (!r.items_json || r.target_type === "owner_name" || r.target_type === "bio") return undefined;
-    let items: StoredListItem[] = [];
-    try {
-      items = JSON.parse(r.items_json) as StoredListItem[];
-    } catch {
-      items = [];
-    }
+    const items = parseStoredItems(r.items_json);
     return items.find((i) => i.position === r.position) ?? items[r.position - 1];
   };
   const rowItems = (results ?? []).map(itemOf);
@@ -1392,12 +1390,7 @@ export async function adminRedactReport(env: Env, id: number): Promise<Response>
       .bind(now, rep.slug)
       .run();
   } else if (rep.target_type === "comment" || rep.target_type === "cover") {
-    let items: StoredListItem[] = [];
-    try {
-      items = JSON.parse(list.items_json) as StoredListItem[];
-    } catch {
-      items = [];
-    }
+    const items = parseStoredItems(list.items_json);
     const idx = items.findIndex((i) => i.position === rep.position);
     const target = idx >= 0 ? items[idx] : items[rep.position - 1];
     if (rep.target_type === "cover") {

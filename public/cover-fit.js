@@ -51,6 +51,44 @@
     }
   };
 
+  // 表紙 1 枚の要素。URL があれば <img>（読み込み失敗でプレースホルダに差し替え）、無ければ
+  // プレースホルダ。label はプレースホルダに出す文字（小さい枠では "" にする）。既定は title。
+  window.coverPlaceholder = function (label) {
+    var d = document.createElement("div");
+    d.className = "cover placeholder";
+    d.textContent = label || "";
+    return d;
+  };
+  window.coverNode = function (url, title, label) {
+    if (label === undefined) label = title;
+    if (!url) return window.coverPlaceholder(label);
+    var img = document.createElement("img");
+    img.className = "cover";
+    img.loading = "lazy";
+    img.alt = title || "";
+    img.onerror = function () { img.replaceWith(window.coverPlaceholder(label)); };
+    window.applyCover(img, url);
+    return img;
+  };
+
+  // ISBN → 表紙 URL を /api/covers で引く（失敗時は {}）。cacheOnly はサイト共通の表紙
+  // キャッシュだけを読む（ストア API を叩かない）。エディタの取得待ち列つきの呼び出しは
+  // app.js の fetchCovers が別に持つ。
+  window.lookupCovers = function (isbns, opts) {
+    var uniq = Array.from(new Set((isbns || []).filter(Boolean))).slice(0, 400);
+    if (!uniq.length) return Promise.resolve({});
+    var body = { isbns: uniq };
+    if (opts && opts.cacheOnly) body.cache_only = true;
+    return fetch("/api/covers", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(body),
+    })
+      .then(function (res) { return res.ok ? res.json() : {}; })
+      .then(function (data) { return data.covers || {}; })
+      .catch(function () { return {}; });
+  };
+
   function consider(img) {
     if (!isCoverImg(img) || img.dataset.cfDone) return;
     var src = img.currentSrc || img.src;

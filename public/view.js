@@ -110,6 +110,14 @@ function render(data) {
   currentSlug = data.slug || getSlug();
   const owner = data.owner_name ? `${data.owner_name}さん` : "誰か";
   $("subtitle").textContent = `${owner}を構成する${data.items.length}の漫画`;
+  // 限定公開のリストは、見ている人にも URL を知っている人向けのページだと分かるようにする。
+  if (data.unlisted) {
+    const badge = document.createElement("span");
+    badge.className = "secret-badge";
+    badge.textContent = "ないしょ";
+    badge.title = "限定公開：URLを知っている人だけが見られるリストです";
+    $("subtitle").append(" ", badge);
+  }
   if (data.owner_name) {
     $("ownerTitle").textContent = `${data.owner_name}'s`;
     $("ownerLine").hidden = false;
@@ -125,12 +133,27 @@ function render(data) {
     const rec = window.MyLists.get(data.slug);
     if (rec) token = rec.token;
   }
-  if (token) {
+  const showEdit = (t) => {
     const btn = $("editLink");
     btn.style.display = "";
     btn.addEventListener("click", () => {
-      location.href = `/?edit=${data.slug}&t=${encodeURIComponent(token)}`;
+      location.href = `/?edit=${data.slug}&t=${encodeURIComponent(t)}`;
     });
+  };
+  // アクセス数のビーコン（src/publicLists.ts）。作者本人の閲覧は数えない。
+  const countView = () =>
+    fetch(`/api/lists/${encodeURIComponent(data.slug)}/view`, { method: "POST", keepalive: true }).catch(() => {});
+  if (token) {
+    showEdit(token);
+  } else if (window.Account) {
+    // ログイン中なら、アカウントに紐付いたリストは別の端末からでも編集できる。
+    window.Account.lists().then((lists) => {
+      const own = lists.find((l) => l.slug === data.slug);
+      if (own) showEdit(own.edit_token);
+      else countView();
+    }, countView);
+  } else {
+    countView();
   }
 
   if (data.owner_name) {
@@ -170,17 +193,7 @@ function render(data) {
     }
     if (badges.children.length) slot.appendChild(badges);
 
-    if (it.cover_url) {
-      const img = document.createElement("img");
-      img.className = "cover";
-      img.loading = "lazy";
-      img.alt = it.title;
-      img.onerror = () => img.replaceWith(placeholder(it.title));
-      applyCover(img, it.cover_url);
-      slot.appendChild(img);
-    } else {
-      slot.appendChild(placeholder(it.title));
-    }
+    slot.appendChild(coverNode(it.cover_url, it.title));
 
     const meta = document.createElement("div");
     meta.className = "meta";
@@ -272,31 +285,9 @@ function openDetail(it, index) {
   $("detailModal").classList.add("open");
 }
 
-function setMetaRow(rowId, valueId, text) {
-  const has = !!text;
-  $(rowId).style.display = has ? "" : "none";
-  if (has) $(valueId).textContent = text;
-}
 
 // 「画像参考元」の行。出品元が分かればそのページへのリンクにする（public/affiliate.js
 // coverSourceLink）。
-function setSourceRow(rowId, valueId, coverUrl, isbn) {
-  const src = window.coverSourceLink ? window.coverSourceLink(coverUrl, isbn) : null;
-  $(rowId).style.display = src ? "" : "none";
-  if (!src) return;
-  const dd = $(valueId);
-  dd.textContent = "";
-  if (!src.url) {
-    dd.textContent = src.label;
-    return;
-  }
-  const a = document.createElement("a");
-  a.href = src.url;
-  a.target = "_blank";
-  a.rel = "noopener sponsored";
-  a.textContent = src.label;
-  dd.appendChild(a);
-}
 
 // Fetch richer metadata (all authors, publisher, 発行日, あらすじ) for a book and
 // fill the popup — but only if it's still the one on screen (seq guard).
@@ -490,13 +481,6 @@ function wireDetailModal() {
   document.addEventListener("click", (e) => {
     if (!$("reportMenu").contains(e.target)) closeReportMenu();
   });
-}
-
-function placeholder(title) {
-  const d = document.createElement("div");
-  d.className = "cover placeholder";
-  d.textContent = title;
-  return d;
 }
 
 wireDetailModal();

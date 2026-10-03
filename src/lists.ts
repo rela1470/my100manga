@@ -1,6 +1,7 @@
 import { Env, MangaList, StoredListItem } from "./types";
 import {
   badRequest,
+  clientIp,
   json,
   MAX_CUSTOM_SLUG,
   normalizeCustomSlug,
@@ -10,7 +11,7 @@ import {
   toIsbn13,
 } from "./util";
 import { checkListContent } from "./ngwords";
-import { resolveListItems } from "./listItems";
+import { parseStoredItems, resolveListItems } from "./listItems";
 
 const REQUIRED_ITEMS = 100;
 const MAX_COMMENT = 200;
@@ -83,10 +84,7 @@ async function recordPublishAudit(
   action: "create" | "update",
   owner_name: string
 ): Promise<void> {
-  const ip =
-    request.headers.get("cf-connecting-ip") ??
-    request.headers.get("x-forwarded-for")?.split(",")[0]?.trim() ??
-    "";
+  const ip = clientIp(request);
   const user_agent = (request.headers.get("user-agent") ?? "").slice(0, 512);
   const country = (request as { cf?: { country?: string } }).cf?.country ?? "";
   try {
@@ -101,7 +99,9 @@ async function recordPublishAudit(
   }
 }
 
-export async function createList(request: Request, env: Env): Promise<Response> {
+/** userId はログイン中ならそのアカウント（リストを紐付ける）、匿名なら null。編集権限は
+ *  どちらでも edit_token で、ログイン中のユーザには /api/me/lists がそれを返す。 */
+export async function createList(request: Request, env: Env, userId: string | null): Promise<Response> {
   const body = (await request.json().catch(() => null)) as Record<string, unknown> | null;
   if (!body) return badRequest("不正なリクエストです");
 
@@ -115,13 +115,14 @@ export async function createList(request: Request, env: Env): Promise<Response> 
   const ngError = checkListContent(owner_name, bio, items.map((it) => it.comment));
   if (ngError) return badRequest(ngError);
 
+  const unlisted = body.unlisted === true ? 1 : 0;
   const edit_token = randomToken(24);
   const items_json = JSON.stringify(items);
   const now = Date.now();
 
   const insert = env.DB.prepare(
-    `INSERT INTO lists (slug, edit_token, owner_name, bio, items_json, created_at, updated_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?)`
+    `INSERT INTO lists (slug, edit_token, owner_name, bio, items_json, created_at, updated_at, user_id, unlisted)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
   );
 
   // slug 未指定ならランダム、指定ありならユーザ指定を検証して使う。
@@ -134,7 +135,7 @@ export async function createList(request: Request, env: Env): Promise<Response> 
     const existing = await env.DB.prepare(`SELECT 1 FROM lists WHERE slug = ?`).bind(slug).first();
     if (existing) return json({ error: "このURLはすでに使われています" }, 409);
     try {
-      await insert.bind(slug, edit_token, owner_name, bio, items_json, now, now).run();
+      await insert.bind(slug, edit_token, owner_name, bio, items_json, now, now, userId, unlisted).run();
     } catch (err) {
       // UNIQUE 制約に引っかかった場合（並行作成での競合）も衝突として返す。
       return json({ error: "このURLはすでに使われています" }, 409);
@@ -148,7 +149,7 @@ export async function createList(request: Request, env: Env): Promise<Response> 
   for (let attempt = 0; attempt < 5; attempt++) {
     const slug = randomSlug(10);
     try {
-      await insert.bind(slug, edit_token, owner_name, bio, items_json, now, now).run();
+      await insert.bind(slug, edit_token, owner_name, bio, items_json, now, now, userId, unlisted).run();
       await recordPublishAudit(request, env, slug, "create", owner_name);
       await recordItemAddEvents(env, slug, items, now);
       return json({ slug, edit_token }, 201);
@@ -165,13 +166,14 @@ interface StoredList {
   owner_name: string;
   bio: string;
   items: StoredListItem[];
+  unlisted: boolean;
   created_at: number;
   updated_at: number;
 }
 
 async function loadList(env: Env, slug: string): Promise<StoredList | null> {
   const row = await env.DB.prepare(
-    `SELECT slug, edit_token, owner_name, bio, items_json, created_at, updated_at FROM lists WHERE slug = ?`
+    `SELECT slug, edit_token, owner_name, bio, items_json, unlisted, created_at, updated_at FROM lists WHERE slug = ?`
   )
     .bind(slug)
     .first<{
@@ -180,22 +182,19 @@ async function loadList(env: Env, slug: string): Promise<StoredList | null> {
       owner_name: string;
       bio: string | null;
       items_json: string;
+      unlisted: number;
       created_at: number;
       updated_at: number;
     }>();
   if (!row) return null;
-  let items: StoredListItem[] = [];
-  try {
-    items = JSON.parse(row.items_json) as StoredListItem[];
-  } catch {
-    items = [];
-  }
+  const items = parseStoredItems(row.items_json);
   return {
     slug: row.slug,
     edit_token: row.edit_token,
     owner_name: row.owner_name,
     bio: row.bio ?? "",
     items,
+    unlisted: row.unlisted === 1,
     created_at: row.created_at,
     updated_at: row.updated_at,
   };
@@ -243,15 +242,16 @@ export async function updateList(request: Request, env: Env, slug: string): Prom
   const owner_name = stripUrls(String(body.owner_name ?? list.owner_name)).slice(0, MAX_NAME);
   // bio を送らない古いクライアント（キャッシュ済み app.js）で消さないよう、未指定なら現状維持。
   const bio = body.bio === undefined ? list.bio : sanitizeBio(body.bio);
+  const unlisted = body.unlisted === undefined ? list.unlisted : body.unlisted === true;
   const ngError = checkListContent(owner_name, bio, items.map((it) => it.comment));
   if (ngError) return badRequest(ngError);
 
   const now = Date.now();
 
   await env.DB.prepare(
-    `UPDATE lists SET owner_name = ?, bio = ?, items_json = ?, updated_at = ? WHERE slug = ?`
+    `UPDATE lists SET owner_name = ?, bio = ?, items_json = ?, unlisted = ?, updated_at = ? WHERE slug = ?`
   )
-    .bind(owner_name, bio, JSON.stringify(items), now, slug)
+    .bind(owner_name, bio, JSON.stringify(items), unlisted ? 1 : 0, now, slug)
     .run();
 
   await recordPublishAudit(request, env, slug, "update", owner_name);

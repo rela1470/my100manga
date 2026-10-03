@@ -28,6 +28,7 @@ const state = {
   published: null, // {owner, bio, items} snapshot of the server (公開) state, for diff/もとに戻す
 
   customSlug: "", // user-chosen slug for a new list ("" = random)
+  unlisted: false, // 限定公開: noindex にし、運営からの紹介対象にしない（URL を知っていれば見られる）
   fetchingCovers: false, // true while the "表紙を取得" bulk fill is running
   coverTried: new Set(), // isbns already fetched this session (miss or hit) — don't re-offer
   reorder: false, // true while in reorder mode (tap = select, not edit)
@@ -50,6 +51,9 @@ async function init() {
   render();
   syncCovers();
   renderMyLists();
+  syncServerDraft();
+  window.Account?.onBeforeLogout(flushServerDraft);
+  document.addEventListener("my100manga:account-lists", () => renderMyLists());
   loadSiteStats();
   wireEvents();
   openSeriesFromUrl(params);
@@ -123,41 +127,167 @@ async function loadSiteStats() {
   }
 }
 
-/* ---------- "lists published from this browser" recovery section ---------- */
-function renderMyLists() {
+/* ---------- 自分のリスト（アカウント + このブラウザで公開したもの） ---------- */
+// ログイン中はアカウントに紐付いた公開リスト（どの端末からでも編集できる）を出し、
+// 紐付かなかったこの端末の記録（別アカウントのもの等）も並べる。未ログインなら従来どおり
+// このブラウザの記録だけで、編集リンクを無くしても戻れるようにする。
+// 公開済みリストの編集中は、作成中のリスト（新規の下書き）へ戻る導線も出す。
+let myListsSeq = 0;
+async function renderMyLists() {
   const box = $("myLists");
   if (!box || !window.MyLists) return;
-  // Hide the one we're currently editing — its edit link is already the page.
-  const recs = window.MyLists.all().filter((r) => r.slug !== state.editSlug);
+  const seq = ++myListsSeq;
+  const me = window.Account ? await window.Account.ready : { enabled: false, user: null };
+  const accountLists = me.user ? await window.Account.lists() : [];
+  if (seq !== myListsSeq) return; // 待っている間に描き直しが走った
+
+  const owned = new Set(accountLists.map((l) => l.slug));
+  renderClaimBar(me, owned);
+  const notEditing = (r) => r.slug !== state.editSlug; // 編集中のものはこのページ自体が編集画面
+  const accountRecs = accountLists
+    .map((l) => ({ slug: l.slug, token: l.edit_token, owner: l.owner_name, account: true }))
+    .filter(notEditing);
+  // ログイン中にここへ残るのは紐付けられなかった記録（編集リンクが古い・別アカウントのもの等）。
+  // アカウントのリストと混ぜると「保存されている」と誤解されるので、ログイン中は別枠で出す。
+  const localRecs = window.MyLists.all().filter((r) => !owned.has(r.slug)).filter(notEditing);
+  const draft = state.editSlug ? readLocalDraft() : null;
+  const draftCount = draft && Array.isArray(draft.items) ? draft.items.length : 0;
+
   box.innerHTML = "";
-  if (!recs.length) { box.style.display = "none"; return; }
+  const any = accountRecs.length || localRecs.length || draftCount;
+  if (!any && !(me.enabled && !me.user)) { box.style.display = "none"; return; }
   box.style.display = "";
 
-  const h = document.createElement("h2");
-  h.className = "mylists-title";
-  h.textContent = "このブラウザで公開したリスト";
-  box.appendChild(h);
+  const heading = (tag, text) => {
+    const h = document.createElement(tag);
+    h.className = "mylists-title";
+    h.textContent = text;
+    box.appendChild(h);
+  };
+  const noteEl = (text) => {
+    const note = document.createElement("p");
+    note.className = "mylists-note";
+    note.textContent = text;
+    box.appendChild(note);
+    return note;
+  };
+  const listEl = (recs, withDraft) => {
+    const ul = document.createElement("ul");
+    ul.className = "mylists-list";
+    if (withDraft && draftCount) ul.appendChild(draftRow(draftCount));
+    recs.forEach((r) => ul.appendChild(myListRow(r)));
+    if (ul.children.length) box.appendChild(ul);
+  };
 
-  const note = document.createElement("p");
-  note.className = "mylists-note";
-  note.textContent = "編集リンクを無くしても、ここから編集画面に戻れます。";
-  box.appendChild(note);
+  if (me.user) {
+    heading("h2", "あなたのリスト");
+    noteEl(
+      accountRecs.length || draftCount
+        ? "Googleアカウントに保存されています。どの端末からでも編集できます。"
+        : "アカウントに保存された公開リストはまだありません。ログイン中に公開したリストはここに出ます。"
+    );
+    listEl(accountRecs, true);
+    if (localRecs.length) {
+      heading("h3", "この端末だけに記録されているリスト");
+      noteEl(
+        "アカウントに紐付いていないリストです。この端末のデータを初期化すると一覧から消えます。"
+      );
+      const claimBtn = document.createElement("button");
+      claimBtn.type = "button";
+      claimBtn.className = "ml-claim";
+      claimBtn.textContent = "アカウントに紐付ける";
+      claimBtn.addEventListener("click", () => window.Account.promptClaim());
+      box.appendChild(claimBtn);
+      listEl(localRecs, false);
+    }
+    return;
+  }
 
-  const ul = document.createElement("ul");
-  ul.className = "mylists-list";
-  recs.forEach((r) => {
-    const li = document.createElement("li");
+  heading("h2", localRecs.length ? "このブラウザで公開したリスト" : "あなたのリスト");
+  const note = noteEl(localRecs.length ? "編集リンクを無くしても、ここから編集画面に戻れます。" : "");
+  if (me.enabled) {
+    const login = document.createElement("a");
+    login.href = window.Account.loginUrl();
+    login.textContent = "Googleでログイン";
+    note.append(note.textContent ? " " : "", login, "すると、作成中のリストと公開したリストをどの端末からでも編集できます。");
+  }
+  listEl(localRecs, true);
+}
 
-    const view = document.createElement("a");
-    view.className = "ml-view";
-    view.href = `/l/${r.slug}`;
-    view.textContent = r.owner ? `${r.owner}さんの100作品` : "無題の100作品";
+// 編集 URL を直接開いた時、そのリストがアカウントに無ければ「アカウントに追加」を出す。
+// 未ログインならログインへ誘導し、戻ってきた（同じ編集 URL）ところでボタンを押してもらう。
+function renderClaimBar(me, owned) {
+  const bar = $("claimBar");
+  if (!bar) return;
+  bar.innerHTML = "";
+  const show = me.enabled && state.editSlug && state.editToken && !owned.has(state.editSlug);
+  bar.style.display = show ? "" : "none";
+  if (!show) return;
+  const text = document.createElement("span");
+  text.textContent = "このリストはアカウントに入っていません。";
+  bar.appendChild(text);
+  if (!me.user) {
+    const login = document.createElement("a");
+    login.className = "ml-edit";
+    login.href = window.Account.loginUrl();
+    login.textContent = "Googleでログインして追加";
+    bar.appendChild(login);
+    return;
+  }
+  const btn = document.createElement("button");
+  btn.type = "button";
+  btn.className = "primary";
+  btn.textContent = "アカウントに追加";
+  btn.addEventListener("click", async () => {
+    btn.disabled = true;
+    const slug = state.editSlug;
+    const results = await window.Account.claim([{ slug, token: state.editToken }]);
+    const r = results[slug];
+    if (r === "claimed" || r === "mine") {
+      window.MyLists?.save({ slug, token: state.editToken, owner: state.owner });
+      uiAlert("アカウントに追加しました。どの端末からでも編集できます。");
+    } else {
+      btn.disabled = false;
+      uiAlert(
+        r === "other" ? "このリストは別のアカウントに紐付いています。"
+        : r === "mismatch" ? "編集リンクが古くなっているため追加できません。"
+        : r === "not_found" ? "このリストは削除されています。"
+        : "追加に失敗しました。時間をおいてもう一度お試しください。"
+      );
+    }
+  });
+  bar.appendChild(btn);
+}
 
-    const edit = document.createElement("a");
-    edit.className = "ml-edit";
-    edit.href = `/?edit=${r.slug}&t=${encodeURIComponent(r.token)}`;
-    edit.textContent = "編集する";
+function draftRow(count) {
+  const li = document.createElement("li");
+  const label = document.createElement("span");
+  label.className = "ml-view";
+  label.textContent = `作成中のリスト（${count}作品）`;
+  const cont = document.createElement("a");
+  cont.className = "ml-edit";
+  cont.href = "/";
+  cont.textContent = "続きを作る";
+  li.append(label, cont);
+  return li;
+}
 
+function myListRow(r) {
+  const li = document.createElement("li");
+
+  const view = document.createElement("a");
+  view.className = "ml-view";
+  view.href = `/l/${r.slug}`;
+  view.textContent = r.owner ? `${r.owner}さんの100作品` : "無題の100作品";
+
+  const edit = document.createElement("a");
+  edit.className = "ml-edit";
+  edit.href = `/?edit=${r.slug}&t=${encodeURIComponent(r.token)}`;
+  edit.textContent = "編集する";
+
+  li.appendChild(view);
+  li.appendChild(edit);
+  if (!r.account) {
     const del = document.createElement("button");
     del.type = "button";
     del.className = "ml-del";
@@ -169,13 +299,9 @@ function renderMyLists() {
       window.MyLists.remove(r.slug);
       renderMyLists();
     });
-
-    li.appendChild(view);
-    li.appendChild(edit);
     li.appendChild(del);
-    ul.appendChild(li);
-  });
-  box.appendChild(ul);
+  }
+  return li;
 }
 
 // ISBN-10 / ハイフン付きを ISBN-13 に揃える（サーバ src/util.ts toIsbn13 と同じ）。公開データの
@@ -211,6 +337,7 @@ async function loadExisting(slug, token) {
     const data = await res.json();
     state.owner = data.owner_name || "";
     state.bio = data.bio || "";
+    state.unlisted = !!data.unlisted;
     state.editSlug = slug;
     state.editToken = token;
     state.items = (data.items || []).map(normItem);
@@ -324,7 +451,96 @@ function saveDraft() {
       );
       return;
     }
-    localStorage.setItem(DRAFT_KEY, JSON.stringify({ owner: state.owner, bio: state.bio, items: state.items }));
+    localStorage.setItem(
+      DRAFT_KEY,
+      JSON.stringify({ owner: state.owner, bio: state.bio, items: state.items, savedAt: Date.now() })
+    );
+  } catch (e) {}
+  if (!state.editSlug) scheduleServerDraft();
+}
+
+/* ---------- 作成中のリストのサーバ同期（ログイン中のみ, src/account.ts） ---------- */
+// 新規作成の下書き（DRAFT_KEY）をアカウントに 1 件だけ保存し、別の端末でも続きを作れる
+// ようにする。localStorage が正で、変更のたびに少し待ってまとめて送る。端末間の新旧は
+// 下書きの savedAt で決める（サーバも古い savedAt での上書きは無視する）。
+// 公開済みリストの編集中の下書き（editDraftKey）は端末ローカルのまま。
+const SERVER_DRAFT_DELAY_MS = 2000;
+let serverDraftTimer = null;
+
+function readLocalDraft() {
+  try {
+    return JSON.parse(localStorage.getItem(DRAFT_KEY) || "null");
+  } catch (e) {
+    return null;
+  }
+}
+
+async function loggedIn() {
+  return !!(window.Account && (await window.Account.ready).user);
+}
+
+function scheduleServerDraft() {
+  clearTimeout(serverDraftTimer);
+  serverDraftTimer = setTimeout(pushServerDraft, SERVER_DRAFT_DELAY_MS);
+}
+
+async function pushServerDraft() {
+  clearTimeout(serverDraftTimer);
+  serverDraftTimer = null;
+  if (!(await loggedIn())) return;
+  const d = readLocalDraft();
+  if (!d || !d.savedAt) return;
+  try {
+    await fetch("/api/me/draft", {
+      method: "PUT",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ owner: d.owner || "", bio: d.bio || "", items: d.items || [], savedAt: d.savedAt }),
+    });
+  } catch (e) {}
+}
+
+// 送信待ちがあれば今すぐ送る（ログアウト前など）。
+async function flushServerDraft() {
+  if (serverDraftTimer) await pushServerDraft();
+}
+
+// 開いた時に、サーバの下書きがこの端末のより新しければそちらを使い、古ければ（または
+// サーバに無ければ）この端末の下書きを送る。取得中に編集が始まっていたら savedAt が
+// 新しくなるので、この端末の方が勝つ。
+async function syncServerDraft() {
+  if (state.editSlug || !(await loggedIn())) return;
+  let server = null;
+  try {
+    const res = await fetch("/api/me/draft");
+    if (!res.ok) return;
+    server = (await res.json()).draft;
+  } catch (e) {
+    return;
+  }
+  if (state.editSlug) return;
+  const local = readLocalDraft();
+  const localAt = (local && local.savedAt) || 0;
+  if (server && server.savedAt > localAt) {
+    state.owner = server.owner || "";
+    state.bio = server.bio || "";
+    state.items = (server.items || []).filter(Boolean).map(normItem);
+    try {
+      localStorage.setItem(DRAFT_KEY, JSON.stringify({ ...server, items: state.items }));
+    } catch (e) {}
+    render();
+    syncCovers();
+    renderMyLists();
+  } else if (local && localAt && (!server || localAt > server.savedAt)) {
+    pushServerDraft();
+  }
+}
+
+async function deleteServerDraft() {
+  clearTimeout(serverDraftTimer);
+  serverDraftTimer = null;
+  if (!(await loggedIn())) return;
+  try {
+    await fetch("/api/me/draft", { method: "DELETE" });
   } catch (e) {}
 }
 // ISBN のある本の表紙はサイト共通（covers）なので、下書きに残った表紙は古いことがある
@@ -334,18 +550,7 @@ function saveDraft() {
 async function syncCovers() {
   const isbns = [...new Set(state.items.map((it) => it.isbn).filter(Boolean))];
   if (!isbns.length) return;
-  let covers = {};
-  try {
-    const res = await fetch("/api/covers", {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({ isbns, cache_only: true }),
-    });
-    if (!res.ok) return;
-    covers = (await res.json()).covers || {};
-  } catch {
-    return;
-  }
+  const covers = await lookupCovers(isbns, { cacheOnly: true });
   let changed = false;
   for (const it of state.items) {
     const url = it.isbn && covers[it.isbn];
@@ -525,17 +730,7 @@ function appendCoverMeta(slot, it) {
     badges.appendChild(b);
   }
   if (badges.children.length) slot.appendChild(badges);
-  if (it.cover_url) {
-    const img = document.createElement("img");
-    img.className = "cover";
-    img.loading = "lazy";
-    img.alt = it.title;
-    img.onerror = () => { img.replaceWith(placeholderCover(it.title)); };
-    applyCover(img, it.cover_url);
-    slot.appendChild(img);
-  } else {
-    slot.appendChild(placeholderCover(it.title));
-  }
+  slot.appendChild(coverNode(it.cover_url, it.title));
   const meta = document.createElement("div");
   meta.className = "meta";
   const t = document.createElement("div");
@@ -637,13 +832,6 @@ function numBadge(index) {
   num.className = "num";
   num.textContent = String(index + 1);
   return num;
-}
-
-function placeholderCover(title) {
-  const d = document.createElement("div");
-  d.className = "cover placeholder";
-  d.textContent = title;
-  return d;
 }
 
 /* ---------- add / search modal ---------- */
@@ -806,31 +994,9 @@ function renderCoverInto(box, book) {
   }
 }
 
-function setMetaRow(rowId, valueId, text) {
-  const has = !!text;
-  $(rowId).style.display = has ? "" : "none";
-  if (has) $(valueId).textContent = text;
-}
 
 // 「画像参考元」の行。出品元が分かればそのページへのリンクにする（public/affiliate.js
 // coverSourceLink）。
-function setSourceRow(rowId, valueId, coverUrl, isbn) {
-  const src = window.coverSourceLink ? window.coverSourceLink(coverUrl, isbn) : null;
-  $(rowId).style.display = src ? "" : "none";
-  if (!src) return;
-  const dd = $(valueId);
-  dd.textContent = "";
-  if (!src.url) {
-    dd.textContent = src.label;
-    return;
-  }
-  const a = document.createElement("a");
-  a.href = src.url;
-  a.target = "_blank";
-  a.rel = "noopener sponsored";
-  a.textContent = src.label;
-  dd.appendChild(a);
-}
 
 // Fetch richer metadata (all authors, publisher, 発行日, あらすじ) and fill the
 // popup — but only if it's still the one on screen (seq guard).
@@ -3345,6 +3511,8 @@ function openPublishModal() {
   }
   $("ownerInput").value = state.owner || "";
   $("bioInput").value = state.bio || "";
+  $("publicInput").checked = !state.unlisted;
+  updatePublicHint();
   // お好みURLは新規公開時のみ。既存リストの更新では slug は変えられない。
   const slugField = $("slugField");
   if (slugField) {
@@ -3356,6 +3524,16 @@ function openPublishModal() {
   }
   $("publishModal").classList.add("open");
   $("ownerInput").focus();
+}
+
+// できるだけ「みんなに公開」を選んでもらいたいので、オンの利点を前に出し、
+// オフ（限定公開）は何ができなくなるかを淡々と書く。
+function updatePublicHint() {
+  const on = $("publicInput").checked;
+  $("publicLabel").textContent = on ? "みんなに公開する" : "限定公開（URLを知っている人だけ）";
+  $("publicHint").textContent = on
+    ? "検索からも見つけてもらえるようになり、運営がサイトやSNSでおすすめのリストとして紹介することがあります。あなたの100冊を、まだ知らない誰かに届けましょう。"
+    : "検索エンジンに表示されず、運営からの紹介もしません。URLを送った相手には見てもらえます。";
 }
 
 function confirmPublish() {
@@ -3381,6 +3559,7 @@ function confirmPublish() {
   }
   state.owner = name.slice(0, 40);
   state.bio = bio.slice(0, 100);
+  state.unlisted = !$("publicInput").checked;
   $("publishModal").classList.remove("open");
   doPublish();
 }
@@ -3398,7 +3577,7 @@ async function doPublish() {
       res = await fetch(`/api/lists/${state.editSlug}`, {
         method: "PUT",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({ owner_name: state.owner, bio: state.bio, items, edit_token: state.editToken }),
+        body: JSON.stringify({ owner_name: state.owner, bio: state.bio, unlisted: state.unlisted, items, edit_token: state.editToken }),
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data.error || "更新に失敗しました");
@@ -3406,9 +3585,10 @@ async function doPublish() {
       // What we just PUT is now the 公開状態 — rebase the diff on it.
       state.published = { owner: state.owner, bio: state.bio, items: items.map(normItem) };
       window.MyLists?.save({ slug: state.editSlug, token: state.editToken, owner: state.owner });
+      window.Account?.refreshLists();
       showShare(state.editSlug, state.editToken);
     } else {
-      const payload = { owner_name: state.owner, bio: state.bio, items };
+      const payload = { owner_name: state.owner, bio: state.bio, unlisted: state.unlisted, items };
       if (state.customSlug) payload.slug = state.customSlug;
       res = await fetch(`/api/lists`, {
         method: "POST",
@@ -3422,6 +3602,8 @@ async function doPublish() {
       state.customSlug = "";
       window.MyLists?.save({ slug: data.slug, token: data.edit_token, owner: state.owner });
       try { localStorage.removeItem(DRAFT_KEY); } catch (e) {}
+      deleteServerDraft();
+      window.Account?.refreshLists();
       showShare(data.slug, data.edit_token);
     }
   } catch (e) {
@@ -3461,6 +3643,7 @@ function wireEvents() {
   $("reorderDone").addEventListener("click", toggleReorder);
   $("publish").addEventListener("click", openPublishModal);
   $("confirmPublish").addEventListener("click", confirmPublish);
+  $("publicInput").addEventListener("change", updatePublicHint);
   $("cancelPublish").addEventListener("click", () => $("publishModal").classList.remove("open"));
   $("ownerInput").addEventListener("keydown", (e) => { if (e.key === "Enter" && !e.isComposing) confirmPublish(); });
   $("cancelSearch").addEventListener("click", closeSearch);

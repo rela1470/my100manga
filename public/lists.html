@@ -1,0 +1,40 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>みんなのリスト | My 100 Manga</title>
+  <meta name="description" content="My 100 Manga で公開された「私を構成する100の漫画」の一覧。新着順と、今日・7日間・30日間・累計のアクセス数順で見られます。">
+  <!--ANALYTICS-->
+  <link rel="stylesheet" href="/styles.css">
+</head>
+<body>
+  <!--GTM_BODY-->
+  <header class="site">
+    <h1><a class="site-logo" href="/">My <span class="accent">100</span> Manga</a></h1>
+    <p class="tagline">みんなのリスト ― 誰かを構成する100の漫画</p>
+    <!--HEADER_LINKS-->
+  </header>
+
+  <div class="wrap">
+    <div class="rank-tabs" id="tabs"></div>
+    <p class="rank-note" id="note"></p>
+    <div class="plist-grid" id="list" aria-label="公開リスト一覧"></div>
+    <p class="rank-empty" id="empty" hidden>まだ公開されたリストはありません。</p>
+    <div class="pager" id="pager" hidden>
+      <button id="prev">前へ</button>
+      <span class="pager-info" id="pageInfo"></span>
+      <button id="next">次へ</button>
+    </div>
+
+    <div class="publish-bar">
+      <a href="/"><button class="primary">自分の100を作る</button></a>
+    </div>
+  </div>
+
+  <!--FOOTER-->
+
+  <script src="/cover-fit.js"></script>
+  <script src="/lists.js"></script>
+</body>
+</html>

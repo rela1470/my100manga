@@ -13,7 +13,7 @@
   <header class="site">
     <h1>My <span class="accent">100</span> Manga</h1>
     <p class="tagline">私を構成する100の漫画を選んで、URLで共有しよう</p>
-    <a class="header-link" href="/sales-ranking"><span class="header-link-icon" aria-hidden="true">👑</span>売上ランキング</a>
+    <!--HEADER_LINKS-->
   </header>
 
   <div class="wrap">
@@ -25,6 +25,8 @@
         <button id="topSearchBtn">検索</button>
       </div>
     </div>
+
+    <div class="claim-bar" id="claimBar" style="display:none"></div>
 
     <div class="grid" id="grid" aria-label="100作品グリッド"></div>
 
@@ -177,6 +179,12 @@
           <input type="text" id="slugInput" placeholder="my-best-100" maxlength="15" pattern="[a-zA-Z0-9_-]+" autocapitalize="off" autocorrect="off" spellcheck="false">
         </div>
       </div>
+      <label class="switch-row">
+        <input type="checkbox" role="switch" id="publicInput" checked>
+        <span class="switch" aria-hidden="true"></span>
+        <span id="publicLabel">みんなに公開する</span>
+      </label>
+      <p class="hint" id="publicHint"></p>
       <div class="modal-actions">
         <div style="flex:1"></div>
         <button id="cancelPublish">キャンセル</button>
@@ -199,7 +207,7 @@
         <input type="text" id="editUrl" readonly>
         <button id="copyEdit">コピー</button>
       </div>
-      <p class="hint">Xでシェア（100冊を1枚にした画像付き）</p>
+      <p class="hint">SNSでシェア（画像は100冊を1枚か、25冊ずつ4枚から選べます）</p>
       <div class="share-x">
         <button class="x-post" id="shareXPost">𝕏 でポスト</button>
         <button id="shareXImage">画像でポスト</button>
@@ -243,6 +251,7 @@
   <script src="/cover-fit.js"></script>
   <script src="/affiliate.js"></script>
   <script src="/mylists.js"></script>
+  <script src="/account.js"></script>
   <script src="/share-x.js"></script>
   <script src="/app.js"></script>
 </body>

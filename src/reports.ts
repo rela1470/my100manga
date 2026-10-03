@@ -1,5 +1,5 @@
 import { Env, StoredListItem } from "./types";
-import { resolveBooks } from "./listItems";
+import { parseStoredItems, resolveBooks } from "./listItems";
 import { badRequest, json, notFound, readJsonObject } from "./util";
 
 // 自由入力（owner_name / bio / item.comment）に対する一般ユーザからの通報。アカウント無しの
@@ -10,15 +10,6 @@ interface ListRow {
   owner_name: string | null;
   bio: string | null;
   items_json: string;
-}
-
-function parseItems(json: string): StoredListItem[] {
-  try {
-    const v = JSON.parse(json);
-    return Array.isArray(v) ? (v as StoredListItem[]) : [];
-  } catch {
-    return [];
-  }
 }
 
 export async function addReport(request: Request, env: Env, slug: string): Promise<Response> {
@@ -49,7 +40,7 @@ export async function addReport(request: Request, env: Env, slug: string): Promi
     targetType = "comment";
     const pos = typeof body.position === "number" ? body.position : Number(body.position);
     if (!Number.isInteger(pos) || pos < 1) return badRequest("対象の位置が不正です");
-    const items = parseItems(row.items_json);
+    const items = parseStoredItems(row.items_json);
     const item = items.find((i) => i.position === pos) ?? items[pos - 1];
     reportedText = (item?.comment ?? "").trim();
     if (!reportedText) return badRequest("通報できるコメントがありません");
@@ -58,7 +49,7 @@ export async function addReport(request: Request, env: Env, slug: string): Promi
     targetType = "cover";
     const pos = typeof body.position === "number" ? body.position : Number(body.position);
     if (!Number.isInteger(pos) || pos < 1) return badRequest("対象の位置が不正です");
-    const items = parseItems(row.items_json);
+    const items = parseStoredItems(row.items_json);
     const item = items.find((i) => i.position === pos) ?? items[pos - 1];
     // Covers are site-wide (one per ISBN), so snapshot the cover this book shows now.
     const book = item?.isbn ? (await resolveBooks(env, [item.isbn])).values().next().value : undefined;

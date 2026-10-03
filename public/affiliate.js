@@ -144,6 +144,31 @@
     return s ? "https://search.rakuten.co.jp/search/mall/" + encodeURIComponent(s) + "/" : "";
   }
 
+  // 本の詳細ポップアップの行（エディタ app.js・閲覧 view.js 共通）。値が無ければ行ごと隠す。
+  window.setMetaRow = function (rowId, valueId, text) {
+    var has = !!text;
+    document.getElementById(rowId).style.display = has ? "" : "none";
+    if (has) document.getElementById(valueId).textContent = text;
+  };
+  // 「画像参考元」の行。coverSourceLink の結果を出し、リンク先があればアフィリンクにする。
+  window.setSourceRow = function (rowId, valueId, coverUrl, isbn) {
+    var src = window.coverSourceLink(coverUrl, isbn);
+    document.getElementById(rowId).style.display = src ? "" : "none";
+    if (!src) return;
+    var dd = document.getElementById(valueId);
+    dd.textContent = "";
+    if (!src.url) {
+      dd.textContent = src.label;
+      return;
+    }
+    var a = document.createElement("a");
+    a.href = src.url;
+    a.target = "_blank";
+    a.rel = "noopener sponsored";
+    a.textContent = src.label;
+    dd.appendChild(a);
+  };
+
   // 「画像参考元」: which site a cover image comes from, inferred from its URL, plus a
   // link to where it's listed (affiliate-wrapped like the buy links when ids are set).
   // { label, url } — url "" when there's nothing sensible to link to; null when no cover.

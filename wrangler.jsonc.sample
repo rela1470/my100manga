@@ -17,10 +17,13 @@
   "assets": {
     "directory": "./public",
     "binding": "ASSETS",
-    // admin の HTML（/admin, /admin.html）は Static Assets が Worker より先に配信
-    // してしまい src/adminAuth.ts のガードを素通りする。該当パスだけ Worker を先に
-    // 走らせて認証を効かせる（/api/admin/* は資産に無いので保険）。
-    "run_worker_first": ["/admin", "/admin.html", "/api/admin/*"]
+    // 全リクエストで Worker を先に走らせる。理由は 2 つ:
+    //   1) admin の HTML（/admin, /admin.html）を Static Assets が直接配信すると
+    //      src/adminAuth.ts のガードを素通りするので認証を効かせる。
+    //   2) 公開 HTML（index/about/ranking 等）に src/analytics.ts の injectAnalytics で
+    //      Google タグ・共通ヘッダー/フッターを差し込む。アセット直配信だと差し込みが走らない。
+    // 非 HTML（css/js/画像）は injectAnalytics が content-type を見てそのまま素通りする。
+    "run_worker_first": true
   },
   "observability": {
     "enabled": true
@@ -39,6 +42,8 @@
   //     Tier2、jan_code で ISBN 直引き）。未設定なら Yahoo はスキップ。see src/yahoo.ts
   //   ACCESS_TEAM_DOMAIN / ACCESS_AUD … 自分の Cloudflare Access アプリの値。
   //   ADMIN_EMAILS … 許可メール（カンマ区切り）。未設定だと admin は fail-closed で 403。
+  //   GOOGLE_CLIENT_ID / GOOGLE_CLIENT_SECRET … ユーザの Google ログイン（任意, src/auth.ts）。
+  //     未設定ならログインボタンを出さない。リダイレクト URI は <origin>/auth/google/callback。
   // RAKUTEN_REFERER と routes のドメインは公開値なので vars に残す。自分のドメインに変更する。
   "vars": {
     "RAKUTEN_REFERER": "https://example.com/",
@@ -90,7 +95,7 @@
     { "name": "RL_COVERS", "namespace_id": "1002", "simple": { "limit": 120, "period": 60 } }
   ],
   // 売上ランキングの日次スナップショット（src/salesRanking.ts）。毎日 05:00 JST（20:00 UTC）。
-  // triggers は env に継承されるので dev でも同じ時刻に走る（dev は dev の DB に貯まる）。
+  // triggers は env に継承されるので、dev は env.dev 側で空にして止めている。
   "triggers": { "crons": ["0 20 * * *"] },
   "routes": [
     { "pattern": "example.com", "custom_domain": true }
@@ -113,6 +118,9 @@
         "DEV_TOOLS": "false"
       },
       "version_metadata": { "binding": "CF_VERSION" },
+      // dev では売上ランキングの Cron を止める（毎日楽天を叩くだけで無駄なので）。
+      // 必要なら管理画面の手動取得（POST /api/admin/sales-ranking/snapshot）で取る。
+      "triggers": { "crons": [] },
       "d1_databases": [
         {
           "binding": "DB",

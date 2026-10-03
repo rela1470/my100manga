@@ -81,34 +81,7 @@ function parseVolume(title: string): string {
   return m ? m[1] : "";
 }
 
-import type { Priority } from "./ratelimiter";
-
-// How long a call waits for a global rate-limit slot before giving up (returns
-// null). Also caps how deep each lane's queue grows — see RakutenRateLimiter.
-// High = user-initiated (correction picker): generous, so it's essentially
-// always served and, being on its own lane, jumps ahead of background backlog.
-// Low = background bulk cover fill: bounded so it doesn't book minutes ahead.
-const MAX_WAIT_MS: Record<Priority, number> = { high: 15000, low: 8000 };
-
-/** Wait for a global 1 req/s slot on the given priority lane. Returns false when
- *  the caller should skip Rakuten (slot past budget, or limiter unavailable).
- *  `maxWaitMs` overrides the lane default so a caller with a shrinking wall-clock
- *  budget (resolveCovers) can refuse a slot that would land past its deadline.
- *  楽天市場 (src/ichiba.ts) uses the same applicationId, so it shares this lane. */
-export async function awaitSlot(env: Env, priority: Priority, maxWaitMs?: number): Promise<boolean> {
-  if (!env.RAKUTEN_LIMITER) return true; // limiter unbound (tests/local) → no pacing
-  const cap = maxWaitMs ?? MAX_WAIT_MS[priority];
-  if (cap <= 0) return false;
-  try {
-    const stub = env.RAKUTEN_LIMITER.getByName("global");
-    const wait = await stub.acquire(cap, priority);
-    if (wait < 0) return false;
-    if (wait > 0) await new Promise((r) => setTimeout(r, wait));
-    return true;
-  } catch {
-    return true; // limiter failure shouldn't block covers entirely
-  }
-}
+import { awaitSlot, type Priority } from "./ratelimiter";
 
 async function call(
   env: Env,
@@ -126,7 +99,7 @@ async function call(
     ...params,
   });
   const url = `${BOOKS_SEARCH}?${qs.toString()}`;
-  if (!(await awaitSlot(env, priority, maxWaitMs))) return null;
+  if (!(await awaitSlot(env, "global", priority, maxWaitMs))) return null;
   for (let attempt = 0; attempt < 2; attempt++) {
     const res = await fetch(url, { headers: headers(env) });
     if (res.status === 429) {

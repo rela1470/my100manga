@@ -1,5 +1,5 @@
 import { Env } from "./types";
-import { json } from "./util";
+import { clientIp, json } from "./util";
 
 // 公開書き込み系エンドポイントの濫用よけ。Cloudflare の Rate Limiting binding を使う。
 // binding 未設定（ローカル dev や secret 未注入）では fail-open し、機能自体は止めない。
@@ -10,10 +10,7 @@ export async function rateLimit(
   bucket: string
 ): Promise<Response | null> {
   if (!limiter) return null;
-  const ip =
-    request.headers.get("cf-connecting-ip") ??
-    request.headers.get("x-forwarded-for")?.split(",")[0]?.trim() ??
-    "";
+  const ip = clientIp(request);
   try {
     const { success } = await limiter.limit({ key: `${bucket}:${ip}` });
     if (success) return null;

@@ -100,6 +100,35 @@ function el(tag, props, children) {
   return node;
 }
 
+// スマホでは .admin-table を 1 行 = 1 カードで縦に並べ、各セルの前に列名を出す（styles.css の
+// max-width:640px）。列名は thead の th から td の data-label に写す。表は各所で描き直されるので、
+// 描画コードを個別に直さず DOM の追加を拾って一括で付ける。
+function labelAdminTables() {
+  for (const table of document.querySelectorAll(".admin-table")) {
+    const heads = [];
+    for (const th of table.querySelectorAll("thead th")) {
+      for (let i = 0; i < (th.colSpan || 1); i++) heads.push(th.textContent.trim());
+    }
+    if (!heads.length) continue;
+    for (const tr of table.querySelectorAll("tbody tr")) {
+      let col = 0;
+      for (const td of tr.children) {
+        if (!td.hasAttribute("data-label")) td.setAttribute("data-label", heads[col] || "");
+        col += td.colSpan || 1;
+      }
+    }
+  }
+}
+let labelQueued = false;
+new MutationObserver(() => {
+  if (labelQueued) return;
+  labelQueued = true;
+  requestAnimationFrame(() => {
+    labelQueued = false;
+    labelAdminTables();
+  });
+}).observe(document.body, { childList: true, subtree: true });
+
 // 汎用ページャー。total（総件数）と現在ページから前へ/次へと位置表示を描く。
 // go(nextPage) は該当一覧の loader を呼ぶ。1ページに収まるなら非表示。
 function renderPager(pagerId, page, total, go) {
@@ -257,7 +286,10 @@ async function loadLists(page = pageState.lists) {
 
     body.append(
       el("tr", { dataset: { slug: it.slug } }, [
-        el("td", null, [detailLink]),
+        // 限定公開リストは noindex・紹介対象外。おすすめに拾わないよう目印を付ける。
+        el("td", null, it.unlisted
+          ? [detailLink, el("span", { className: "muted", textContent: " 限定公開", title: "noindex・運営からの紹介対象外" })]
+          : [detailLink]),
         el("td", { className: "owner", textContent: owner }),
         el("td", { className: "num", textContent: String(it.item_count) }),
         el("td", { className: "num" + (coverWarn ? " warn" : ""), textContent: `${it.cover_count}/${it.item_count}` }),
@@ -346,6 +378,7 @@ async function openDetail(slug) {
   const editUrl = `${location.origin}/?edit=${encodeURIComponent(list.slug)}&t=${encodeURIComponent(list.edit_token)}`;
   meta.textContent = "";
   meta.append(
+    document.createTextNode(list.unlisted ? "限定公開（noindex・紹介対象外） ｜ " : "みんなに公開 ｜ "),
     document.createTextNode(`${list.items.length}作品 ｜ 作成 ${fmtDate(list.created_at)} ｜ 更新 ${fmtDate(list.updated_at)} ｜ `),
     el("a", { href: `/l/${encodeURIComponent(list.slug)}`, target: "_blank", rel: "noopener", textContent: "公開ページ" }),
     document.createTextNode(" ｜ "),
@@ -2988,6 +3021,12 @@ function showPage(name) {
   document.querySelectorAll("#adminNav a").forEach((a) => {
     a.classList.toggle("active", a.dataset.page === name);
   });
+  // スマホではナビが横スクロールなので、選んだページのタブを見える位置へ寄せる。
+  const nav = $("adminNav");
+  const active = nav.querySelector("a.active");
+  if (active && nav.scrollWidth > nav.clientWidth) {
+    nav.scrollLeft = active.offsetLeft - nav.offsetLeft - (nav.clientWidth - active.offsetWidth) / 2;
+  }
   PAGES[name]();
   loadTodo();
 }

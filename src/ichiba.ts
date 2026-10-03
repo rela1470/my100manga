@@ -1,6 +1,6 @@
 import { Env } from "./types";
-import type { Priority } from "./ratelimiter";
-import { awaitSlot, headers, rakutenReady } from "./rakuten";
+import { headers, rakutenReady } from "./rakuten";
+import { awaitSlot, type Priority } from "./ratelimiter";
 
 // 楽天市場 商品検索API — Tier 3 cover source behind 楽天ブックス and Yahoo!ショッピング.
 // Mainly rescues ムック / 絶版 volumes no new-book store lists anymore, via used-book
@@ -94,7 +94,7 @@ export async function ichibaCovers(
     imageFlag: "1",
     availability: "0", // include sold-out listings — we only want the image
   });
-  if (!(await awaitSlot(env, priority, maxWaitMs))) return null;
+  if (!(await awaitSlot(env, "global", priority, maxWaitMs))) return null;
   let data: any = null;
   for (let attempt = 0; attempt < 2; attempt++) {
     const res = await fetch(`${ICHIBA_SEARCH}?${qs.toString()}`, { headers: headers(env) });

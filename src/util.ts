@@ -270,3 +270,12 @@ export function toIsbn13(raw: string): string {
   }
   return "";
 }
+
+/** 接続元 IP。Cloudflare 経由なら cf-connecting-ip、無ければ x-forwarded-for の先頭。 */
+export function clientIp(request: Request): string {
+  return (
+    request.headers.get("cf-connecting-ip") ??
+    request.headers.get("x-forwarded-for")?.split(",")[0]?.trim() ??
+    ""
+  );
+}

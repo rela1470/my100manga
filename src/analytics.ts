@@ -1,5 +1,6 @@
 import { Env } from "./types";
 import { footerHtml } from "./footer";
+import { headerLinksHtml } from "./header";
 import { escapeHtml } from "./util";
 
 // 全 HTML ページの <head> の <!--ANALYTICS--> に差し込む Google タグを組み立てる。
@@ -87,6 +88,7 @@ export async function injectAnalytics(res: Response, env: Env): Promise<Response
     .replace("<!--ANALYTICS-->", analyticsTags(env))
     .replace("<!--GTM_BODY-->", gtmBody(env))
     .replace("<!--AFF_DATA-->", affData(env))
+    .replace("<!--HEADER_LINKS-->", headerLinksHtml())
     .replace("<!--FOOTER_AFF-->", footerHtml(true))
     .replace("<!--FOOTER-->", footerHtml());
   const headers = new Headers(res.headers);

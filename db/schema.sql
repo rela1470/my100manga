@@ -7,10 +7,47 @@ CREATE TABLE IF NOT EXISTS lists (
   bio         TEXT NOT NULL DEFAULT '',  -- 作者のひとこと（100文字まで・公開ページ上部に表示）
   items_json  TEXT NOT NULL,             -- [{position, isbn(ISBN13), comment, spoiler}]。表示名・著者・表紙は持たず読み出し時に ISBN から引く (src/listItems.ts)
   created_at  INTEGER NOT NULL,
-  updated_at  INTEGER NOT NULL
+  updated_at  INTEGER NOT NULL,
+  user_id     TEXT,                      -- 所有アカウント (users.id)。匿名公開なら NULL。編集権限は edit_token のまま
+  unlisted    INTEGER NOT NULL DEFAULT 0 -- 1 = 限定公開: 公開ページを noindex にし、運営からの紹介対象にしない (URL を知っていれば見られる)
 );
 
 CREATE INDEX IF NOT EXISTS idx_lists_created_at ON lists (created_at);
+CREATE INDEX IF NOT EXISTS idx_lists_user ON lists (user_id);
+
+-- ── Google ログイン（任意）──────────────────────────────────────────────
+-- ログインは任意で、匿名作成・edit_token による編集はそのまま残る。ログインすると
+-- 作成中のリスト (user_drafts, 1 アカウント 1 件) がサーバに保存され、公開したリスト
+-- (lists.user_id) をどの端末からでも一覧・編集できる。See src/auth.ts / src/account.ts。
+CREATE TABLE IF NOT EXISTS users (
+  id            TEXT PRIMARY KEY,         -- 内部 ID (randomSlug)
+  google_sub    TEXT NOT NULL UNIQUE,     -- Google ID トークンの sub (アカウントの不変キー)
+  email         TEXT NOT NULL DEFAULT '',
+  name          TEXT NOT NULL DEFAULT '',
+  picture       TEXT NOT NULL DEFAULT '',
+  created_at    INTEGER NOT NULL,
+  last_login_at INTEGER NOT NULL
+);
+
+-- ログインセッション。Cookie にはランダムトークン、ここにはその SHA-256 だけを持つ
+-- (DB が漏れてもセッションを乗っ取れない)。期限切れ行はログイン時に掃除する。
+CREATE TABLE IF NOT EXISTS sessions (
+  id_hash    TEXT PRIMARY KEY,
+  user_id    TEXT NOT NULL,
+  created_at INTEGER NOT NULL,
+  expires_at INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_sessions_user ON sessions (user_id);
+
+-- 作成中のリスト (新規作成の下書き)。端末の localStorage 下書きをそのまま同期するので、
+-- 公開データと違い title/author/cover_url も持つ (ISBN 未解決の巻も描画できるように)。
+CREATE TABLE IF NOT EXISTS user_drafts (
+  user_id    TEXT PRIMARY KEY,
+  owner_name TEXT NOT NULL DEFAULT '',
+  bio        TEXT NOT NULL DEFAULT '',
+  items_json TEXT NOT NULL,               -- [{isbn,title,author,cover_url,comment,spoiler}]
+  updated_at INTEGER NOT NULL             -- クライアントの保存時刻 (epoch ms)。端末間の新旧判定に使う
+);
 
 -- ── 巻の「追加」イベントログ (本が追加された回数ランキングの元データ) ──────────
 -- lists.items_json は現在のスナップショットしか持たず「どの巻をいつ追加したか」の履歴が
@@ -31,6 +68,27 @@ CREATE TABLE IF NOT EXISTS list_item_events (
 CREATE INDEX IF NOT EXISTS idx_lie_added_at ON list_item_events (added_at);
 CREATE INDEX IF NOT EXISTS idx_lie_isbn ON list_item_events (isbn);
 CREATE INDEX IF NOT EXISTS idx_lie_slug ON list_item_events (slug);
+
+-- 公開ページ (/l/:slug) の日別アクセス数。公開リスト一覧 (/lists) のアクセス数順
+-- (今日 / 7日間 / 30日間 / 累計) の元データ。day は JST の YYYY-MM-DD。クローラは数えない。
+-- リスト削除時 (adminDeleteList) は slug 単位で掃除する。See src/publicLists.ts。
+CREATE TABLE IF NOT EXISTS list_views (
+  slug  TEXT NOT NULL,
+  day   TEXT NOT NULL,
+  views INTEGER NOT NULL DEFAULT 0,
+  PRIMARY KEY (slug, day)
+);
+CREATE INDEX IF NOT EXISTS idx_list_views_day ON list_views (day);
+
+-- アクセス数の重複判定。同じ訪問者は 1 リストにつき 1 日 1 回だけ数える。visitor は
+-- IP + User-Agent + 日付の SHA-256（IP そのものは持たない）。前日より古い行は日次 cron で消す。
+CREATE TABLE IF NOT EXISTS list_view_seen (
+  slug    TEXT NOT NULL,
+  day     TEXT NOT NULL,
+  visitor TEXT NOT NULL,
+  PRIMARY KEY (slug, day, visitor)
+);
+CREATE INDEX IF NOT EXISTS idx_list_view_seen_day ON list_view_seen (day);
 
 -- Cache of resolved cover URLs per ISBN: a real Google Books cover if one exists,
 -- else the Rakuten Books cover, else "" (no cover anywhere). See src/covers.ts.

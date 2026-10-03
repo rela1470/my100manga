@@ -83,7 +83,7 @@ function render(key) {
     num.textContent = e.rank;
     slot.appendChild(num);
 
-    slot.appendChild(coverNode(e));
+    slot.appendChild(coverNode(e.cover_url, e.title));
 
     const meta = document.createElement("div");
     meta.className = "meta";
@@ -101,44 +101,13 @@ function render(key) {
   }
 }
 
-function coverNode(e) {
-  if (e.cover_url) {
-    const img = document.createElement("img");
-    img.className = "cover";
-    img.loading = "lazy";
-    img.alt = e.title;
-    img.onerror = () => img.replaceWith(placeholder(e.title));
-    applyCover(img, e.cover_url);
-    return img;
-  }
-  return placeholder(e.title);
-}
-
-function placeholder(title) {
-  const d = document.createElement("div");
-  d.className = "cover placeholder";
-  d.textContent = title;
-  return d;
-}
-
-// スナップショットに表紙が無いエントリだけ、既存の /api/covers で遅延解決して差し込む。
+// スナップショットに表紙が無いエントリだけ、/api/covers で遅延解決して差し込む。
 async function fillMissingCovers() {
-  const missing = new Set();
+  const missing = [];
   for (const key of Object.keys(windows)) {
-    for (const e of windows[key] || []) if (!e.cover_url && e.isbn) missing.add(e.isbn);
+    for (const e of windows[key] || []) if (!e.cover_url && e.isbn) missing.push(e.isbn);
   }
-  if (missing.size === 0) return;
-  let covers = {};
-  try {
-    const res = await fetch("/api/covers", {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({ isbns: [...missing].slice(0, 400) }),
-    });
-    if (res.ok) covers = (await res.json()).covers || {};
-  } catch {
-    return;
-  }
+  const covers = await lookupCovers(missing);
   // 取得できた表紙をデータと現在表示中の行へ反映する。
   for (const key of Object.keys(windows)) {
     for (const e of windows[key] || []) if (!e.cover_url && covers[e.isbn]) e.cover_url = covers[e.isbn];
@@ -147,8 +116,7 @@ async function fillMissingCovers() {
     const url = covers[slot.dataset.isbn];
     const ph = slot.querySelector(".cover.placeholder");
     if (!url || !ph) continue;
-    ph.replaceWith(coverNode({ cover_url: url, title: slot.querySelector(".meta .t")?.textContent || "" }));
+    ph.replaceWith(coverNode(url, slot.querySelector(".meta .t")?.textContent || ""));
   }
 }
-
 load();

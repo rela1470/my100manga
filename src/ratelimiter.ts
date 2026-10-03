@@ -12,6 +12,39 @@ const INTERVAL_MS = 1100; // ~0.9 req/s, a small margin under Rakuten's ~1/s cap
 
 export type Priority = "high" | "low";
 
+// How long a call waits for a rate-limit slot before giving up (returns false). Also
+// caps how deep each lane's queue grows. High = user-initiated (correction picker):
+// generous, so it's essentially always served and, being on its own lane, jumps ahead
+// of background backlog. Low = background bulk cover fill: bounded so it doesn't book
+// minutes ahead.
+const MAX_WAIT_MS: Record<Priority, number> = { high: 15000, low: 8000 };
+
+/** Wait for a 1 req/s slot on `instance`'s priority lane. Each API paces on its own DO
+ *  instance: "global" = Rakuten (楽天ブックス・楽天市場 share one applicationId),
+ *  "yahoo" = Yahoo!ショッピング (rate-limits aggressively, ~3 req/s observed). Returns
+ *  false when the caller should skip the API (slot past budget). `maxWaitMs` overrides
+ *  the lane default so a caller with a shrinking wall-clock budget (resolveCovers) can
+ *  refuse a slot that would land past its deadline. */
+export async function awaitSlot(
+  env: Env,
+  instance: "global" | "yahoo",
+  priority: Priority,
+  maxWaitMs?: number
+): Promise<boolean> {
+  if (!env.RAKUTEN_LIMITER) return true; // limiter unbound (tests/local) → no pacing
+  const cap = maxWaitMs ?? MAX_WAIT_MS[priority];
+  if (cap <= 0) return false;
+  try {
+    const stub = env.RAKUTEN_LIMITER.getByName(instance);
+    const wait = await stub.acquire(cap, priority);
+    if (wait < 0) return false;
+    if (wait > 0) await new Promise((r) => setTimeout(r, wait));
+    return true;
+  } catch {
+    return true; // limiter failure shouldn't block covers entirely
+  }
+}
+
 // Cover-fill presence (see report()). A browser that stops POSTing — tab closed, fill
 // finished — drops out after this long. Its POSTs are at most ~10s apart (9s resolve
 // budget + 1.2s retry pause), so this leaves some slack.

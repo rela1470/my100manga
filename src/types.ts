@@ -61,6 +61,11 @@ export interface Env {
   ACCESS_AUD?: string;
   ADMIN_EMAILS?: string;
   ADMIN_DEV_BYPASS?: string;
+  // ユーザの Google ログイン（任意、src/auth.ts）。Google Cloud の OAuth クライアント
+  // （ウェブアプリ）の値。リダイレクト URI は <origin>/auth/google/callback を登録する。
+  // secret で注入し、未設定ならログインボタンを出さない（匿名作成はそのまま使える）。
+  GOOGLE_CLIENT_ID?: string;
+  GOOGLE_CLIENT_SECRET?: string;
   // 開発ツール（admin 画面の「DB初期化」）の有効化フラグ。"true" で有効。ADMIN_DEV_BYPASS
   // とは別物で認証はバイパスしない（エンドポイントは requireAdmin の配下のまま）ので、本番で
   // も管理者だけが使える。開発期間中のみ本番 vars に "true" を置き、正式リリース時に外す想定。
@@ -113,6 +118,7 @@ export interface MangaList {
   owner_name: string;
   bio: string;
   items: ListItem[];
+  unlisted: boolean;  // 限定公開: noindex にし、運営からの紹介対象にもしない (URL を知っていれば見られる)
   created_at: number;
   updated_at: number;
 }

@@ -21,6 +21,10 @@ export interface SiteConfig {
   hashtag: string;
   /** 成年向けの巻を除外・拒否するか（src/adult.ts、MADB の SPARQL、表紙ソースの ADULT 判定）。 */
   excludeAdult: boolean;
+  /** 全年齢のデータ源に基づくランキング（売上＝楽天ブックスのコミック売れ筋、発行部数＝手入力の
+   *  マスタ）を出すか。R18版では中身が全年齢作品なので出さない（ヘッダーのボタンと sitemap）。
+   *  ページ自体は残る（URL を知っていれば見られる）。 */
+  allAgesRankings: boolean;
 }
 
 // 本家の静的 HTML に書かれている表記。applySiteIdentity が置き換える元の文字列。
@@ -28,10 +32,10 @@ export const GENERAL_NAME = "My 100 Manga";
 export const GENERAL_ORIGIN = "https://my100manga.com";
 
 const SITES: Record<SiteVariant, SiteConfig> = {
-  general: { variant: "general", name: GENERAL_NAME, hashtag: "my100manga", excludeAdult: true },
+  general: { variant: "general", name: GENERAL_NAME, hashtag: "my100manga", excludeAdult: true, allAgesRankings: true },
   // R18版（my100shunga.com / dev.my100shunga.com）。ドメインはここには持たない（canonical・og:url は
   // 配信時のオリジンから applySiteIdentity が作る）。
-  adult: { variant: "adult", name: "My 100 Shunga", hashtag: "my100shunga", excludeAdult: false },
+  adult: { variant: "adult", name: "My 100 Shunga", hashtag: "my100shunga", excludeAdult: false, allAgesRankings: false },
 };
 
 export function siteVariant(env: Pick<Env, "SITE_VARIANT">): SiteVariant {

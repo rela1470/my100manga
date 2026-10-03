@@ -1,6 +1,7 @@
 import { Env } from "./types";
 import { footerHtml } from "./footer";
 import { headerLinksHtml } from "./header";
+import { rankSwitchHtml } from "./rankSwitch";
 import { GENERAL_NAME, GENERAL_ORIGIN, site } from "./site";
 import { escapeHtml } from "./util";
 
@@ -103,7 +104,7 @@ export function applySiteIdentity(html: string, env: Env, origin: string): strin
 // 静的配信（ASSETS.fetch）の HTML レスポンスを加工する。全 HTML にバージョン印（script の
 // ?v= と <meta app-version>）を付け、プレースホルダがあれば Google タグ／affiliate id も差す。
 // HTML 以外（css/js/画像）は素通り。
-export async function injectAnalytics(res: Response, env: Env, origin: string): Promise<Response> {
+export async function injectAnalytics(res: Response, env: Env, origin: string, path = ""): Promise<Response> {
   const ct = res.headers.get("content-type") ?? "";
   if (!ct.includes("text/html")) return res;
   const html = applySiteIdentity(await res.text(), env, origin);
@@ -111,7 +112,8 @@ export async function injectAnalytics(res: Response, env: Env, origin: string): 
     .replace("<!--ANALYTICS-->", analyticsTags(env))
     .replace("<!--GTM_BODY-->", gtmBody(env))
     .replace("<!--AFF_DATA-->", affData(env))
-    .replace("<!--HEADER_LINKS-->", headerLinksHtml())
+    .replace("<!--HEADER_LINKS-->", headerLinksHtml(env))
+    .replace("<!--RANK_SWITCH-->", rankSwitchHtml(env, path))
     .replace("<!--FOOTER_AFF-->", footerHtml(env, true))
     .replace("<!--FOOTER-->", footerHtml(env));
   const headers = new Headers(res.headers);

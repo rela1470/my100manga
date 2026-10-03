@@ -1,5 +1,0 @@
-User-agent: *
-Disallow: /admin
-Disallow: /api/
-
-Sitemap: https://my100manga.com/sitemap.xml

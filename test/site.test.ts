@@ -5,6 +5,7 @@ import { findAdultIsbns, hasAdultTitleMatch, sparqlNotAdult } from "../src/adult
 import { applySiteIdentity } from "../src/analytics";
 import { edgeCacheKey } from "../src/edgeCache";
 import { footerHtml } from "../src/footer";
+import { rankSwitchHtml } from "../src/rankSwitch";
 import { site, siteVariant } from "../src/site";
 import type { Env } from "../src/types";
 
@@ -77,5 +78,24 @@ describe("R18 版では成年向けを拒否しない", () => {
   it("SPARQL の成年向けフィルタを外せる", () => {
     expect(sparqlNotAdult("?book")).toContain("FILTER NOT EXISTS");
     expect(sparqlNotAdult("?book", false)).toBe("");
+  });
+});
+
+describe("ランキングのタブ（rank-switch）", () => {
+  it("本家は 3 本、現在地に active が付く", () => {
+    const html = rankSwitchHtml(general, "/sales-ranking");
+    expect(html).toContain(`href="/ranking"`);
+    expect(html).toContain(`<a href="/sales-ranking" class="active">`);
+    expect(html).toContain(`href="/circulation"`);
+    expect(html.match(/<a /g)).toHaveLength(3);
+    // 拡張子付きで配信されても現在地が分かる
+    expect(rankSwitchHtml(general, "/ranking.html")).toContain(`<a href="/ranking" class="active">`);
+    // どのタブでもないパス（404 など）は active 無しで出すだけ
+    expect(rankSwitchHtml(general, "/sales-rankings")).not.toContain("active");
+    expect(rankSwitchHtml(general, "")).not.toContain("active");
+  });
+
+  it("R18版は全年齢のランキングが消えて 1 本になるので nav ごと出さない", () => {
+    expect(rankSwitchHtml(adult, "/ranking")).toBe("");
   });
 });

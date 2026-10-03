@@ -1,5 +1,5 @@
 // Share image: every cover of a list composited onto one picture, under a one-line
-// 「◯◯'s My 100 Manga」 header with the list URL on the right. Used as the view page's
+// 「◯◯'s My 100 Manga」（サイト名は src/site.ts, R18版は別名）header with the list URL on the right. Used as the view page's
 // og:image (variant "og", 1200×630, the column count that makes the covers largest)
 // and as the image a visitor attaches to an X post themselves (variant "full",
 // portrait 10×10 grid, or "q1"–"q4": a quarter each, 25 covers on a 5×5 grid, for a
@@ -31,6 +31,7 @@ import RESVG_WASM from "../node_modules/@resvg/resvg-wasm/index_bg.wasm";
 import { getCoverBytes, sha256Hex } from "./coverBytes";
 import { encodeRgba } from "./covertrim";
 import { escapeHtml } from "./util";
+import { site, SiteVariant, siteVariant } from "./site";
 import { Env, ListItem, MangaList } from "./types";
 
 export type ShareVariant = "og" | "full" | "q1" | "q2" | "q3" | "q4";
@@ -42,16 +43,30 @@ const CELLS = 100;
 const COVER_CONCURRENCY = 10;
 const MAX_NAME_CHARS = 16;
 const FONT_FAMILY = "Noto Sans JP";
-const SITE = "my100manga.com";
+// 相対 URL を URL() で解くときの土台と、resvg に表紙を渡すための差し込み用 href に使うだけの
+// 内部の値。画像に描く URL ではない（それは host 引数 → listUrlLabel）。ASSETS.fetch も絶対 URL を
+// 要求するが host は見ないのでこれで足りる。実際のサイトのホストとは関係しない。
+const SELF = "share.invalid";
 // public/fonts/ の静的アセット（ライセンスは同じディレクトリの OFL.txt）。
 const FONT_PATH = "/fonts/NotoSansJP-Bold-subset.otf";
 
-const COLOR = {
-  bg: "#f4f8ff",
-  text: "#16202e",
-  muted: "#6b7684",
-  accent: "#3b82f6",
-  empty: "#dde7f5",
+// 配色はサイト種別ごと（src/site.ts）。public/styles.css の :root / :root[data-site="adult"] と
+// 揃えること（画面と共有画像で色が食い違わないように）。
+const PALETTE: Record<SiteVariant, { bg: string; text: string; muted: string; accent: string; empty: string }> = {
+  general: {
+    bg: "#f4f8ff",
+    text: "#16202e",
+    muted: "#6b7684",
+    accent: "#3b82f6",
+    empty: "#dde7f5",
+  },
+  adult: {
+    bg: "#fff5f9",
+    text: "#2a1620",
+    muted: "#6e5562",
+    accent: "#ec4899",
+    empty: "#f6dbe7",
+  },
 };
 
 interface Layout {
@@ -144,8 +159,11 @@ export function coverSource(url: string): CoverSource | null {
   if (!url) return null;
   let u: URL;
   try {
-    u = new URL(url, `https://${SITE}`);
-    if (u.hostname === SITE && u.pathname === "/cover" && u.searchParams.get("u")) u = new URL(u.searchParams.get("u")!);
+    // 保存されている表紙 URL は自サイトの相対 URL（/cover?u=…）か、販売サイトの絶対 URL。
+    // 前者を解くための土台が SELF。/cover?u= はホストに依らず自前の整形プロキシと見なす
+    // （本家・R18版でホストが違っても同じ判定になるように）。
+    u = new URL(url, `https://${SELF}`);
+    if (u.pathname === "/cover" && u.searchParams.get("u")) u = new URL(u.searchParams.get("u")!);
   } catch {
     return "各販売サイト";
   }
@@ -197,13 +215,15 @@ function emWidth(s: string): number {
   return w;
 }
 
-function buildSvg(list: MangaList, variant: ShareVariant, hasCover: boolean[], host: string): string {
+function buildSvg(list: MangaList, variant: ShareVariant, hasCover: boolean[], host: string, env: Env): string {
   const L = layout(variant);
+  const COLOR = PALETTE[siteVariant(env)];
+  const brand = site(env).name;
   const owner = ownerPossessive(list.owner_name);
   const url = listUrlLabel(host, list.slug);
   // The URL is drawn at 0.75× the title size; shrink both if a long name would run into it.
   const range = rangeLabel(L);
-  const fit = (L.width - L.pad * 2 - 24) / (emWidth(`${owner}My 100 Manga ${range}`) + emWidth(url) * 0.75);
+  const fit = (L.width - L.pad * 2 - 24) / (emWidth(`${owner}${brand} ${range}`) + emWidth(url) * 0.75);
   const size = Math.max(16, Math.min(L.headerSize, Math.floor(fit)));
 
   const parts: string[] = [];
@@ -211,7 +231,7 @@ function buildSvg(list: MangaList, variant: ShareVariant, hasCover: boolean[], h
     `<svg xmlns="http://www.w3.org/2000/svg" width="${L.width}" height="${L.height}" viewBox="0 0 ${L.width} ${L.height}" font-family="${FONT_FAMILY}" font-weight="700">`,
     `<defs><clipPath id="r" clipPathUnits="objectBoundingBox"><rect width="1" height="1" rx="0.07" ry="0.0525"/></clipPath></defs>`,
     `<rect width="100%" height="100%" fill="${COLOR.bg}"/>`,
-    `<text x="${L.pad}" y="${L.headerY}" font-size="${size}" fill="${COLOR.text}">${escapeHtml(owner)}My <tspan fill="${COLOR.accent}">100</tspan> Manga${range ? `<tspan dx="0.4em" fill="${COLOR.muted}">${range}</tspan>` : ""}</text>`,
+    `<text x="${L.pad}" y="${L.headerY}" font-size="${size}" fill="${COLOR.text}">${escapeHtml(owner)}${brandSvg(brand, COLOR.accent)}${range ? `<tspan dx="0.4em" fill="${COLOR.muted}">${range}</tspan>` : ""}</text>`,
     `<text x="${L.width - L.pad}" y="${L.headerY}" font-size="${Math.round(size * 0.75)}" fill="${COLOR.muted}" text-anchor="end">${escapeHtml(url)}</text>`,
     `<text x="${L.width - L.pad}" y="${L.creditY}" font-size="${L.creditSize}" fill="${COLOR.muted}" text-anchor="end">${escapeHtml(creditLine(list, variant))}</text>`
   );
@@ -244,9 +264,17 @@ function buildSvg(list: MangaList, variant: ShareVariant, hasCover: boolean[], h
   return parts.join("");
 }
 
+/** サイト名のうち数字（「My 100 Manga」の 100）だけアクセント色にした SVG の断片。
+ *  数字が無い名前ならそのまま描く。 */
+function brandSvg(name: string, accent: string): string {
+  const m = name.match(/^(.*?)(\d+)(.*)$/);
+  if (!m) return escapeHtml(name);
+  return `${escapeHtml(m[1])}<tspan fill="${accent}">${m[2]}</tspan>${escapeHtml(m[3])}`;
+}
+
 // Placeholder hrefs; resvg reports them via imagesToResolve() and we hand it the bytes.
 function coverHref(i: number): string {
-  return `https://${SITE}/_share-cover/${i}.jpg`;
+  return `https://${SELF}/_share-cover/${i}.jpg`;
 }
 
 let wasmReady: Promise<void> | null = null;
@@ -257,7 +285,7 @@ let fontBytes: Promise<Uint8Array> | null = null;
 function loadFont(env: Env): Promise<Uint8Array> {
   if (!fontBytes) {
     fontBytes = (async () => {
-      const res = await env.ASSETS.fetch(new Request(`https://${SITE}${FONT_PATH}`));
+      const res = await env.ASSETS.fetch(new Request(`https://${SELF}${FONT_PATH}`));
       if (!res.ok) throw new Error(`font asset ${res.status}`);
       return new Uint8Array(await res.arrayBuffer());
     })();
@@ -310,7 +338,7 @@ async function generate(env: Env, ctx: ExecutionContext, list: MangaList, varian
   if (!wasmReady) wasmReady = initWasm(RESVG_WASM);
   await wasmReady;
 
-  const svg = buildSvg(list, variant, covers.map((c) => c !== null), host);
+  const svg = buildSvg(list, variant, covers.map((c) => c !== null), host, env);
   const resvg = new Resvg(svg, {
     font: { fontBuffers: [font], defaultFontFamily: FONT_FAMILY, sansSerifFamily: FONT_FAMILY },
   });

@@ -837,6 +837,27 @@ a.stat-card.stat-link .k::after { content: " ›"; }
 /* 「シリーズが分かれている？」の画面。対象のタイトルは大きく出す。 */
 .merge-title { font-size: 22px; font-weight: 800; line-height: 1.3; margin: 8px 0 4px; overflow-wrap: anywhere; }
 .merge-title .series-id { font-size: 12px; font-weight: normal; color: var(--muted); margin-left: 8px; }
+/* 検索結果の絞り込み（出版社・レーベル）。選択肢が 1 つしかないときは JS 側で隠す。 */
+.merge-filters {
+  display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin: 8px 0;
+}
+.merge-filters[hidden] { display: none; }
+.merge-filters .hint { margin: 0; flex: none; }
+.merge-filters select {
+  flex: 1 1 160px; min-width: 0; max-width: 100%;
+  background: var(--panel-2);
+  border: 1px solid var(--border);
+  color: var(--text);
+  border-radius: 8px;
+  padding: 8px 10px;
+  font: inherit;
+  font-size: 14px;
+}
+.merge-filters select:focus {
+  outline: none;
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px rgba(var(--accent-rgb),.22);
+}
 /* 候補行。左のチェックで選び、行を押すと巻のプレビュー。 */
 .merge-cand:hover { transform: none; }
 .merge-check { flex: none; display: flex; align-items: center; padding: 6px; margin: -6px 0 -6px -4px; cursor: pointer; }

@@ -2719,6 +2719,24 @@ async function openMergeRequest(series, volumes, opts) {
   searchRow.appendChild(qBtn);
   box.appendChild(searchRow);
 
+  // 検索結果の絞り込み（出版社・コミックスのレーベル）。同じ作品でも版元・レーベル違いで
+  // 何十件も並ぶことがあり（例: ゴルゴ13 は小学館版とリイド社版が混ざる）、検索語は書名と
+  // 著者にしか当たらないので分けられない。結果に出ている値だけを選択肢にして絞り込む。
+  const filterRow = document.createElement("div");
+  filterRow.className = "merge-filters";
+  filterRow.hidden = true;
+  const filterLabel = document.createElement("span");
+  filterLabel.className = "hint";
+  filterLabel.textContent = "絞り込み";
+  const pubSel = document.createElement("select");
+  pubSel.setAttribute("aria-label", "出版社で絞り込む");
+  const labSel = document.createElement("select");
+  labSel.setAttribute("aria-label", "レーベル（コミックスのシリーズ名）で絞り込む");
+  filterRow.appendChild(filterLabel);
+  filterRow.appendChild(pubSel);
+  filterRow.appendChild(labSel);
+  box.appendChild(filterRow);
+
   const status = document.createElement("p");
   status.className = "hint";
   box.appendChild(status);
@@ -2808,14 +2826,87 @@ async function openMergeRequest(series, volumes, opts) {
     refresh();
   };
 
+  // 絞り込み前の候補と、いま選んでいる絞り込み。検索し直すと絞り込みは解除する（選択した
+  // 相手は下のチップに残るので、絞り込みで隠れても依頼からは落ちない）。
+  const FILTER_NONE = "\u0000"; // 出版社・レーベルが空の行（「（なし）」）
+  let allCands = [];
+  let statusHead = "";
+  let pubFilter = "";
+  let labFilter = "";
+
+  const fieldOf = (c, which) => (which === "pub" ? c.publisher : c.label) || "";
+  const hit = (c, which, f) => !f || (f === FILTER_NONE ? !fieldOf(c, which) : fieldOf(c, which) === f);
+
+  // 片方を選ぶともう片方の選択肢も連動して減らす（リイド社を選んだら小学館のレーベルは消す）。
+  const fillSelect = (sel, which, allText) => {
+    const other = which === "pub" ? "lab" : "pub";
+    const cur = which === "pub" ? pubFilter : labFilter;
+    const counts = new Map();
+    for (const c of allCands) {
+      if (!hit(c, other, other === "pub" ? pubFilter : labFilter)) continue;
+      const v = fieldOf(c, which);
+      counts.set(v, (counts.get(v) || 0) + 1);
+    }
+    const opts = [...counts].sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0], "ja"));
+    sel.replaceChildren();
+    const first = document.createElement("option");
+    first.value = "";
+    first.textContent = allText;
+    sel.appendChild(first);
+    for (const [v, n] of opts) {
+      const o = document.createElement("option");
+      o.value = v || FILTER_NONE;
+      o.textContent = `${v || "（なし）"}（${n}）`;
+      sel.appendChild(o);
+    }
+    sel.value = cur;
+    if (sel.value !== cur) {
+      // 選んでいた値が選択肢から消えた（ありえないが、消えたまま絞り続けないようにする）
+      if (which === "pub") pubFilter = "";
+      else labFilter = "";
+      sel.value = "";
+    }
+    return opts.length;
+  };
+
+  const applyFilters = () => {
+    const pubCount = fillSelect(pubSel, "pub", "すべての出版社");
+    const labCount = fillSelect(labSel, "lab", "すべてのレーベル");
+    // 版元もレーベルも 1 種類しかないなら絞り込む意味がないので出さない。
+    filterRow.hidden = allCands.length < 2 || (pubCount < 2 && labCount < 2);
+    const shown = allCands.filter((c) => hit(c, "pub", pubFilter) && hit(c, "lab", labFilter));
+    const n = shown.length === allCands.length ? `${allCands.length}件` : `${allCands.length}件中 ${shown.length}件`;
+    status.textContent = allCands.length ? `${statusHead} ${n}（行を押すと巻の表紙を確認できます）:` : statusHead;
+    renderList(shown);
+  };
+
+  // 新しい結果を出す。head は件数の前に出す説明（結果が 0 件ならそれだけを出す）。
+  const setItems = (items, head) => {
+    allCands = items;
+    statusHead = head;
+    pubFilter = "";
+    labFilter = "";
+    applyFilters();
+  };
+
+  pubSel.addEventListener("change", () => {
+    pubFilter = pubSel.value;
+    applyFilters();
+  });
+  labSel.addEventListener("change", () => {
+    labFilter = labSel.value;
+    applyFilters();
+  });
+
   const addId = () => {
     const other = idInput.value.trim().toUpperCase();
     if (!/^[A-Z0-9]+$/.test(other)) {
       uiAlert("シリーズIDを入力してください（例: C451211）");
       return;
     }
-    const shown = [...list.querySelectorAll(".merge-cand")].find((r) => r._cand.series_id === other);
-    if (select(other, shown ? shown._cand.title : `ID ${other}`)) {
+    // 絞り込みで隠れている候補でも名前が出せるよう、表示中の行ではなく候補全体から探す。
+    const known = allCands.find((c) => c.series_id === other);
+    if (select(other, known ? known.title : `ID ${other}`)) {
       idInput.value = "";
       refresh();
     }
@@ -2829,10 +2920,8 @@ async function openMergeRequest(series, volumes, opts) {
     const ids = [...selected.keys()];
     if (!(await sendMergeRequest(series, ids, sendBtn))) return;
     selected.clear();
-    // 依頼済みの行を無効化して描き直す。
-    for (const row of list.querySelectorAll(".merge-cand")) row.replaceWith(buildMergeCandRow(series, row._cand, selected, select, refresh));
-    for (const p of list.querySelectorAll(".merge-preview")) p.remove();
-    refresh();
+    // 依頼済みの行を無効化して描き直す（絞り込みはそのまま）。
+    applyFilters();
   });
 
   // 検索結果のうち、結合の相手になれるシリーズとまとまり（自分・最新DB由来は除く）。
@@ -2849,8 +2938,7 @@ async function openMergeRequest(series, volumes, opts) {
       results = data.results || [];
     } catch (e) {
       if (my !== seq) return;
-      status.textContent = apiErrorMessage(e, "検索に失敗しました");
-      if (extra && extra.length) renderList(extra);
+      setItems(extra || [], apiErrorMessage(e, "検索に失敗しました") + "（同じタイトル・同じ著者の候補のみ）");
       return;
     }
     if (my !== seq) return;
@@ -2860,10 +2948,12 @@ async function openMergeRequest(series, volumes, opts) {
       seen.add(c.series_id);
       return true;
     });
-    status.textContent = items.length
-      ? `「${q}」の検索結果（行を押すと巻の表紙を確認できます）:`
-      : `「${q}」で別のシリーズは見つかりませんでした。検索語を変えるか、シリーズIDで追加してください。`;
-    renderList(items);
+    setItems(
+      items,
+      items.length
+        ? `「${q}」の検索結果`
+        : `「${q}」で別のシリーズは見つかりませんでした。検索語を変えるか、シリーズIDで追加してください。`
+    );
   };
   const runSearch = () => {
     const q = qInput.value.trim();
@@ -2892,8 +2982,7 @@ async function openMergeRequest(series, volumes, opts) {
   }
   if (series.title.trim().length >= 2) await search(series.title.trim(), candidates);
   else {
-    status.textContent = candidates.length ? "同じタイトル・同じ著者の別シリーズ:" : "検索語を入力して検索してください。";
-    renderList(candidates);
+    setItems(candidates, candidates.length ? "同じタイトル・同じ著者の別シリーズ" : "検索語を入力して検索してください。");
   }
 }
 

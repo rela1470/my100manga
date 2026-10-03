@@ -16,7 +16,7 @@
   // 表示名が無いときは「私のMy 100 Manga」ではなくサイトの題名どおりの言い回しにする。
   // ハッシュタグ #my100manga は X は hashtags パラメータ、Threads/Bluesky/LINE は本文末尾に付ける。
   function shareText(owner) {
-    return owner ? `${owner}のMy 100 Manga` : "私を構成する100の漫画";
+    return owner ? `${owner}のMy 100 Manga` : "自分を構成する100の漫画";
   }
 
   // noCard: 画像を添付して投稿するとき用。?i=1 のページはリンクカードのメタタグを

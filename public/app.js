@@ -130,15 +130,17 @@ async function loadSiteStats() {
     const res = await fetch("/api/site-stats");
     if (!res.ok) return;
     const stats = await res.json();
+    // href があるカードは押すとそのページへ（公開リスト → みんなのリスト）。
     const cards = [
       ["series", "シリーズ"],
       ["volumes", "巻(ISBN)"],
-      ["lists", "公開リスト"],
+      ["lists", "公開リスト", "/lists"],
     ];
     box.replaceChildren(
-      ...cards.map(([key, label]) => {
-        const card = document.createElement("div");
-        card.className = "stat-card";
+      ...cards.map(([key, label, href]) => {
+        const card = document.createElement(href ? "a" : "div");
+        card.className = href ? "stat-card stat-link" : "stat-card";
+        if (href) card.href = href;
         const n = document.createElement("div");
         n.className = "n";
         n.textContent = Number(stats[key] ?? 0).toLocaleString("ja-JP");

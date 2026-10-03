@@ -35,18 +35,43 @@ const RESET_SCRIPT =
   `try{Object.keys(localStorage).forEach(function(k){if(k.indexOf("my100manga_")===0)localStorage.removeItem(k);});}catch(e){}` +
   `location.reload();});})();</script>`;
 
+// 並び: ページへのリンク → 出典（MADB・書影の取得元）→ API の公式クレジットと端末データの初期化。
+// 下 2 段は小さく薄く出す（必要な表記だが目立たせない）。
+const FOOT_LINKS = [
+  { href: "/books-guide", label: "追加できる本" },
+  { href: "/terms", label: "利用規約" },
+  { href: "/privacy", label: "プライバシーポリシー" },
+  { href: "/operator", label: "運営者" },
+];
+
+// 右下の「ページの先頭へ」ボタン（PC のみ。表示条件は styles.css の .to-top）。少しスクロール
+// したら出す。scroll は passive で拾い、状態が変わったときだけクラスを付け外しする。
+const TO_TOP =
+  `<button type="button" class="to-top" id="to-top" aria-label="ページの先頭へ" title="ページの先頭へ">` +
+  `<svg viewBox="0 0 24 24" width="22" height="22" aria-hidden="true"><path d="M12 5l-7 7m7-7l7 7M12 5v14" ` +
+  `fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/></svg></button>` +
+  `<script>(function(){var b=document.getElementById("to-top");if(!b)return;var on=false;` +
+  `function u(){var v=window.scrollY>400;if(v!==on){on=v;b.classList.toggle("show",v);}}` +
+  `window.addEventListener("scroll",u,{passive:true});u();` +
+  `b.addEventListener("click",function(){var r=matchMedia("(prefers-reduced-motion: reduce)").matches;` +
+  `window.scrollTo({top:0,behavior:r?"auto":"smooth"});});})();</script>`;
+
 export function footerHtml(withAff = false): string {
   const aff = withAff
     ? `<p class="aff-disclosure">当サイトはアフィリエイト広告（PR）を利用しています（<a href="/about">詳細</a>）。</p>`
     : "";
+  const links = FOOT_LINKS.map((l) => `<a href="${l.href}">${l.label}</a>`).join("");
   return (
     `<footer class="site">` +
-    `<p>データ提供: メディア芸術データベース（文化庁）｜ 書影: 楽天ブックス・楽天市場・Yahoo!ショッピング ｜ My 100 Manga / @rela1470</p>` +
+    `<nav class="foot-links" aria-label="サイト情報">${links}</nav>` +
     aff +
-    `<p class="foot-links"><a href="/lists">みんなのリスト</a> ｜ <a href="/ranking">人気ランキング</a> ｜ <a href="/sales-ranking">売上ランキング</a> ｜ <a href="/books-guide">追加できる本について</a> ｜ <a href="/about">利用ソース・アフィリエイトについて</a> ｜ <a href="/terms">利用規約</a> ｜ <a href="/privacy">プライバシーポリシー</a> ｜ <a href="/operator">運営者について</a></p>` +
-    `<p class="foot-reset"><button type="button" id="reset-local-data">この端末のデータを初期化</button></p>` +
-    `<p class="foot-credits">${RAKUTEN_CREDIT}\n${YAHOO_CREDIT}</p>` +
+    // 出典の行そのものを /about（利用ソース・広告の説明）へのリンクにする（リンク一覧には別に置かない）。
+    `<p class="foot-source"><a href="/about">データ: メディア芸術データベース（国立アートリサーチセンター）／ 書影: 楽天ブックス・楽天市場・Yahoo!ショッピング</a></p>` +
+    `<p class="foot-credits">${RAKUTEN_CREDIT}\n${YAHOO_CREDIT}` +
+    `<button type="button" id="reset-local-data">この端末のデータを初期化</button></p>` +
+    `<p class="foot-copy">© 2026 My 100 Manga @rela1470</p>` +
     `</footer>` +
+    TO_TOP +
     RESET_SCRIPT
   );
 }

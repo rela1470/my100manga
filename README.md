@@ -1,6 +1,6 @@
 # My 100 Manga
 
-「私を構成する100の漫画」を選んでカード化し、URLで共有できるサイト。
+「自分を構成する100の漫画」を選んでカード化し、URLで共有できるサイト。
 
 - スタック: Cloudflare Workers（Static Assets） + D1（SQLite）
 - 検索: [メディア芸術データベース（MADB）](https://mediaarts-db.artmuseums.go.jp/) のマンガ単行本 LOD を取り込んだローカルマスタ（`series` / `volumes`）を参照。シリーズ→巻→ISBN が相関済みなので、検索結果からシリーズを開いて全巻を一括追加できる

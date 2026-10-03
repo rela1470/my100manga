@@ -1,4 +1,4 @@
-// 公開ページ共通のヘッダーボタン（みんなのリスト・人気ランキング・売上ランキング）。並びはフッターと同じ。各 HTML の
+// 公開ページ共通のヘッダーボタン（みんなのリスト・人気ランキング・売上ランキング）。各 HTML の
 // <!--HEADER_LINKS--> に差し込む。フッター (src/footer.ts) と同じく injectAnalytics
 // （静的配信ページ）と renderViewPage（view.html）の両方から呼ぶ。
 const LINKS = [

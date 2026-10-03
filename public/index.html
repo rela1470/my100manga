@@ -7,12 +7,12 @@
        page_location やリファラとして読む前にアドレスバーから消す。token は sessionStorage
        （無理ならメモリ）へ移し、app.js init() がそこから読む。?edit= は残すので再読み込みでも編集を続けられる。 -->
   <script>(function(){try{var u=new URL(location.href),t=u.searchParams.get("t"),s=u.searchParams.get("edit");if(!t)return;if(s){window.__EDIT_TOKEN__={slug:s,t:t};try{sessionStorage.setItem("my100manga_edit_token",JSON.stringify({slug:s,t:t}));}catch(e){}}u.searchParams.delete("t");history.replaceState(history.state,"",u.pathname+u.search+u.hash);}catch(e){}})();</script>
-  <title>My 100 Manga - 私を構成する100の漫画</title>
+  <title>My 100 Manga - 自分を構成する100の漫画</title>
   <meta name="description" content="あなたのおすすめ漫画100作品を選んでカードにし、URLで共有できるサイトです。">
   <link rel="canonical" href="https://my100manga.com/">
   <meta property="og:type" content="website">
   <meta property="og:site_name" content="My 100 Manga">
-  <meta property="og:title" content="My 100 Manga - 私を構成する100の漫画">
+  <meta property="og:title" content="My 100 Manga - 自分を構成する100の漫画">
   <meta property="og:description" content="あなたのおすすめ漫画100作品を選んでカードにし、URLで共有できるサイトです。">
   <meta property="og:url" content="https://my100manga.com/">
   <meta property="og:image" content="https://my100manga.com/og-default.png">
@@ -31,7 +31,7 @@
   <!--GTM_BODY-->
   <header class="site">
     <h1>My <span class="accent">100</span> Manga</h1>
-    <p class="tagline">私を構成する100の漫画を選んで、URLで共有しよう</p>
+    <p class="tagline">自分を構成する100の漫画を選んで、URLで共有しよう</p>
     <!--HEADER_LINKS-->
   </header>
 
@@ -99,14 +99,17 @@
   <!-- add / search modal -->
   <div class="modal-backdrop modal-full" id="searchModal">
     <div class="modal">
-      <h2 id="searchTitle">作品を追加</h2>
+      <!-- 閉じるは右上（巻一覧が長くても下まで行かずに閉じられるよう） -->
+      <div class="search-head">
+        <h2 id="searchTitle">作品を追加</h2>
+        <button id="cancelSearch">閉じる</button>
+      </div>
       <div class="search-subtitle" id="searchSubtitle" hidden></div>
       <div class="vol-bar search-bar" id="searchBar" hidden></div>
       <div class="spinner" id="searchSpinner" style="display:none">検索中...</div>
       <div class="results" id="results"></div>
       <div class="modal-actions">
         <div class="search-actions" id="searchActions"></div>
-        <button id="cancelSearch">閉じる</button>
       </div>
     </div>
   </div>
@@ -114,7 +117,14 @@
   <!-- volume detail modal: 巻一覧で本を押したときに詳細を見せ、「リストに追加」で初めて追加する -->
   <div class="modal-backdrop" id="volModal">
     <div class="modal">
-      <h2 id="vTitle"></h2>
+      <!-- 操作ボタンは右上（あらすじ・購入リンクが長くてもスクロールせずに押せるよう、上に貼り付ける） -->
+      <div class="modal-head">
+        <h2 id="vTitle"></h2>
+        <div class="modal-head-actions">
+          <button id="vClose">閉じる</button>
+          <button class="primary" id="vAdd">リストに追加</button>
+        </div>
+      </div>
       <div class="detail-body">
         <div id="vCoverBox"></div>
         <div class="dinfo">
@@ -140,11 +150,6 @@
         <div class="buy-group" id="vBuyEbook"></div>
         <div class="buy-group" id="vBuyUsed"></div>
         <p class="buy-note">[AD]絶版でも電子書籍なら手に入ることがあります。リンクは各社アフィリエイトを含みます。</p>
-      </div>
-      <div class="modal-actions">
-        <div style="flex:1"></div>
-        <button id="vClose">閉じる</button>
-        <button class="primary" id="vAdd">リストに追加</button>
       </div>
     </div>
   </div>

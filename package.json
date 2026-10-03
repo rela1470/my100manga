@@ -2,7 +2,7 @@
   "name": "my100manga",
   "version": "0.1.0",
   "private": true,
-  "description": "私を構成する100の漫画を作って共有するサイト",
+  "description": "自分を構成する100の漫画を作って共有するサイト",
   "license": "Apache-2.0",
   "scripts": {
     "dev": "wrangler dev",

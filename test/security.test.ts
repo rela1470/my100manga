@@ -219,16 +219,24 @@ describe("stripUrls", () => {
 });
 
 describe("/cover の正規化と上流チェック", () => {
-  it("Yahoo はクエリ・フラグメントを捨て、楽天は _ex だけ残す", () => {
+  it("Yahoo はクエリ・フラグメントを捨て、楽天は既定サイズの _ex だけ残す", () => {
     expect(normalizeCoverTarget(new URL("https://item-shopping.c.yimg.jp/i/l/store_x?a=1#f"), "yahoo").toString()).toBe(
       "https://item-shopping.c.yimg.jp/i/l/store_x"
     );
-    expect(
+    const mottainai = (q: string) =>
       normalizeCoverTarget(
-        new URL("https://thumbnail.image.rakuten.co.jp/@0_mall/comicset/cabinet/a.jpg?_ex=600x600&z=1"),
+        new URL(`https://thumbnail.image.rakuten.co.jp/@0_mall/comicset/cabinet/a.jpg${q}`),
         "mottainai"
-      ).toString()
-    ).toBe("https://thumbnail.image.rakuten.co.jp/@0_mall/comicset/cabinet/a.jpg?_ex=600x600");
+      ).toString();
+    expect(mottainai("?_ex=600x600&z=1")).toBe(
+      "https://thumbnail.image.rakuten.co.jp/@0_mall/comicset/cabinet/a.jpg?_ex=600x600"
+    );
+    // 既定以外のサイズは落とす。残すと _ex を変えるだけで別ハッシュ＝別 R2 オブジェクト
+    // （永久保存）を際限なく作らせられる。
+    const bare = "https://thumbnail.image.rakuten.co.jp/@0_mall/comicset/cabinet/a.jpg";
+    expect(mottainai("?_ex=1200x1200")).toBe(bare);
+    expect(mottainai("?_ex=599x599")).toBe(bare);
+    expect(mottainai("")).toBe(bare);
   });
 
   it("パスの形・ポート・認証情報が怪しい URL は対象外", () => {
@@ -249,9 +257,9 @@ describe("/cover の正規化と上流チェック", () => {
     expect(await getTrimmedCover(noR2, ctx, target, "yahoo")).toBeNull();
   });
 
-  it("上流が 5MB 超なら失敗扱い", async () => {
+  it("上流が上限（2MB）超なら失敗扱い", async () => {
     vi.spyOn(globalThis, "fetch").mockResolvedValue(
-      new Response("x", { headers: { "content-type": "image/jpeg", "content-length": String(6 * 1024 * 1024) } })
+      new Response("x", { headers: { "content-type": "image/jpeg", "content-length": String(3 * 1024 * 1024) } })
     );
     expect(await getTrimmedCover(noR2, ctx, target, "yahoo")).toBeNull();
   });
@@ -305,7 +313,10 @@ describe("リスト作成・更新の入力上限", () => {
         headers: { "content-type": "application/json" },
         body: JSON.stringify({ items: items(), edit_token: token }),
       });
-    expect((await updateList(put(edit_token.slice(0, -1) + "0"), baseEnv, slug)).status).toBe(403);
+    // 末尾 1 文字を必ず別の文字に差し替える。"0" を固定で足すと、トークンが 16 進で（util.ts
+    // randomToken）元が "0" で終わるとき 16 回に 1 回は本物と同じになり、200 が返って落ちる。
+    const wrong = edit_token.slice(0, -1) + (edit_token.endsWith("0") ? "1" : "0");
+    expect((await updateList(put(wrong), baseEnv, slug)).status).toBe(403);
     expect((await updateList(put(""), baseEnv, slug)).status).toBe(403);
     expect((await updateList(put(edit_token), baseEnv, slug)).status).toBe(200);
   });

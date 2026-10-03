@@ -5,6 +5,8 @@ import { liveSearchByKeyword, SupplementVolume } from "./madbLive";
 import { rakutenComicByIsbn } from "./rakuten";
 import { mergeTargetsFor } from "./merge";
 import { attributeTitles, buildGroup, groupKey, resolveGroup, GroupRow, GroupVolume, UnlinkedGroup } from "./groups";
+import { edgeCacheKey, withEdgeCache } from "./edgeCache";
+import { ADULT_BLOCK_MESSAGE, adultBlockMessage, findAdultIsbns, hasAdultTitleMatch } from "./adult";
 
 interface SeriesResult {
   series_id: string;
@@ -94,6 +96,11 @@ function toSeriesResult(r: SeriesRow, covers: Map<string, string>): SeriesResult
 
 const PAGE = 30;
 const SEARCH_MAX_OFFSET = 300;
+// キーワード検索の結果をエッジ（Cache API）で持つ秒数。検索は series / volumes を '%q%' の LIKE で
+// 全行なめる一番重い読み取りで、マスタは月次取り込みと管理者の結合・修正でしか変わらないので
+// 10 分遅れてよい。表紙はキャッシュ済みのものだけ返し、空欄はクライアントが POST /api/covers で
+// 埋めるので、古い結果でも表示は崩れない。
+const SEARCH_CACHE_SEC = 600;
 
 // Search the MADB master (series table). Results are series-level; the client
 // then pulls volumes via /api/series/:id/volumes to add a single volume or the
@@ -110,9 +117,19 @@ export async function handleSearch(request: Request, env: Env): Promise<Response
   // runaway client can't page through the whole table.
   const offset = Math.min(Math.max(Math.floor(Number(url.searchParams.get("offset"))) || 0, 0), SEARCH_MAX_OFFSET);
 
+  // ISBN 検索は索引 1 本で引けて軽く、マスタに無いときの楽天の結果（レート制限で取れなかった
+  // 「無し」を含む）を固定したくないのでキャッシュしない。
   const isbn = isbnQuery(q);
   if (isbn) return searchByIsbn(env, isbn);
 
+  // キーは正規化した検索語（normTitle: 空白除去・小文字化）と offset。検索の照合は全部 normTitle /
+  // searchKey 後の文字列で行うので、空白や大文字小文字だけ違う検索語は同じ結果になる。
+  return withEdgeCache(edgeCacheKey("/api/search", { q: normTitle(q), offset }), SEARCH_CACHE_SEC, () =>
+    searchByKeyword(env, q, offset)
+  );
+}
+
+async function searchByKeyword(env: Env, q: string, offset: number): Promise<Response> {
   const nq = normTitle(q);
   // Clamp below the D1 LIKE byte cap; the "%|…|%" kana wrappers add up to 4 bytes.
   // The exact tier below still binds full nq (= ? has no pattern-length limit).
@@ -241,6 +258,11 @@ export async function handleSearch(request: Request, env: Env): Promise<Response
   const results = rows.map((r) => toSeriesResult(r, covers));
   const promoted = promotedRows.map((r) => toSeriesResult(r, covers));
 
+  // 書名に検索語を含む成年向けの巻（取り込みで外したもの, adult_volumes）があれば、結果の下に
+  // 「成年向けは追加できません」と注記できるよう adult_hits を立てる。1 ページ目だけ見る。
+  // この応答ごとエッジキャッシュされる（handleSearch の withEdgeCache）ので、検索のたびには引かない。
+  const adultHits = offset === 0 ? await hasAdultTitleMatch(env, likeS) : false;
+
   // Real series first (keyword hits, then promoted complete works), then any standalone
   // series-less cards. Capped at PAGE per page. A merge target or promoted series can
   // reappear on a later page; the client drops cards it already shows.
@@ -248,6 +270,7 @@ export async function handleSearch(request: Request, env: Env): Promise<Response
     {
       results: [...results, ...promoted, ...standalone].slice(0, PAGE),
       next_offset: hasMore && offset + PAGE <= SEARCH_MAX_OFFSET ? offset + PAGE : null,
+      ...(adultHits ? { adult_hits: true, adult_message: ADULT_BLOCK_MESSAGE } : {}),
     },
     200,
     { "cache-control": "no-store" }
@@ -304,6 +327,16 @@ function isbnQuery(q: string): string {
 // say why (live MADB search matches titles only, so it can't help with an ISBN either).
 async function searchByIsbn(env: Env, isbn: string): Promise<Response> {
   const headers = { "cache-control": "no-store" };
+  // 成年向けとして取り込みから外した巻（adult_volumes）は「見つからない」ではなく、追加できない
+  // 理由を返す。楽天ブックスへのフォールバックより先に見る（楽天側に一般の漫画として載っていても出さない）。
+  const adultTitle = (await findAdultIsbns(env, [isbn])).get(isbn);
+  if (adultTitle !== undefined) {
+    return json(
+      { results: [], blocked: { reason: "adult", message: adultBlockMessage(adultTitle) } },
+      200,
+      headers
+    );
+  }
   const hit = await resolveGroup(env, "G" + isbn);
   if (!hit) {
     const card = await rakutenCard(env, isbn);
@@ -454,6 +487,19 @@ export async function handleLiveSearch(request: Request, env: Env): Promise<Resp
     series = await liveSearchByKeyword(q);
   } catch {
     return json({ error: "最新データベースに接続できませんでした。時間をおいて再試行してください。" }, 502);
+  }
+  // SPARQL 側でも成年向けは落としている（sparqlNotAdult）が、取り込みで外した巻（adult_volumes）に
+  // 当たるものは念のためここでも除き、巻が残らないシリーズごと落とす。
+  const adult = await findAdultIsbns(env, series.flatMap((s) => s.volumes.flatMap((v) => v.isbns.map((i) => toIsbn13(i)))));
+  if (adult.size) {
+    series = series
+      .map((s) => {
+        const volumes = s.volumes.filter((v) => !v.isbns.some((i) => adult.has(toIsbn13(i))));
+        return volumes.length === s.volumes.length
+          ? s
+          : { ...s, volumes, volume_count: volumes.length, first_isbn: volumes[0]?.isbn ?? "" };
+      })
+      .filter((s) => s.volumes.length > 0);
   }
 
   await rememberLiveVolumes(env, series.flatMap((s) => s.volumes));

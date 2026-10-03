@@ -8,6 +8,8 @@
 //   - アカウントの公開リスト（編集用 token 付き）を lists() で返す。app.js / view.js が使う
 // ログアウトすると、アカウントに保存済みのもの（紐付いたリストの編集リンク・作成中のリスト）は
 // この端末から消す。共用 PC で次の人に編集されないように。ログインし直せば戻る。
+// 退会（withdraw）はアカウント設定ページ（/account, public/account-page.js）から呼ぶ。確認ダイアログで、紐付いた公開リストを一緒に消すか残すかを選ばせる。
+// 残したリストは匿名公開に戻るので、編集リンクをこの端末の MyLists に残す。
 (function () {
   const DRAFT_KEY = "my100manga_draft_v1"; // public/app.js と同じ
 
@@ -179,6 +181,109 @@
     location.href = "/";
   }
 
+  // 退会の確認ダイアログ。紐付いた公開リストがあれば「リストも削除する」チェックを出す
+  // （既定はオフ＝残す。公開リストの削除は取り消せないので）。
+  // 決定なら { deleteLists }、キャンセルなら null を返す。
+  function withdrawDialog(owned, email) {
+    return new Promise((resolve) => {
+      const host = document.createElement("div");
+      host.className = "ui-dialog-backdrop open";
+      const box = document.createElement("div");
+      box.className = "ui-dialog claim-dialog";
+      box.setAttribute("role", "dialog");
+      box.setAttribute("aria-modal", "true");
+      const msg = document.createElement("p");
+      msg.className = "ui-dialog-msg";
+      msg.textContent =
+        `アカウント（${email}）を削除して退会します。アカウントに保存された作成中のリストも消え、元に戻せません。` +
+        (owned.length
+          ? `\n\nアカウントに紐付いた公開リストが${owned.length}件あります。残す場合は紐付けを外して匿名の公開リストに戻し、` +
+            "この端末の編集リンクから引き続き編集できます。"
+          : "");
+      box.appendChild(msg);
+      let cb = null;
+      if (owned.length) {
+        const ul = document.createElement("ul");
+        ul.className = "claim-list";
+        const li = document.createElement("li");
+        const label = document.createElement("label");
+        cb = document.createElement("input");
+        cb.type = "checkbox";
+        label.append(cb, ` 公開リスト（${owned.length}件）も削除する`);
+        li.appendChild(label);
+        ul.appendChild(li);
+        box.appendChild(ul);
+      }
+      const actions = document.createElement("div");
+      actions.className = "ui-dialog-actions";
+      const cancel = document.createElement("button");
+      cancel.type = "button";
+      cancel.textContent = "キャンセル";
+      const ok = document.createElement("button");
+      ok.type = "button";
+      ok.className = "danger";
+      const sync = () => {
+        ok.textContent = cb && cb.checked ? "リストも削除して退会する" : "退会する";
+      };
+      if (cb) cb.addEventListener("change", sync);
+      sync();
+      const close = (val) => {
+        host.remove();
+        resolve(val);
+      };
+      cancel.addEventListener("click", () => close(null));
+      ok.addEventListener("click", () => close({ deleteLists: Boolean(cb && cb.checked) }));
+      host.addEventListener("keydown", (e) => {
+        if (e.key === "Escape") close(null);
+      });
+      actions.append(cancel, ok);
+      box.appendChild(actions);
+      host.appendChild(box);
+      document.body.appendChild(host);
+      requestAnimationFrame(() => cancel.focus());
+    });
+  }
+
+  async function withdraw() {
+    const me = await ready;
+    if (!me.user) return;
+    const owned = await lists();
+    const choice = await withdrawDialog(owned, me.user.email);
+    if (!choice) return;
+    let ok = false;
+    try {
+      const res = await fetch("/api/me", {
+        method: "DELETE",
+        credentials: "same-origin",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ delete_lists: choice.deleteLists }),
+      });
+      ok = res.ok;
+    } catch (e) {}
+    if (!ok) {
+      await window.uiAlert?.("退会できませんでした。時間をおいてもう一度お試しください。");
+      return;
+    }
+    try {
+      for (const l of owned) {
+        if (choice.deleteLists) {
+          window.MyLists?.remove(l.slug);
+          localStorage.removeItem(`${DRAFT_KEY}_edit_${l.slug}`);
+        } else {
+          // 匿名公開に戻ったリストは、この端末の編集リンクだけが編集の手がかりになる。
+          window.MyLists?.save({ slug: l.slug, token: l.edit_token, owner: l.owner_name });
+        }
+      }
+      localStorage.removeItem(DRAFT_KEY);
+    } catch (e) {}
+    await window.uiAlert?.(
+      choice.deleteLists || !owned.length
+        ? "退会しました。ご利用ありがとうございました。"
+        : "退会しました。残したリストの編集リンクは、この端末の「あなたのリスト」に残しています。"
+    );
+    location.href = "/";
+  }
+
   function renderHeader(me) {
     const header = document.querySelector("header.site");
     if (!header || !me.enabled) return;
@@ -219,7 +324,12 @@
       out.type = "button";
       out.textContent = "ログアウト";
       out.addEventListener("click", logout);
-      menu.append(email, mine, out);
+      // 退会はメニューに直接置かず、アカウント設定ページ（/account）の一番下に置く（誤操作よけ）。
+      const settings = document.createElement("a");
+      settings.href = "/account";
+      settings.className = "account-settings";
+      settings.textContent = "アカウント設定";
+      menu.append(email, mine, settings, out);
 
       btn.addEventListener("click", (e) => {
         e.stopPropagation();
@@ -248,6 +358,9 @@
   window.Account = {
     ready,
     loginUrl,
+    logout,
+    /** 退会（確認ダイアログ付き）。アカウント設定ページ public/account-page.js から呼ぶ。 */
+    withdraw,
     lists,
     claim,
     promptClaim,

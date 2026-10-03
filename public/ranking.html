@@ -5,6 +5,21 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>人気ランキング | My 100 Manga</title>
   <meta name="description" content="My 100 Manga で「私を構成する100の漫画」に多く選ばれている漫画の巻ランキング。累計・過去30日・過去7日・過去24時間で集計しています。">
+  <link rel="canonical" href="https://my100manga.com/ranking">
+  <meta property="og:type" content="website">
+  <meta property="og:site_name" content="My 100 Manga">
+  <meta property="og:title" content="人気ランキング | My 100 Manga">
+  <meta property="og:description" content="My 100 Manga で「私を構成する100の漫画」に多く選ばれている漫画の巻ランキング。累計・過去30日・過去7日・過去24時間で集計しています。">
+  <meta property="og:url" content="https://my100manga.com/ranking">
+  <meta property="og:image" content="https://my100manga.com/og-default.png">
+  <meta property="og:image:width" content="1200">
+  <meta property="og:image:height" content="630">
+  <meta name="twitter:card" content="summary_large_image">
+  <meta name="twitter:image" content="https://my100manga.com/og-default.png">
+  <link rel="icon" href="/favicon.ico" sizes="32x32">
+  <link rel="icon" href="/favicon.svg" type="image/svg+xml">
+  <link rel="apple-touch-icon" href="/apple-touch-icon.png">
+  <meta name="theme-color" content="#3b82f6">
   <!--ANALYTICS-->
   <link rel="stylesheet" href="/styles.css">
 </head>
@@ -31,13 +46,15 @@
     <p class="rank-empty" id="empty" hidden>この期間に選ばれた漫画はまだありません。</p>
 
     <div class="publish-bar">
-      <a href="/"><button class="primary">自分の100を作る</button></a>
+      <a class="button primary" href="/">自分の100を作る</a>
     </div>
   </div>
 
   <!--FOOTER_AFF-->
 
   <!--AFF_DATA-->
+  <script src="/ui-dialog.js"></script>
+  <script src="/api.js"></script>
   <script src="/cover-fit.js"></script>
   <script src="/affiliate.js"></script>
   <script src="/book-detail.js"></script>

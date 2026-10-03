@@ -66,13 +66,20 @@ export function appVersion(env: Env): string {
 }
 
 // HTML に SPA のバージョン印を差し込む。<meta name="app-version"> を <head> に、そして
-// app.js / admin.js の読み込みに ?v= を付けてデプロイごとにブラウザキャッシュを破棄する。
-function injectVersion(html: string, v: string): string {
+// 自サイトの script src / stylesheet href（"/xxx.js" "/xxx.css"、クエリ無しのもの）すべてに
+// ?v= を付けてデプロイごとにブラウザキャッシュを破棄する（app.js だけ新しく、共用の
+// ui-dialog.js や styles.css が古いまま、という食い違いを防ぐ）。外部 URL（https://…）や
+// すでにクエリの付いたものは触らない。view.html を返す renderViewPage からも使えるよう export。
+export function injectVersion(html: string, v: string): string {
+  const ver = encodeURIComponent(v);
   let out = html
-    .replace('src="/app.js"', `src="/app.js?v=${v}"`)
-    .replace('src="/admin.js"', `src="/admin.js?v=${v}"`);
-  if (out.includes("</head>")) {
-    out = out.replace("</head>", `<meta name="app-version" content="${v}"></head>`);
+    .replace(/(<script\b[^>]*\bsrc=")(\/(?!\/)[A-Za-z0-9_\-./]+\.js)(")/g, `$1$2?v=${ver}$3`)
+    .replace(
+      /(<link\b[^>]*\brel="stylesheet"[^>]*\bhref=")(\/(?!\/)[A-Za-z0-9_\-./]+\.css)(")/g,
+      `$1$2?v=${ver}$3`
+    );
+  if (out.includes("</head>") && !out.includes('name="app-version"')) {
+    out = out.replace("</head>", `<meta name="app-version" content="${escapeHtml(v)}"></head>`);
   }
   return out;
 }

@@ -1,6 +1,6 @@
 import { env } from "cloudflare:workers";
-import { describe, expect, it } from "vitest";
-import { isCrawler, jstDay, purgeListViewSeen } from "../src/publicLists";
+import { beforeEach, describe, expect, it } from "vitest";
+import { isCrawler, jstDay, purgeListViewSeen, purgePublicListsCache } from "../src/publicLists";
 import { BROWSER_UA, beacon, createList, view } from "./helpers";
 import { SELF } from "cloudflare:test";
 
@@ -35,6 +35,9 @@ describe("isCrawler", () => {
 });
 
 describe("GET /api/public-lists", () => {
+  // 一覧はエッジ（Cache API）に 60 秒持つので、テストごとに 1 ページ目のキャッシュを消す。
+  beforeEach(purgePublicListsCache);
+
   it("限定公開は一覧にも件数にも出さない", async () => {
     const a = await createList({ owner_name: "A" });
     const secret = await createList({ owner_name: "S", unlisted: true });
@@ -88,7 +91,7 @@ describe("GET /api/public-lists", () => {
 });
 
 describe("POST /api/lists/:slug/view（アクセス数）", () => {
-  it("同じ訪問者は 1 日 1 回だけ数え、別の訪問者は別に数える", async () => {
+  it("同じ訪問者（IP）は 1 日 1 回だけ数え、別の IP は別に数える", async () => {
     const { slug } = await createList();
     expect((await beacon(slug)).status).toBe(204);
     await beacon(slug);
@@ -96,9 +99,10 @@ describe("POST /api/lists/:slug/view（アクセス数）", () => {
     expect(await viewsOf(slug)).toBe(1);
     await beacon(slug, { ip: "203.0.113.2" });
     expect(await viewsOf(slug)).toBe(2);
-    // 同じ IP でも User-Agent が違えば別の人（携帯キャリアの NAT 共有など）
+    // User-Agent を変えても同じ IP なら数えない（UA を回して水増しできないように）
     await beacon(slug, { ua: BROWSER_UA.replace("Chrome/130", "Chrome/131") });
-    expect(await viewsOf(slug)).toBe(3);
+    await beacon(slug, { ua: "Mozilla/5.0 (iPhone; CPU iPhone OS 18_0 like Mac OS X) Safari/604.1" });
+    expect(await viewsOf(slug)).toBe(2);
   });
 
   it("クローラ・存在しないリストは数えない（応答は同じ 204）", async () => {
@@ -133,5 +137,37 @@ describe("POST /api/lists/:slug/view（アクセス数）", () => {
     await purgeListViewSeen(env);
     const { results } = await env.DB.prepare(`SELECT day FROM list_view_seen ORDER BY day DESC`).all<{ day: string }>();
     expect(results.map((r) => r.day)).toEqual([day(0), day(1)]);
+  });
+});
+
+describe("GET /api/public-lists のエッジキャッシュ", () => {
+  it("60 秒の間は同じ結果を返し、purgePublicListsCache で作り直す", async () => {
+    await purgePublicListsCache();
+    const a = await createList({ owner_name: "A" });
+    expect((await publicLists()).lists.map((l) => l.slug)).toEqual([a.slug]);
+    // API を通さない変更（管理者の直接操作など）はキャッシュが効いている間は出ない
+    await env.DB.prepare(`UPDATE lists SET unlisted = 1 WHERE slug = ?`).bind(a.slug).run();
+    expect((await publicLists()).lists.map((l) => l.slug)).toEqual([a.slug]);
+    await purgePublicListsCache();
+    expect((await publicLists()).lists.map((l) => l.slug)).toEqual([]);
+  });
+
+  it("公開・更新の直後は（この colo では）すぐ一覧に出る", async () => {
+    await purgePublicListsCache();
+    const a = await createList({ owner_name: "A" });
+    expect((await publicLists()).lists.map((l) => l.slug)).toEqual([a.slug]);
+    const b = await createList({ owner_name: "B" });
+    expect((await publicLists()).lists.map((l) => l.slug)).toEqual([b.slug, a.slug]);
+  });
+
+  it("ブラウザ向けの cache-control はキャッシュから返すときも元のまま", async () => {
+    await purgePublicListsCache();
+    await createList();
+    const first = await SELF.fetch("https://example.com/api/public-lists");
+    const second = await SELF.fetch("https://example.com/api/public-lists");
+    expect(first.headers.get("cache-control")).toBe("public, max-age=60");
+    expect(second.headers.get("cache-control")).toBe("public, max-age=60");
+    expect(second.headers.get("x-client-cache-control")).toBeNull();
+    expect(await second.json()).toEqual(await first.json());
   });
 });

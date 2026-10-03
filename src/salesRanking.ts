@@ -2,7 +2,8 @@ import { Env } from "./types";
 import { baseTitle, escapeLikeClamped, json, LIKE_MAX_BYTES, normTitle } from "./util";
 import { rakutenBestsellers, rakutenReady, type RakutenBestseller } from "./rakuten";
 import { resolveUnit } from "./merge";
-import { groupKey, isGroupId, loadGroup } from "./groups";
+import { groupKey, isGroupId, loadGroup, NAME_NORM_PREFIX } from "./groups";
+import { edgeCacheKey, withEdgeCache } from "./edgeCache";
 
 // 売上ランキング。楽天ブックスのコミックを「売れている順」（書籍検索API sort=sales）で毎日
 // 上位 300 件取得して sales_snapshot に貯め（Cron, see index.ts scheduled）、作品単位で
@@ -81,14 +82,20 @@ export function salesWorkTitle(title: string): string {
     .replace(/[〜～~].*$/, "")
     .replace(/[（(]※[^）)]*[）)]/g, " ")
     .replace(EDITION_RE, " ")
-    .trim();
+    .trim()
+    // 先頭の「ミニクリアファイル付き　」のような特典の塊（空白区切りで後ろに書名が続くときだけ）。
+    .replace(/^[^\s　]+付き?[\s　]+(?=[^\s　])/, "");
   // 末尾の「(ミニ色紙付き)」のような数字でない括弧書きを剥がしてから巻数を 1 つ除く。
   for (let prev = ""; prev !== t; ) {
     prev = t;
     t = t.replace(/[\s　]*[（(](?![\s　]*(?:第)?[0-9０-９]{1,4}(?:巻)?[\s　]*[）)])[^（()）]*[）)]$/, "").trim();
   }
   // 長音「ー」は書名の一部（ワールドトリガー）なので末尾の記号に含めない。
-  t = t.replace(VOLUME_RE, "").replace(/[\s　\-－‐:：]+$/, "").replace(/([\s　])[\s　]+/g, "$1").trim();
+  // 空白・括弧の無い巻数（「ブレイド＆バスタード9」）は、和文の直後に付いた数字だけ除く
+  // （「らんま1/2」「ARMS」のような英数字の続きは書名の一部とみなす）。
+  const vol = t.replace(VOLUME_RE, "");
+  t = vol !== t ? vol : t.replace(/(?<=[ぁ-んァ-ヶー一-龠々])[0-9０-９]{1,3}$/, "");
+  t = t.replace(/[\s　\-－‐:：]+$/, "").replace(/([\s　])[\s　]+/g, "$1").trim();
   return t || title.trim();
 }
 
@@ -428,6 +435,11 @@ function likePrefix(work: string): string {
   return escapeLikeClamped(normTitle(headWord(work)), LIKE_MAX_BYTES - 1) + "%";
 }
 
+/** シリーズ名（name_norm）の前方一致文字列（NAME_NORM_PREFIX に 2 回 bind）。likePrefix と同じ範囲。 */
+function namePrefix(work: string): string {
+  return normTitle(headWord(work));
+}
+
 /** 書名が作品名と同じ作品を指すか: ゆるいキーで一致（〜サブタイトル〜を除いても可）、または
  *  「:」「=」以降を除いた基本書名が一致。 */
 const sameWork = (title: string, work: string): boolean => {
@@ -448,9 +460,9 @@ async function seriesByName(env: Env, work: string, names: string[]): Promise<st
   if (!cands.length) {
     const like = await env.DB.prepare(
       `SELECT s.id, s.name, s.creator, (SELECT COUNT(*) FROM volumes v WHERE v.series_id = s.id) AS n
-         FROM series s WHERE s.name_norm LIKE ? ESCAPE '\\' LIMIT 500`
+         FROM series s WHERE ${NAME_NORM_PREFIX} LIMIT 500`
     )
-      .bind(likePrefix(work))
+      .bind(namePrefix(work), namePrefix(work))
       .all<NamedSeries>();
     cands = (like.results ?? []).filter((s) => sameWork(s.name, work));
   }
@@ -490,15 +502,24 @@ async function storePayload(env: Env, payload: SalesPayload): Promise<void> {
 /** GET /api/sales-ranking。Cron が保存した集計を返す。まだ無ければ（初回・手動で
  *  スナップショットを入れた直後など）その場で集計して保存する。 */
 export async function handleSalesRanking(env: Env): Promise<Response> {
-  let payload = await readPayload(env); // 壊れていたら null → 作り直す
-  if (!payload) {
-    payload = await computeSalesRanking(env);
-    if (payload.latest_day) await storePayload(env, payload);
-  }
-  // 更新は 1 日 1 回だが、更新直後（毎朝の Cron・手動取得）に古い集計が長く残らないよう短めに
-  // する。空の集計（まだ取得していない）はキャッシュさせない（データが入った後も空のまま見える）。
-  const cache = payload.latest_day ? "public, max-age=300" : "no-store";
-  return json(payload, 200, { "cache-control": cache });
+  // エッジで 60 秒持って、要求ごとに meta の大きな JSON を D1 から読まないようにする。空の集計
+  // （no-store）はエッジにも入れない。
+  return withEdgeCache(
+    edgeCacheKey("/api/sales-ranking"),
+    60,
+    async () => {
+      let payload = await readPayload(env); // 壊れていたら null → 作り直す
+      if (!payload) {
+        payload = await computeSalesRanking(env);
+        if (payload.latest_day) await storePayload(env, payload);
+      }
+      // 更新は 1 日 1 回だが、更新直後（毎朝の Cron・手動取得）に古い集計が長く残らないよう短めに
+      // する。空の集計（まだ取得していない）はキャッシュさせない（データが入った後も空のまま見える）。
+      const cache = payload.latest_day ? "public, max-age=300" : "no-store";
+      return json(payload, 200, { "cache-control": cache });
+    },
+    (res) => res.status === 200 && !(res.headers.get("cache-control") ?? "").includes("no-store")
+  );
 }
 
 /** 保存済みの行の作品名を今の salesWorkTitle で付け直す（書名ごと、変わったものだけ）。 */

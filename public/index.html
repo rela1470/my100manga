@@ -3,8 +3,27 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
+  <!-- 編集用URL（/?edit=<slug>&t=<token>）の token を、計測・広告タグ（GTM/AdSense）が
+       page_location やリファラとして読む前にアドレスバーから消す。token は sessionStorage
+       （無理ならメモリ）へ移し、app.js init() がそこから読む。?edit= は残すので再読み込みでも編集を続けられる。 -->
+  <script>(function(){try{var u=new URL(location.href),t=u.searchParams.get("t"),s=u.searchParams.get("edit");if(!t)return;if(s){window.__EDIT_TOKEN__={slug:s,t:t};try{sessionStorage.setItem("my100manga_edit_token",JSON.stringify({slug:s,t:t}));}catch(e){}}u.searchParams.delete("t");history.replaceState(history.state,"",u.pathname+u.search+u.hash);}catch(e){}})();</script>
   <title>My 100 Manga - 私を構成する100の漫画</title>
   <meta name="description" content="あなたのおすすめ漫画100作品を選んでカードにし、URLで共有できるサイトです。">
+  <link rel="canonical" href="https://my100manga.com/">
+  <meta property="og:type" content="website">
+  <meta property="og:site_name" content="My 100 Manga">
+  <meta property="og:title" content="My 100 Manga - 私を構成する100の漫画">
+  <meta property="og:description" content="あなたのおすすめ漫画100作品を選んでカードにし、URLで共有できるサイトです。">
+  <meta property="og:url" content="https://my100manga.com/">
+  <meta property="og:image" content="https://my100manga.com/og-default.png">
+  <meta property="og:image:width" content="1200">
+  <meta property="og:image:height" content="630">
+  <meta name="twitter:card" content="summary_large_image">
+  <meta name="twitter:image" content="https://my100manga.com/og-default.png">
+  <link rel="icon" href="/favicon.ico" sizes="32x32">
+  <link rel="icon" href="/favicon.svg" type="image/svg+xml">
+  <link rel="apple-touch-icon" href="/apple-touch-icon.png">
+  <meta name="theme-color" content="#3b82f6">
   <!--ANALYTICS-->
   <link rel="stylesheet" href="/styles.css">
 </head>
@@ -27,6 +46,17 @@
     </div>
 
     <div class="claim-bar" id="claimBar" style="display:none"></div>
+
+    <!-- はじめての人向けの説明。リストが空（0作品）のときだけ app.js render() が出す。 -->
+    <section class="empty-guide" id="emptyGuide" hidden>
+      <h2 class="empty-guide-title">はじめかた</h2>
+      <ol class="empty-guide-steps">
+        <li><b>漫画を選ぶ</b>上の検索欄から作品を探して追加します。ちょうど100作品そろうと公開できます。</li>
+        <li><b>途中経過は自動保存</b>この端末のブラウザに保存されるので、少しずつ選べます。Googleでログインすると別の端末でも続きを作れます。</li>
+        <li><b>表紙はあとからでOK</b>表紙が出ていない本も、あとで「表紙を取得」からまとめて取得できます。</li>
+      </ol>
+      <a class="empty-guide-link" href="/lists">みんなのリストを見る →</a>
+    </section>
 
     <div class="grid" id="grid" aria-label="100作品グリッド"></div>
 
@@ -102,9 +132,10 @@
       <div class="dsynopsis" id="vSynopsisBox" style="display:none">
         <div class="dsynopsis-title">あらすじ</div>
         <p class="dsynopsis-text" id="vSynopsis"></p>
+        <p class="dsynopsis-src">出典: 楽天ブックス</p>
       </div>
       <div class="buy" id="vBuy" style="display:none">
-        <div class="buy-title">購入する</div>
+        <div class="buy-title">購入リンク<span class="pr-label">PR</span></div>
         <div class="buy-group" id="vBuyPrint"></div>
         <div class="buy-group" id="vBuyEbook"></div>
         <div class="buy-group" id="vBuyUsed"></div>
@@ -144,9 +175,10 @@
       <div class="dsynopsis" id="eSynopsisBox" style="display:none">
         <div class="dsynopsis-title">あらすじ</div>
         <p class="dsynopsis-text" id="eSynopsis"></p>
+        <p class="dsynopsis-src">出典: 楽天ブックス</p>
       </div>
       <div class="buy" id="eBuy" style="display:none">
-        <div class="buy-title">購入する</div>
+        <div class="buy-title">購入リンク<span class="pr-label">PR</span></div>
         <div class="buy-group" id="eBuyPrint"></div>
         <div class="buy-group" id="eBuyEbook"></div>
         <div class="buy-group" id="eBuyUsed"></div>
@@ -203,6 +235,7 @@
         <button id="copyShare">コピー</button>
       </div>
       <p class="hint">編集用URL（あなただけが編集できます。ブックマーク推奨）</p>
+      <p class="edit-url-warn" id="editUrlWarn">このリンクを失くすと、ほかの端末からは編集できなくなります。この端末のブラウザには保存済みなので、トップの「このブラウザで公開したリスト」から編集に戻れます。<span id="editUrlWarnLogin">別の端末からも編集するには、Googleでログインしてリストをアカウントに保存してください。</span></p>
       <div class="share-url">
         <input type="text" id="editUrl" readonly>
         <button id="copyEdit">コピー</button>
@@ -214,7 +247,7 @@
       </div>
       <div class="modal-actions">
         <div style="flex:1"></div>
-        <a id="openShare" href="#" target="_blank"><button class="primary">開いて確認</button></a>
+        <a id="openShare" class="button primary" href="#" target="_blank" rel="noopener">開いて確認</a>
         <button id="closeShare">閉じる</button>
       </div>
     </div>
@@ -247,6 +280,7 @@
 
   <!--AFF_DATA-->
   <script src="/ui-dialog.js"></script>
+  <script src="/api.js"></script>
   <script src="/turnstile.js"></script>
   <script src="/cover-fit.js"></script>
   <script src="/affiliate.js"></script>

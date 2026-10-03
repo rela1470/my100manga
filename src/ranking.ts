@@ -1,6 +1,8 @@
 import { Env } from "./types";
 import { json, toIsbn13 } from "./util";
 import { resolveBooks } from "./listItems";
+import { readMaterialized } from "./metaCache";
+import { edgeCacheKey, withEdgeCache } from "./edgeCache";
 
 // 「本が追加されている回数」ランキング。集計単位は巻 (ISBN)、カウントは COUNT(DISTINCT slug)
 // =「その巻を選んだ人数」。元データは list_item_events (公開時に追記される巻の追加イベント。
@@ -99,43 +101,16 @@ async function computeRanking(env: Env): Promise<RankingPayload> {
 }
 
 /** meta にキャッシュした結果を返す。TTL 切れなら再計算して保存する。covers の TTL パターンと
- *  同じ発想で、書き込みパスには触らず読み取り時に materialize する。 */
+ *  同じ発想で、書き込みパスには触らず読み取り時に materialize する。TTL 切れの瞬間に要求が
+ *  重なっても再計算するのは 1 件だけ（src/metaCache.ts）。 */
 export async function getBookRanking(env: Env): Promise<RankingPayload> {
-  const atRow = await env.DB.prepare(`SELECT value FROM meta WHERE key = ?`)
-    .bind(META_AT_KEY)
-    .first<{ value: string }>();
-  const at = atRow ? Number(atRow.value) : 0;
-
-  if (at && Date.now() - at < TTL_MS) {
-    const jsonRow = await env.DB.prepare(`SELECT value FROM meta WHERE key = ?`)
-      .bind(META_JSON_KEY)
-      .first<{ value: string }>();
-    if (jsonRow) {
-      try {
-        return JSON.parse(jsonRow.value) as RankingPayload;
-      } catch {
-        // 壊れていたら下の再計算にフォールスルーする。
-      }
-    }
-  }
-
-  const payload = await computeRanking(env);
-  const value = JSON.stringify(payload);
-  await env.DB.batch([
-    env.DB.prepare(
-      `INSERT INTO meta (key, value) VALUES (?, ?)
-       ON CONFLICT(key) DO UPDATE SET value = excluded.value`
-    ).bind(META_JSON_KEY, value),
-    env.DB.prepare(
-      `INSERT INTO meta (key, value) VALUES (?, ?)
-       ON CONFLICT(key) DO UPDATE SET value = excluded.value`
-    ).bind(META_AT_KEY, String(payload.computed_at)),
-  ]);
-  return payload;
+  return readMaterialized(env, { json: META_JSON_KEY, at: META_AT_KEY }, TTL_MS, () => computeRanking(env));
 }
 
 export async function handleRanking(env: Env): Promise<Response> {
-  const payload = await getBookRanking(env);
-  // 集計は最大 10 分古い。閲覧側でも数分キャッシュして再計算の発火を間引く。
-  return json(payload, 200, { "cache-control": "public, max-age=300" });
+  // 集計は最大 10 分古い。閲覧側でも数分キャッシュして再計算の発火を間引く。エッジでも 60 秒
+  // 持って、meta の大きな JSON を要求ごとに D1 から読まないようにする。
+  return withEdgeCache(edgeCacheKey("/api/ranking"), 60, async () =>
+    json(await getBookRanking(env), 200, { "cache-control": "public, max-age=300" })
+  );
 }

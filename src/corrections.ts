@@ -3,6 +3,7 @@ import { badRequest, json, notFound, volumeLabelTemplate, formatVolumeLabel, rea
 import { findNgWord } from "./ngwords";
 import { isTrustedCoverUrl, readCachedCovers, resolveCovers } from "./covers";
 import type { UnlinkedGroup } from "./groups";
+import { adultBlockMessage, findAdultIsbns } from "./adult";
 
 // A correction volume as merged into the series volume list. title/author are filled
 // from the series row by the caller, not stored, so they always track the master.
@@ -78,6 +79,9 @@ export async function addCorrection(
   const volume = typeof body.volume_number === "string" ? normalizeVolume(body.volume_number) : null;
   if (!isbn) return badRequest("ISBN13 を指定してください");
   if (!volume) return badRequest("巻番号は「巻N」または「N」の形式で指定してください");
+  // 成年向けとして取り込みから外した巻（adult_volumes）は手動追加でも入れない。
+  const adultTitle = (await findAdultIsbns(env, [isbn])).get(isbn);
+  if (adultTitle !== undefined) return badRequest(adultBlockMessage(adultTitle));
 
   const count = await env.DB.prepare(
     `SELECT COUNT(*) AS n FROM series_correction WHERE series_id = ?`

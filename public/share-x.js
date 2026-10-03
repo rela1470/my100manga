@@ -13,8 +13,10 @@
 (function () {
   const HASHTAG = "my100manga";
 
+  // 表示名が無いときは「私のMy 100 Manga」ではなくサイトの題名どおりの言い回しにする。
+  // ハッシュタグ #my100manga は X は hashtags パラメータ、Threads/Bluesky/LINE は本文末尾に付ける。
   function shareText(owner) {
-    return `${owner || "私"}のMy 100 Manga`;
+    return owner ? `${owner}のMy 100 Manga` : "私を構成する100の漫画";
   }
 
   // noCard: 画像を添付して投稿するとき用。?i=1 のページはリンクカードのメタタグを
@@ -30,25 +32,37 @@
     return `https://twitter.com/intent/tweet?${q}`;
   }
 
-  // スマホは同じタブで遷移する。window.open の新規タブだとアプリが起動せず
-  // ブラウザ内で開いてしまう端末がある。
+  // 新しいタブ（ウィンドウ）で開く。同じタブで遷移すると、公開直後の共有モーダル（編集用URL
+  // を表示中）が消えてしまうため。スマホでも X アプリの Universal Link はクリック直後の
+  // window.open で拾われる。ポップアップがブロックされた（null が返った）ときだけ同じタブで遷移する。
+  // "noopener" を付けると成否に関わらず null が返るので、opener は開いたあとで切る。
   function openIntent(url) {
-    if (window.matchMedia("(pointer: coarse)").matches) location.href = url;
-    else window.open(url, "_blank", "noopener");
+    const w = window.open(url, "_blank");
+    if (w) {
+      try {
+        w.opener = null;
+      } catch (e) {}
+    } else {
+      location.href = url;
+    }
   }
 
   // 共有シート／保存のあとに出す SNS の投稿画面。テキストは事前に入れておき、画像は
   // ユーザに貼ってもらう。Instagram は Web から投稿画面を開く手段がないので載せない。
+  // ?i=1（リンクカードなし）は画像を貼って投稿する X / Threads / Bluesky だけ。Facebook の
+  // シェアと LINE は画像を添えられずリンクカードが本体なので、カードの出るふつうの URL にする。
   function snsLinks(slug, owner) {
     const url = pageUrl(slug, true);
+    const plainUrl = pageUrl(slug, false);
     const full = `${shareText(owner)} #${HASHTAG} ${url}`;
+    const plainFull = `${shareText(owner)} #${HASHTAG} ${plainUrl}`;
     const enc = encodeURIComponent;
     return [
       { label: "𝕏", cls: "sns-x", href: intentUrl(slug, owner, true) },
       { label: "Threads", cls: "sns-threads", href: `https://www.threads.com/intent/post?text=${enc(full)}` },
       { label: "Bluesky", cls: "sns-bluesky", href: `https://bsky.app/intent/compose?text=${enc(full)}` },
-      { label: "Facebook", cls: "sns-facebook", href: `https://www.facebook.com/sharer/sharer.php?u=${enc(url)}` },
-      { label: "LINE", cls: "sns-line", href: `https://line.me/R/share?text=${enc(full)}` },
+      { label: "Facebook", cls: "sns-facebook", href: `https://www.facebook.com/sharer/sharer.php?u=${enc(plainUrl)}` },
+      { label: "LINE", cls: "sns-line", href: `https://line.me/R/share?text=${enc(plainFull)}` },
     ];
   }
 
@@ -73,8 +87,12 @@
       snsHost.querySelector(".ui-dialog-actions button").addEventListener("click", close);
       // リンクや背景のクリックでは閉じない。PC は SNS が別タブで開くので、戻ってきて
       // 2枚目以降をコピーできるよう、閉じるのは「閉じる」ボタンと Esc だけにする。
+      // preventDefault: 下のモーダル（共有モーダル等）まで Esc で閉じないように（ui-dialog.js）。
       snsHost.addEventListener("keydown", (e) => {
-        if (e.key === "Escape") close();
+        if (e.key === "Escape") {
+          e.preventDefault();
+          close();
+        }
       });
     }
     snsHost.querySelector(".ui-dialog-msg").textContent = message;
@@ -162,8 +180,16 @@
   };
 
   async function fetchImage(slug, variant) {
-    const res = await fetch(`/share/${encodeURIComponent(slug)}/${variant}.jpg`);
-    if (!res.ok) throw new Error(res.status === 429 ? "混み合っています。少し待ってから再試行してください" : `HTTP ${res.status}`);
+    let res;
+    try {
+      res = await fetch(`/share/${encodeURIComponent(slug)}/${variant}.jpg`);
+    } catch (e) {
+      throw Object.assign(new Error("network"), { userMessage: "通信に失敗しました。接続を確認してもう一度お試しください。" });
+    }
+    if (!res.ok) {
+      const msg = (window.apiStatusMessage && window.apiStatusMessage(res.status)) || "";
+      throw Object.assign(new Error(`HTTP ${res.status}`), { userMessage: msg });
+    }
     const suffix = variant === "full" ? "" : `-${variant.slice(1)}`;
     return new File([await res.blob()], `my100manga-${slug}${suffix}.jpg`, { type: "image/jpeg" });
   }
@@ -217,7 +243,10 @@
         else if (e.target === kindHost) settle(null);
       });
       kindHost.addEventListener("keydown", (e) => {
-        if (e.key === "Escape") settle(null);
+        if (e.key === "Escape") {
+          e.preventDefault();
+          settle(null);
+        }
       });
     }
     kindHost.querySelector(".ui-dialog-msg").textContent = message;
@@ -281,7 +310,8 @@
         }
       } catch (e) {
         imageBtn.textContent = label;
-        await uiAlert("画像の作成に失敗しました: " + e.message);
+        const why = (e && e.userMessage) || "時間をおいてもう一度お試しください。";
+        await uiAlert(`画像の作成に失敗しました。${why}`);
       } finally {
         imageBtn.disabled = false;
       }

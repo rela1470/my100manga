@@ -17,6 +17,10 @@ import { isCustomSeriesId } from "./groups";
 // "serm CROSS JOIN volumes" pins the join order so SQLite walks idx_volumes_series for
 // just these series; with a plain JOIN it scanned the whole volumes table (~560k rows
 // read per call on remote D1).
+// ライブ補完 (3) は ISBN の逆引き表 series_supplement_isbn（トリガで保つ, db/schema.sql）から
+// 持っている補完行だけを開く。以前は volumes_json LIKE '%isbn%' で補完の全行をなめていた。
+// 補正 (2) の isbn 引きは idx_series_correction_isbn を使う。(2)(3) も CROSS JOIN で want を外側に
+// 固定する（普通の JOIN だと補正・逆引きの表を全行スキャンして want を探す計画になった）。
 const RESOLVE_SQL = `
 WITH want(isbn) AS (SELECT DISTINCT value FROM json_each(?1)),
 src AS (
@@ -25,14 +29,15 @@ src AS (
     FROM want w JOIN volumes v ON v.isbn = w.isbn
   UNION ALL
   SELECT w.isbn, c.series_id, c.volume_number, c.vol_sort, COALESCE(g.title, ''), g.creator, NULL, 2
-    FROM want w JOIN series_correction c ON c.isbn = w.isbn
+    FROM want w CROSS JOIN series_correction c ON c.isbn = w.isbn
     LEFT JOIN volumes g ON c.series_id GLOB 'G*' AND g.isbn = substr(c.series_id, 2)
   UNION ALL
   SELECT w.isbn, sp.series_id, json_extract(j.value, '$.volume_number'),
          json_extract(j.value, '$.vol_sort'), json_extract(j.value, '$.title'),
          json_extract(j.value, '$.author'), json_extract(j.value, '$.isbns'), 3
     FROM want w
-    JOIN series_supplement sp ON sp.volumes_json LIKE '%' || w.isbn || '%'
+    CROSS JOIN series_supplement_isbn si ON si.isbn = w.isbn
+    CROSS JOIN series_supplement sp ON sp.series_id = si.series_id
     JOIN json_each(sp.volumes_json) j
     JOIN json_each(j.value, '$.isbns') ji ON ji.value = w.isbn
    WHERE NOT EXISTS (SELECT 1 FROM volumes v WHERE v.isbn = w.isbn)
@@ -200,6 +205,8 @@ export async function resolveListItems(env: Env, items: StoredListItem[]): Promi
       title: b?.title || legacy.title || `ISBN ${it.isbn}`,
       author: b?.author || legacy.author || "",
       cover_url: b?.cover_url || legacy.cover_url || "",
+      // OGP の説明文で同じシリーズの巻を 1 つにまとめる用（src/index.ts buildOgp）。
+      series_title: b?.series_title || "",
     };
   });
 }

@@ -1,5 +1,6 @@
 import { Env } from "./types";
 import { toIsbn13, volSort } from "./util";
+import { sparqlNotAdult } from "./adult";
 
 // The MADB monthly dump (see scripts/ingest.mjs) links volumes to series via
 // schema:isPartOf, but the newest tankobon frequently lack that edge upstream, so
@@ -9,6 +10,7 @@ import { toIsbn13, volSort } from "./util";
 // creator matches, then append the volume numbers the dump is missing. Matching is
 // deliberately strict (exact name + normalized creator) to avoid attaching a
 // same-titled but different work's volume.
+// 成年コミック（schema:contentRating）は月次取り込みと同じくライブ検索・補完でも落とす（src/adult.ts）。
 const SPARQL_ENDPOINT = "https://mediaarts-db.artmuseums.go.jp/sparql";
 // Re-probe monthly (aligned with the MADB dump cadence).
 const CACHE_TTL_MS = 30 * 24 * 3600 * 1000;
@@ -107,6 +109,7 @@ SELECT ?isbn ?vol ?creator ?publisher ?date WHERE {
         schema:isbn ?isbn ;
         schema:volumeNumber ?vol ;
         schema:creator ?creator .
+  ${sparqlNotAdult("?book")}
   OPTIONAL { ?book schema:publisher ?publisher }
   OPTIONAL { ?book schema:datePublished ?date }
 } LIMIT 2000`);
@@ -134,6 +137,7 @@ SELECT ?name ?isbn ?vol ?creator ?publisher ?date WHERE {
         schema:volumeNumber ?vol ;
         schema:creator ?creator .
   FILTER(CONTAINS(?name, ${sparqlString(keyword)}))
+  ${sparqlNotAdult("?book")}
   OPTIONAL { ?book schema:publisher ?publisher }
   OPTIONAL { ?book schema:datePublished ?date }
 } LIMIT 2000`);

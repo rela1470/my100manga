@@ -39,11 +39,9 @@ async function load() {
   $("note").textContent = NOTE[sort];
   let data;
   try {
-    const res = await fetch(`/api/public-lists?sort=${sort}&page=${page}`);
-    if (!res.ok) throw new Error(String(res.status));
-    data = await res.json();
-  } catch {
-    $("note").textContent = "一覧の取得に失敗しました。時間をおいて再度お試しください。";
+    data = await apiFetch(`/api/public-lists?sort=${sort}&page=${page}`);
+  } catch (e) {
+    $("note").textContent = apiErrorMessage(e, "一覧の取得に失敗しました。時間をおいて再度お試しください。");
     return;
   }
   render(data);

@@ -15,7 +15,9 @@
     "ingest:local": "node scripts/ingest.mjs --local",
     "ingest:remote": "node scripts/ingest.mjs --remote",
     "ingest:remote:dev": "node scripts/ingest.mjs --remote --env dev",
-    "test": "vitest run"
+    "test": "vitest run",
+    "db:bookmark": "wrangler d1 time-travel info DB",
+    "db:bookmark:dev": "wrangler d1 time-travel info DB --env dev"
   },
   "devDependencies": {
     "@cloudflare/vitest-pool-workers": "^0.22.0",

@@ -2,6 +2,9 @@ import { Env, StoredListItem } from "./types";
 import { parseStoredItems, resolveBooks, resolveListItems } from "./listItems";
 import { json, notFound, readJsonObject, toIsbn13 } from "./util";
 import { getMostCommonVolumeTitle } from "./series";
+import { deleteListStatements } from "./lists";
+import { devBypassActive } from "./adminAuth";
+import { invalidateListView, purgeListArtifacts } from "./viewSnapshot";
 
 // 管理画面用のエンドポイント群。認証は呼び出し側（src/index.ts）が Cloudflare Access +
 // JWT 検証（src/adminAuth.ts の requireAdmin）で /admin・/api/admin/* をまとめてガードする。
@@ -97,7 +100,7 @@ export async function adminListLists(env: Env, opts: PageOpts): Promise<Response
   return json({ lists, total, page: opts.page, per: opts.per }, 200, { "cache-control": "no-store" });
 }
 
-export async function adminStats(env: Env): Promise<Response> {
+export async function adminStats(request: Request, env: Env): Promise<Response> {
   const count = async (sql: string): Promise<number> => {
     const row = await env.DB.prepare(sql).first<{ n: number }>();
     return row?.n ?? 0;
@@ -129,7 +132,7 @@ export async function adminStats(env: Env): Promise<Response> {
     {
     // dev=true のとき管理 UI が開発用の「DB初期化」を表示する。DEV_TOOLS を立てた本番でも
     // true になる（認証は別途 requireAdmin が担保）。無効環境では false で UI にも出さない。
-    dev: devToolsEnabled(env),
+    dev: devToolsEnabled(request, env),
     stats: {
       lists,
       series,
@@ -197,8 +200,10 @@ export async function adminTodo(env: Env): Promise<Response> {
 // 開発ツールが有効か。DEV_TOOLS="true"（開発期間中は本番 vars にも置ける）か、ローカル
 // dev の ADMIN_DEV_BYPASS="true" のどちらかで有効。ADMIN_DEV_BYPASS と違い DEV_TOOLS は
 // 認証をバイパスしない（この関数は requireAdmin の配下）ので、本番でも管理者だけが使える。
-function devToolsEnabled(env: Env): boolean {
-  return env.DEV_TOOLS === "true" || env.ADMIN_DEV_BYPASS === "true";
+// ADMIN_DEV_BYPASS はローカルからのアクセスのときだけ数える（devBypassActive）。誤って本番に
+// 入っても DB初期化が有効にならないように。
+function devToolsEnabled(request: Request, env: Env): boolean {
+  return env.DEV_TOOLS === "true" || devBypassActive(request, env);
 }
 
 // 開発用: マスターデータ (MADB 由来の series / volumes / meta) 以外の全テーブルを
@@ -252,8 +257,8 @@ async function purgeCoverStore(env: Env): Promise<number> {
   return removed;
 }
 
-export async function adminDevReset(env: Env): Promise<Response> {
-  if (!devToolsEnabled(env)) {
+export async function adminDevReset(request: Request, env: Env): Promise<Response> {
+  if (!devToolsEnabled(request, env)) {
     return json({ error: "開発用機能はこの環境では無効です" }, 403, { "cache-control": "no-store" });
   }
   const deleted: Record<string, number> = {};
@@ -312,15 +317,12 @@ export async function adminGetList(env: Env, slug: string): Promise<Response> {
   );
 }
 
-export async function adminDeleteList(env: Env, slug: string): Promise<Response> {
-  const res = await env.DB.prepare(`DELETE FROM lists WHERE slug = ?`).bind(slug).run();
-  const deleted = res.meta?.changes ?? 0;
-  if (!deleted) return notFound("リストが見つかりません");
-  // ランキングが消えたリストを数え続けないよう、追加イベントも掃除する (src/ranking.ts)。
-  await env.DB.prepare(`DELETE FROM list_item_events WHERE slug = ?`).bind(slug).run();
-  // 一覧のアクセス数順 (src/publicLists.ts) の日別カウンタも同じく掃除する。
-  await env.DB.prepare(`DELETE FROM list_views WHERE slug = ?`).bind(slug).run();
-  await env.DB.prepare(`DELETE FROM list_view_seen WHERE slug = ?`).bind(slug).run();
+/** origin は閲覧キャッシュ（この colo の Cache API）を消すためのサイトの origin。 */
+export async function adminDeleteList(env: Env, slug: string, origin?: string): Promise<Response> {
+  const [res] = await env.DB.batch(deleteListStatements(env, slug));
+  if (!(res.meta?.changes ?? 0)) return notFound("リストが見つかりません");
+  // 閲覧スナップショット・共有画像（R2）・閲覧キャッシュも消す（失敗しても削除は成功扱い）。
+  await purgeListArtifacts(env, slug, origin);
   return json({ ok: true, slug });
 }
 
@@ -1359,7 +1361,7 @@ export async function adminDismissReport(env: Env, id: number): Promise<Response
 // 通報対象のテキストだけを消す（リスト・作品自体は残す）。owner_name / bio は空文字に、comment は
 // 当該作品の comment を空文字にする。処理後、通報行はソフトデリート（resolved_at + resolution）
 // で残し、処理済み履歴から辿れるようにする。未処理（resolved_at = 0）のものだけを対象にする。
-export async function adminRedactReport(env: Env, id: number): Promise<Response> {
+export async function adminRedactReport(env: Env, id: number, origin?: string): Promise<Response> {
   const rep = await env.DB.prepare(
     `SELECT id, slug, target_type, position, reported_text FROM reports WHERE id = ? AND resolved_at = 0`
   )
@@ -1381,6 +1383,8 @@ export async function adminRedactReport(env: Env, id: number): Promise<Response>
     return json({ ok: true, id, redacted: false, note: "リストは既に削除済みです" });
   }
 
+  // 伏字で表示が変わるリスト。最後に閲覧スナップショット・閲覧キャッシュを消す。
+  const redactedSlugs = new Set<string>([rep.slug]);
   if (rep.target_type === "owner_name") {
     await env.DB.prepare(`UPDATE lists SET owner_name = '', updated_at = ? WHERE slug = ?`)
       .bind(now, rep.slug)
@@ -1406,6 +1410,15 @@ export async function adminRedactReport(env: Env, id: number): Promise<Response>
           .all<{ isbn: string }>();
         const isbns = new Set((holders.results ?? []).map((r) => r.isbn));
         if (target && toIsbn13(target.isbn)) isbns.add(toIsbn13(target.isbn));
+        // 表紙はサイト共通なので、その ISBN を含む全リストの閲覧スナップショットを消す。
+        const affected = await env.DB.prepare(
+          `SELECT slug FROM lists
+            WHERE EXISTS (SELECT 1 FROM json_each(?1) j WHERE instr(lists.items_json, j.value) > 0)
+            LIMIT 1000`
+        )
+          .bind(JSON.stringify([...isbns]))
+          .all<{ slug: string }>();
+        for (const r of affected.results ?? []) redactedSlugs.add(r.slug);
         await env.DB.batch([
           env.DB.prepare(`UPDATE covers SET cover_url = '', checked_at = ? WHERE cover_url = ?`).bind(
             now,
@@ -1435,5 +1448,11 @@ export async function adminRedactReport(env: Env, id: number): Promise<Response>
   )
     .bind(now, id)
     .run();
+  // 通報されたリストは古い共有画像（伏字前の表示名などを描いたもの）も消す。
+  await Promise.all(
+    [...redactedSlugs].map((slug) =>
+      slug === rep.slug ? purgeListArtifacts(env, slug, origin) : invalidateListView(env, slug, origin)
+    )
+  );
   return json({ ok: true, id, redacted: true });
 }

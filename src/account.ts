@@ -1,9 +1,12 @@
 import { Env } from "./types";
-import { User, currentUser, loginEnabled, sameOrigin } from "./auth";
+import { User, clearSessionCookie, currentUser, loginEnabled, sameOrigin } from "./auth";
+import { deleteListStatements } from "./lists";
+import { purgeListArtifacts } from "./viewSnapshot";
 import { badRequest, json, notFound, readJsonObject } from "./util";
 
 // ログイン中ユーザ向けの API（/api/me*）。ログインは任意で、ここに無い機能は匿名でも使える。
 //   GET    /api/me        … ログイン状態（ログイン機能が無効なら enabled:false）
+//   DELETE /api/me        … 退会（アカウント・セッション・下書きを消す。紐付いたリストは選択で削除か切り離し）
 //   GET    /api/me/lists  … 自分のアカウントに紐付いた公開リスト（編集用に edit_token も返す）
 //   POST   /api/me/claim  … この端末の編集リンク {slug, token} のうちユーザが選んだものをアカウントに紐付ける
 //   GET/PUT/DELETE /api/me/draft … 作成中のリスト（1 アカウント 1 件）
@@ -141,6 +144,40 @@ export async function deleteDraft(env: Env, user: User): Promise<Response> {
   return json({ ok: true }, 200, NO_STORE);
 }
 
+/** 退会。users / sessions / user_drafts から本人の行を消し、セッション Cookie も破棄する。
+ *  紐付いた公開リストは body.delete_lists が true なら付随データごと削除し、そうでなければ
+ *  user_id を外して匿名公開に戻す（edit_token で今までどおり編集でき、端末の編集リンクは
+ *  public/account.js が残す）。同じ Google アカウントで再ログインすると新しいアカウントになる。 */
+export async function deleteAccount(request: Request, env: Env, user: User): Promise<Response> {
+  const body = await readJsonObject(request);
+  const listStmts: D1PreparedStatement[] = [];
+  let deletedLists = 0;
+  const purgeSlugs: string[] = []; // DB から消せたら R2 の閲覧スナップショット・共有画像も消す
+  if (body.delete_lists === true) {
+    const { results } = await env.DB.prepare(`SELECT slug FROM lists WHERE user_id = ?`)
+      .bind(user.id)
+      .all<{ slug: string }>();
+    deletedLists = results.length;
+    purgeSlugs.push(...results.map((r) => r.slug));
+    for (const r of results) listStmts.push(...deleteListStatements(env, r.slug));
+  } else {
+    listStmts.push(env.DB.prepare(`UPDATE lists SET user_id = NULL WHERE user_id = ?`).bind(user.id));
+  }
+  await env.DB.batch([
+    ...listStmts,
+    env.DB.prepare(`DELETE FROM user_drafts WHERE user_id = ?`).bind(user.id),
+    env.DB.prepare(`DELETE FROM sessions WHERE user_id = ?`).bind(user.id),
+    env.DB.prepare(`DELETE FROM users WHERE id = ?`).bind(user.id),
+  ]);
+  // batch はトランザクションなので、ここまで来れば purgeSlugs は全部 DB から消えている。
+  const origin = new URL(request.url).origin;
+  await Promise.all(purgeSlugs.map((slug) => purgeListArtifacts(env, slug, origin)));
+  return json({ ok: true, deleted_lists: deletedLists }, 200, {
+    ...NO_STORE,
+    "set-cookie": clearSessionCookie(request),
+  });
+}
+
 /** /api/me 配下のルーティング。/api/me 自体は未ログインでも 200（状態を返す）。 */
 export async function handleAccountApi(request: Request, env: Env, path: string): Promise<Response> {
   const method = request.method;
@@ -148,6 +185,7 @@ export async function handleAccountApi(request: Request, env: Env, path: string)
   if (method !== "GET" && !sameOrigin(request)) return json({ error: "不正なリクエストです" }, 403, NO_STORE);
   const user = await currentUser(request, env);
   if (!user) return unauthorized();
+  if (path === "/api/me" && method === "DELETE") return await deleteAccount(request, env, user);
   if (path === "/api/me/lists" && method === "GET") return await getMyLists(env, user);
   if (path === "/api/me/claim" && method === "POST") return await claimLists(request, env, user);
   if (path === "/api/me/draft") {

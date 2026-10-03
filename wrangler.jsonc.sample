@@ -23,7 +23,9 @@
     //   2) 公開 HTML（index/about/ranking 等）に src/analytics.ts の injectAnalytics で
     //      Google タグ・共通ヘッダー/フッターを差し込む。アセット直配信だと差し込みが走らない。
     // 非 HTML（css/js/画像）は injectAnalytics が content-type を見てそのまま素通りする。
-    "run_worker_first": true
+    "run_worker_first": true,
+    // 無いパスは public/404.html を 404 で返す（Worker が最後に ASSETS.fetch したとき）。
+    "not_found_handling": "404-page"
   },
   "observability": {
     "enabled": true
@@ -41,7 +43,7 @@
   //   YAHOO_APP_ID … Yahoo!ショッピング 商品検索API の Client ID（表紙フォールバック
   //     Tier2、jan_code で ISBN 直引き）。未設定なら Yahoo はスキップ。see src/yahoo.ts
   //   ACCESS_TEAM_DOMAIN / ACCESS_AUD … 自分の Cloudflare Access アプリの値。
-  //   ADMIN_EMAILS … 許可メール（カンマ区切り）。未設定だと admin は fail-closed で 403。
+  //   ADMIN_EMAILS … 許可メール（カンマ区切り、必須）。未設定・空だと admin は fail-closed で 403。
   //   GOOGLE_CLIENT_ID / GOOGLE_CLIENT_SECRET … ユーザの Google ログイン（任意, src/auth.ts）。
   //     未設定ならログインボタンを出さない。リダイレクト URI は <origin>/auth/google/callback。
   // RAKUTEN_REFERER と routes のドメインは公開値なので vars に残す。自分のドメインに変更する。
@@ -72,6 +74,12 @@
       "database_id": "REPLACE_WITH_PROD_DATABASE_ID"
     }
   ],
+  // 整形済み表紙（Yahoo!ショッピングの正方形画像から白余白を切り落としたもの）の
+  // 永続化先。src/coverBytes.ts が /cover で生成し、正規化した URL のハッシュをキーに put する。
+  // ライフサイクル（自動削除）は設定しない（一度作った表紙は永久に使い回す）。
+  "r2_buckets": [
+    { "binding": "COVERS", "bucket_name": "my100manga-covers" }
+  ],
   // 人気傾向の計測（src/popularity.ts）。ノンブロッキング書き込み・自動サンプリング。
   // 集計は Cloudflare の Analytics Engine SQL API 経由（Account API トークンが別途必要）。
   "analytics_engine_datasets": [
@@ -88,12 +96,30 @@
     { "tag": "v1", "new_sqlite_classes": ["RakutenRateLimiter"] }
   ],
   // 公開書き込み系の濫用よけ（src/ratelimit.ts）。IP 単位・per-colo のカウント。
-  // RL_WRITE はリスト作成/更新・通報・修正などの書き込み全般、RL_COVERS は外部 API を
-  // 叩く表紙解決（/api/covers）用。period は 10 か 60 のみ。namespace_id は任意の一意値。
+  // RL_WRITE はリスト作成/更新・通報・修正などの書き込み全般、RL_COVERS は外部 API や重い
+  // クエリを叩くもの（/api/covers・/cover の R2 ミス・検索・候補・/api/book・共有画像の生成）用。
+  // RL_COVERS はキーの bucket 名をエンドポイントごとに分けているので、limit は各々に効く。
+  // period は 10 か 60 のみ。namespace_id は任意の一意値。
   "ratelimits": [
     { "name": "RL_WRITE", "namespace_id": "1001", "simple": { "limit": 30, "period": 60 } },
     { "name": "RL_COVERS", "namespace_id": "1002", "simple": { "limit": 120, "period": 60 } }
   ],
+  // 共有画像（src/shareImage.ts）の事前生成キュー。リストの作成/更新で {slug, host} を積み、
+  // 同じ Worker の queue() が og/full/q1–q4 を 1 枚ずつ描いて R2 に置く。描画はメモリを食う
+  // （isolate 128MB）ので batch 1・並列 1。キューは事前に `wrangler queues create <name>` で作る。
+  // binding が無ければ src/index.ts は従来どおり waitUntil で og だけ描く。
+  "queues": {
+    "producers": [{ "binding": "SHARE_QUEUE", "queue": "my100manga-share" }],
+    "consumers": [
+      {
+        "queue": "my100manga-share",
+        "max_batch_size": 1,
+        "max_batch_timeout": 1,
+        "max_concurrency": 1,
+        "max_retries": 3
+      }
+    ]
+  },
   // 売上ランキングの日次スナップショット（src/salesRanking.ts）。毎日 05:00 JST（20:00 UTC）。
   // triggers は env に継承されるので、dev は env.dev 側で空にして止めている。
   "triggers": { "crons": ["0 20 * * *"] },
@@ -128,6 +154,9 @@
           "database_id": "REPLACE_WITH_DEV_DATABASE_ID"
         }
       ],
+      "r2_buckets": [
+        { "binding": "COVERS", "bucket_name": "my100manga-covers-dev" }
+      ],
       "analytics_engine_datasets": [
         { "binding": "POPULARITY", "dataset": "my100manga_popularity_dev" }
       ],
@@ -143,6 +172,18 @@
         { "name": "RL_WRITE", "namespace_id": "1001", "simple": { "limit": 30, "period": 60 } },
         { "name": "RL_COVERS", "namespace_id": "1002", "simple": { "limit": 120, "period": 60 } }
       ],
+      "queues": {
+        "producers": [{ "binding": "SHARE_QUEUE", "queue": "my100manga-share-dev" }],
+        "consumers": [
+          {
+            "queue": "my100manga-share-dev",
+            "max_batch_size": 1,
+            "max_batch_timeout": 1,
+            "max_concurrency": 1,
+            "max_retries": 3
+          }
+        ]
+      },
       "routes": [
         { "pattern": "dev.example.com", "custom_domain": true }
       ]

@@ -5,6 +5,18 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>利用ソース・アフィリエイトについて | My 100 Manga</title>
   <meta name="description" content="My 100 Manga が利用しているデータソース（メディア芸術データベース・楽天ブックスAPI 等）と、アフィリエイトプログラムについての説明ページです。">
+  <link rel="canonical" href="https://my100manga.com/about">
+  <meta property="og:type" content="website">
+  <meta property="og:site_name" content="My 100 Manga">
+  <meta property="og:title" content="利用ソース・アフィリエイトについて | My 100 Manga">
+  <meta property="og:description" content="My 100 Manga が利用しているデータソース（メディア芸術データベース・楽天ブックスAPI 等）と、アフィリエイトプログラムについての説明ページです。">
+  <meta property="og:url" content="https://my100manga.com/about">
+  <meta property="og:image" content="https://my100manga.com/og-default.png">
+  <meta name="twitter:card" content="summary_large_image">
+  <link rel="icon" href="/favicon.ico" sizes="32x32">
+  <link rel="icon" href="/favicon.svg" type="image/svg+xml">
+  <link rel="apple-touch-icon" href="/apple-touch-icon.png">
+  <meta name="theme-color" content="#3b82f6">
   <!--ANALYTICS-->
   <link rel="stylesheet" href="/styles.css">
 </head>
@@ -20,7 +32,8 @@
     <article class="prose">
       <p class="lead">
         My 100 Manga は「私を構成する100の漫画」を選んでカードにし、URLで共有できるサイトです。
-        作品データや表紙画像は外部の公開データベース・APIから取得しています。また、購入リンクにアフィリエイトを利用しています。
+        作品データや表紙画像は外部の公開データベース・APIから取得しています。
+        また、<strong>当サイトはアフィリエイト広告（PR）を利用しています</strong>。作品詳細の購入リンクは広告です。
         このページではその利用ソースとアフィリエイトについて説明します。
       </p>
 
@@ -42,6 +55,10 @@
         （<a href="https://mediaarts-db.artmuseums.go.jp/sparql" target="_blank" rel="noopener">https://mediaarts-db.artmuseums.go.jp/sparql</a>）
         へ問い合わせて補完しています。
       </p>
+      <p>
+        当サイトに表示される作品データは、MADB のデータをもとに、当サイトでシリーズの結合・分離、著者名の正規化、巻の補完、表紙画像の付与などの加工をしたものです。
+        加工後のデータの内容について、文化庁およびメディア芸術データベースは責任を負いません。
+      </p>
       <p>リストに追加できる本・できない本は「<a href="/books-guide">追加できる本について</a>」をご覧ください。</p>
 
       <h3>表紙画像（書影）</h3>
@@ -56,18 +73,31 @@
           <br>提供: <a href="https://developer.yahoo.co.jp/" target="_blank" rel="noopener">Yahoo!デベロッパーネットワーク</a>
         </li>
         <li>
-          <span class="src-name">Google ブックス（Google Books）</span> ― 上記で取得できなかった ISBN を補助的に補完。
+          <span class="src-name">楽天市場 商品検索API（楽天ウェブサービス）</span> ― 上記で取得できなかった ISBN（絶版の巻など）を、楽天市場の出品画像で補完（第三候補）。
+          <br>提供: <a href="https://webservice.rakuten.co.jp/" target="_blank" rel="noopener">楽天ウェブサービス（Rakuten Developers）</a>
         </li>
       </ul>
+      <p>
+        表示を整えるため、一部の表紙画像は余白や店舗のロゴ枠を切り取って表示しています。
+        リストの共有画像（SNS 投稿用の画像）は、リストに含まれる表紙画像を当サイトで縮小・配置して合成したものです。表紙画像の権利は、出版社・著作者等の権利者に帰属します。
+        権利者の方で掲載の削除・非表示をご希望の場合は、<a href="/terms">利用規約</a>の「権利者からの削除申出」をご覧ください。
+      </p>
+
+      <h3>あらすじ・書誌情報</h3>
+      <p>
+        作品詳細に表示するあらすじ（内容紹介）は、<span class="src-name">楽天ブックス書籍検索API（楽天ウェブサービス）</span> から取得した楽天ブックスの商品説明です。
+        出版社・発行日などの書誌情報も、MADB に無いものは楽天ブックスのデータで補っています。
+      </p>
 
       <p class="note">
         各データ・画像の権利は、それぞれの提供元に帰属します。My 100 Manga はこれらを検索・表示の目的で参照しており、
         内容の正確性・完全性を保証するものではありません。データの誤りや表紙の不一致は、サイト内の修正機能や提供元の情報に基づいて随時見直しています。
       </p>
 
-      <h2>アフィリエイトについて</h2>
+      <h2>アフィリエイト広告（PR）について</h2>
       <p>
-        閲覧ページの作品詳細に表示される「購入する」ボタン（Amazon・楽天ブックス・楽天Kobo・Yahoo!ショッピング・メルカリ等）には、
+        <strong>当サイトはアフィリエイト広告を利用しており、サイト内に広告（PR）を含みます。</strong>
+        閲覧ページの作品詳細に表示される「購入リンク [PR]」のボタン（Amazon・楽天ブックス・楽天Kobo・Yahoo!ショッピング・メルカリ等）には、
         以下のアフィリエイトプログラムのリンクを使用しています。これらのリンクを経由して商品が購入された場合、
         当サイトが紹介料（収益）を得ることがあります。購入者に追加の負担は一切ありません。
       </p>
@@ -99,7 +129,7 @@
     </article>
 
     <div class="publish-bar">
-      <a href="/"><button class="primary">トップにもどる</button></a>
+      <a class="button primary" href="/">トップにもどる</a>
     </div>
   </div>
 

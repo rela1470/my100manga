@@ -8,3 +8,5 @@ worker-configuration.d.ts
 *.log
 .idea/
 wrangler.test.jsonc
+# wrangler d1 export の出力（個人情報を含む。db/MIGRATIONS.md 参照）
+backups/

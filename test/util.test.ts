@@ -57,10 +57,11 @@ describe("parseStoredItems", () => {
 });
 
 describe("headerLinksHtml", () => {
-  it("みんなのリストと売上ランキングへのボタンを出す", () => {
+  it("みんなのリスト・人気ランキング・売上ランキングへのボタンを出す", () => {
     const html = headerLinksHtml();
     expect(html).toContain(`href="/lists"`);
+    expect(html).toContain(`href="/ranking"`);
     expect(html).toContain(`href="/sales-ranking"`);
-    expect(html.match(/class="header-link"/g)).toHaveLength(2);
+    expect(html.match(/class="header-link"/g)).toHaveLength(3);
   });
 });

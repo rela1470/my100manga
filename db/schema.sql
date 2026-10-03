@@ -14,6 +14,10 @@ CREATE TABLE IF NOT EXISTS lists (
 
 CREATE INDEX IF NOT EXISTS idx_lists_created_at ON lists (created_at);
 CREATE INDEX IF NOT EXISTS idx_lists_user ON lists (user_id);
+-- 公開リスト一覧 (/lists) の「限定公開でないものを新しい順」と件数を 1 本で引く (src/publicLists.ts)。
+-- rowid が末尾に暗黙に付くので ORDER BY created_at DESC, rowid DESC も索引順で読める。
+-- idx_lists_created_at は unlisted で絞らない管理画面の一覧が使う。
+CREATE INDEX IF NOT EXISTS idx_lists_public ON lists (unlisted, created_at);
 
 -- ── Google ログイン（任意）──────────────────────────────────────────────
 -- ログインは任意で、匿名作成・edit_token による編集はそのまま残る。ログインすると
@@ -81,7 +85,8 @@ CREATE TABLE IF NOT EXISTS list_views (
 CREATE INDEX IF NOT EXISTS idx_list_views_day ON list_views (day);
 
 -- アクセス数の重複判定。同じ訪問者は 1 リストにつき 1 日 1 回だけ数える。visitor は
--- IP + User-Agent + 日付の SHA-256（IP そのものは持たない）。前日より古い行は日次 cron で消す。
+-- IP + 日付の SHA-256（IP そのものは持たない）。User-Agent は混ぜない（UA を変えるだけで水増し
+-- できてしまうため）。前日より古い行は日次 cron で消す。
 CREATE TABLE IF NOT EXISTS list_view_seen (
   slug    TEXT NOT NULL,
   day     TEXT NOT NULL,
@@ -157,6 +162,9 @@ CREATE TABLE IF NOT EXISTS series (
 );
 CREATE INDEX IF NOT EXISTS idx_series_name_norm ON series (name_norm);
 CREATE INDEX IF NOT EXISTS idx_series_kana_norm ON series (name_kana_norm);
+-- 巻一覧の「同名（＋同レーベル）の別シリーズが無いか」判定 (src/series.ts isSoleSeriesForName 等)。
+-- 無いとシリーズを開くたびに全シリーズを数回スキャンする。取り込みの SWAP_SQL でも張り直す。
+CREATE INDEX IF NOT EXISTS idx_series_name_label ON series (name, label);
 
 CREATE TABLE IF NOT EXISTS volumes (
   isbn          TEXT PRIMARY KEY,  -- normalized ISBN13
@@ -173,6 +181,22 @@ CREATE TABLE IF NOT EXISTS volumes (
   pubdate       TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_volumes_series ON volumes (series_id, vol_sort);
+-- シリーズ無しの巻を書名（＋レーベル）で引く巻一覧の取り込み (src/series.ts getSeriesVolumes)。
+-- シリーズ無しの巻だけの部分索引。取り込みの SWAP_SQL でも張り直す。
+CREATE INDEX IF NOT EXISTS idx_volumes_unlinked_title ON volumes (title, label) WHERE series_id IS NULL;
+
+-- 成年向けとして取り込みから外した巻（MADB の schema:contentRating「成年コミック」等。scripts/ingest.mjs
+-- isAdult）。巻自体は volumes に入れず、ISBN 検索・追加・公開で「成年向けの作品は、こちらのサイトでは
+-- 追加できません。」と明示するためだけに持つ（src/adult.ts findAdultIsbns）。月次取り込みで series /
+-- volumes と一緒に作り直す（adult_volumes_new → SWAP_SQL）。約 8 千行。
+-- 書名の照合は '%q%' の LIKE（src/search.ts の adult_hits）なので索引は効かず、全行スキャンになるが
+-- 行数が少なく、検索結果自体もエッジキャッシュされるので索引は張らない。
+CREATE TABLE IF NOT EXISTS adult_volumes (
+  isbn        TEXT PRIMARY KEY,  -- normalized ISBN13
+  title       TEXT NOT NULL,     -- schema:name（巻の書名）
+  title_norm  TEXT NOT NULL,     -- searchKey(title)（キーワード検索と同じ正規化）
+  series_name TEXT               -- 所属シリーズ名（あれば）
+);
 
 -- Cache of extra volumes recovered from the live MADB SPARQL endpoint for a series
 -- (newer tankobon that exist in MADB but lack schema:isPartOf, so the monthly dump
@@ -182,6 +206,44 @@ CREATE TABLE IF NOT EXISTS series_supplement (
   volumes_json TEXT NOT NULL,      -- JSON array of extra volumes ("[]" = none found)
   checked_at   INTEGER NOT NULL
 );
+
+-- series_supplement の ISBN 逆引き。リスト表示の ISBN 解決 (src/listItems.ts RESOLVE_SQL) が
+-- volumes_json を LIKE '%isbn%' で全行なめないよう、補完の各巻の isbns を (isbn, series_id) に
+-- 展開して持つ。series_supplement への書き込み経路（src/madbLive.ts・管理画面の削除・取り込みの
+-- prune）のどれでもずれないよう、下のトリガで保つ。INSERT OR REPLACE の REPLACE は DELETE
+-- トリガを起こさない（recursive_triggers 無効）ので、INSERT トリガでも先に同じ series_id を消す。
+CREATE TABLE IF NOT EXISTS series_supplement_isbn (
+  isbn      TEXT NOT NULL,   -- 補完の巻の ISBN（volumes_json の isbns の値そのまま。ISBN13）
+  series_id TEXT NOT NULL,   -- その巻を持つ series_supplement.series_id
+  PRIMARY KEY (isbn, series_id)
+) WITHOUT ROWID;
+CREATE INDEX IF NOT EXISTS idx_series_supplement_isbn_series ON series_supplement_isbn (series_id);
+
+CREATE TRIGGER IF NOT EXISTS trg_series_supplement_ai AFTER INSERT ON series_supplement
+BEGIN
+  DELETE FROM series_supplement_isbn WHERE series_id = NEW.series_id;
+  INSERT OR IGNORE INTO series_supplement_isbn (isbn, series_id)
+    SELECT ji.value, NEW.series_id
+      FROM json_each(CASE WHEN json_valid(NEW.volumes_json) THEN NEW.volumes_json ELSE '[]' END) j,
+           json_each(j.value, '$.isbns') ji
+     WHERE j.type = 'object' AND ji.type = 'text' AND ji.value <> '';
+END;
+
+CREATE TRIGGER IF NOT EXISTS trg_series_supplement_au AFTER UPDATE OF series_id, volumes_json ON series_supplement
+BEGIN
+  DELETE FROM series_supplement_isbn WHERE series_id = OLD.series_id;
+  DELETE FROM series_supplement_isbn WHERE series_id = NEW.series_id;
+  INSERT OR IGNORE INTO series_supplement_isbn (isbn, series_id)
+    SELECT ji.value, NEW.series_id
+      FROM json_each(CASE WHEN json_valid(NEW.volumes_json) THEN NEW.volumes_json ELSE '[]' END) j,
+           json_each(j.value, '$.isbns') ji
+     WHERE j.type = 'object' AND ji.type = 'text' AND ji.value <> '';
+END;
+
+CREATE TRIGGER IF NOT EXISTS trg_series_supplement_ad AFTER DELETE ON series_supplement
+BEGIN
+  DELETE FROM series_supplement_isbn WHERE series_id = OLD.series_id;
+END;
 
 -- User-submitted corrections: volumes missing from BOTH the dump and live MADB
 -- (e.g. ONE PIECE 巻110, absent upstream entirely) that a visitor filled in by
@@ -201,6 +263,8 @@ CREATE TABLE IF NOT EXISTS series_correction (
   PRIMARY KEY (series_id, isbn)
 );
 CREATE INDEX IF NOT EXISTS idx_series_correction_series ON series_correction (series_id);
+-- リスト表示の ISBN 解決 (src/listItems.ts RESOLVE_SQL) が isbn 単独で引く（主キーは series_id 先頭）。
+CREATE INDEX IF NOT EXISTS idx_series_correction_isbn ON series_correction (isbn);
 
 -- Visitor "間違っています" reports against ANY volume in a series view — not just
 -- user corrections but master (dump) and live-supplement volumes too, since the
@@ -427,6 +491,9 @@ CREATE TABLE IF NOT EXISTS cover_suggestion (
 );
 CREATE INDEX IF NOT EXISTS idx_cover_suggestion_last ON cover_suggestion (last_at);
 CREATE INDEX IF NOT EXISTS idx_cover_suggestion_resolved ON cover_suggestion (resolved_at);
+-- cover_url で引く 2 か所（src/corrections.ts suggestCover の却下済み判定・src/covers.ts
+-- redactedCoverUrls）。処理済みの提案も行を残すので表は増え続ける。書き込みは提案時だけ。
+CREATE INDEX IF NOT EXISTS idx_cover_suggestion_url ON cover_suggestion (cover_url);
 
 -- ── 公開の監査ログ (audit trail) ─────────────────────────────────────────────
 -- リストの新規公開 (POST /api/lists) と更新公開 (PUT /api/lists/:slug) のたびに 1 行

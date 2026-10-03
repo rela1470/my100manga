@@ -21,7 +21,7 @@ import {
 } from "./madbLive";
 import { getCorrectionVolumes } from "./corrections";
 import { resolveMergeTarget, mergeMembers } from "./merge";
-import { isCustomSeriesId } from "./groups";
+import { isCustomSeriesId, NAME_NORM_PREFIX } from "./groups";
 
 interface VolumeRow {
   isbn: string;
@@ -565,15 +565,15 @@ async function isSoleSeriesForNameLabel(
 
 /** True when no OTHER series (outside this merge group) shares this exact BASE title
  *  (see util.baseTitle) — so the loose variants carrying it can be safely attributed to this one series (base-title
- *  fold in getSeriesVolumes). base is a prefix of name_norm, so name_norm LIKE base||'%'
- *  (index-backed) narrows the scan; we re-check baseTitle(name) === base in JS to drop a
+ *  fold in getSeriesVolumes). base is a prefix of name_norm, so a name_norm prefix range
+ *  (NAME_NORM_PREFIX, index-backed) narrows the scan; we re-check baseTitle(name) === base in JS to drop a
  *  longer-based sibling (「…外伝」/「…:re」) that merely shares the prefix. */
 async function isSoleSeriesForBase(env: Env, members: string[], base: string): Promise<boolean> {
   const res = await env.DB.prepare(
-    `SELECT id, name FROM series WHERE name_norm LIKE ? ESCAPE '\\'
+    `SELECT id, name FROM series WHERE ${NAME_NORM_PREFIX}
        AND id NOT IN (${members.map(() => "?").join(",")})`
   )
-    .bind(escapeLikeClamped(base, LIKE_MAX_BYTES - 1) + "%", ...members)
+    .bind(base, base, ...members)
     .all<{ id: string; name: string }>();
   return !(res.results ?? []).some((r) => baseTitle(r.name) === base);
 }

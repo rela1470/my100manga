@@ -23,7 +23,7 @@ import {
 } from "./merge";
 import { handleBook } from "./book";
 import { readCachedCovers, resolveCovers } from "./covers";
-import { createList, getList, getListData, updateList } from "./lists";
+import { createList, updateList } from "./lists";
 import {
   adminCoverSummary,
   adminListCoverSuggestions,
@@ -69,24 +69,35 @@ import {
   adminDevReset,
   parsePage,
 } from "./admin";
-import { addReport } from "./reports";
-import { requireAdmin } from "./adminAuth";
-import { currentUser, loginCallback, loginStart, logout } from "./auth";
+import { addReport, purgePublishAudit } from "./reports";
+import { adminCsrfOk, isAdminUiPath, requireAdmin } from "./adminAuth";
+import { errorPageHtml, MAX_JSON_BODY, withSecurityHeaders } from "./util";
+import { currentUser, loginCallback, loginStart, logout, purgeExpiredSessions } from "./auth";
 import { handleAccountApi } from "./account";
 import { handleRanking } from "./ranking";
 import { handleListView, handlePublicLists, purgeListViewSeen } from "./publicLists";
 import { adminSalesSnapshot, adminSalesStatus, handleSalesRanking, runSalesSnapshot } from "./salesRanking";
 import { handleSiteStats } from "./siteStats";
-import { analyticsTags, gtmBody, injectAnalytics, appVersion, affIds } from "./analytics";
+import { analyticsTags, gtmBody, injectAnalytics, injectVersion, appVersion, affIds } from "./analytics";
 import { footerHtml } from "./footer";
 import { headerLinksHtml } from "./header";
 import { bumpPopularity } from "./popularity";
-import { Env, MangaList } from "./types";
+import { Env, MangaList, ShareJob } from "./types";
 import { rateLimit } from "./ratelimit";
 import { turnstileAction, verifyTurnstile } from "./turnstile";
 import { COVER_CACHE, getTrimmedCover, trimKind } from "./coverBytes";
-import { getShareImage, shareImageHash, SHARE_IMAGE_SIZE, type ShareVariant } from "./shareImage";
-import { badRequest, escapeHtml, json, notFound, readJsonObject } from "./util";
+import { ensureShareImage, getShareImage, isLinkPreviewBot, shareImageHash, SHARE_IMAGE_SIZE, SHARE_VARIANTS, type ShareVariant } from "./shareImage";
+import {
+  bumpViewEpoch,
+  getListSnapshot,
+  ogpWorkTitles,
+  readViewCache,
+  refreshListView,
+  viewCacheKeys,
+  VIEW_CACHE_TTL,
+  writeViewCache,
+} from "./viewSnapshot";
+import { badRequest, escapeHtml, json, notFound, readJsonObject, replaceLiteral } from "./util";
 
 export { RakutenRateLimiter } from "./ratelimiter";
 import type { CoverQueue } from "./ratelimiter";
@@ -101,9 +112,12 @@ function coverHeaders(etag?: string): Headers {
 
 // Serve a store cover with its baked-in framing trimmed (src/coverBytes.ts
 // getTrimmedCover). Whitelisted to *.yimg.jp and もったいない本舗's 楽天 cabinets so it
-// can't be used as an open proxy.
+// can't be used as an open proxy. The URL is normalized (coverBytes.ts
+// normalizeCoverTarget) before hashing/fetching, and only an R2 miss — the path that
+// fetches upstream and decodes — counts against the per-IP limit (RL_COVERS).
 async function handleCover(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
   const u = new URL(request.url).searchParams.get("u") || "";
+  if (u.length > 1000) return new Response("bad url", { status: 400 });
   let target: URL;
   try {
     target = new URL(u);
@@ -113,12 +127,17 @@ async function handleCover(request: Request, env: Env, ctx: ExecutionContext): P
   const kind = trimKind(target);
   if (!kind) return new Response("forbidden host", { status: 403 });
 
-  const cover = await getTrimmedCover(env, ctx, target, kind);
+  let limited: Response | null = null;
+  const cover = await getTrimmedCover(env, ctx, target, kind, {
+    onMiss: async () => !(limited = await rateLimit(request, env.RL_COVERS, "cover-img")),
+  });
+  if (limited) return limited;
   if (!cover) return new Response("upstream error", { status: 502 });
   return new Response(cover.body, { status: 200, headers: coverHeaders(cover.etag) });
 }
 
-export default {
+// 実体のハンドラ。export default はこれをセキュリティヘッダ付与（util.ts withSecurityHeaders）で包む。
+const worker = {
   async fetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
     const url = new URL(request.url);
     const path = url.pathname;
@@ -149,15 +168,34 @@ export default {
         if (denied) return denied;
       }
       // ユーザが明示的に押す「本データを再取得」(/api/book?refresh=1) は Rakuten を叩き直す
-      // ので、GET でも外部 API 枠（RL_COVERS）で濫用よけする。通常の /api/book はキャッシュ
-      // 返却なので対象外。
-      if (
-        request.method === "GET" &&
-        path === "/api/book" &&
-        url.searchParams.get("refresh") === "1"
-      ) {
-        const limited = await rateLimit(request, env.RL_COVERS, "covers");
-        if (limited) return limited;
+      // ので、GET でも外部 API 枠（RL_COVERS）で濫用よけする。
+      // 外部 API・MADB・D1 の重いクエリを叩く GET（検索・候補・本データ）も同じ binding で
+      // 縛る。キーの bucket 名を分けているので、エンドポイントごとに別カウント（検索の連打で
+      // 表紙解決が詰まったりしない）。/api/book はキャッシュ判定前に一律で数える（判定に D1 を
+      // 引くので、未キャッシュだけ数えるより安く、通常の閲覧で上限に届く量でもない）。
+      if (request.method === "GET") {
+        const getBucket =
+          path === "/api/book"
+            ? url.searchParams.get("refresh") === "1" ? "covers" : "book"
+            : path === "/api/search"
+              ? "search"
+              : path === "/api/live-search"
+                ? "live-search"
+                : path === "/api/cover-candidates" || path === "/api/volume-candidates"
+                  ? "candidates"
+                  : null;
+        if (getBucket) {
+          const limited = await rateLimit(request, env.RL_COVERS, getBucket);
+          if (limited) return limited;
+        }
+      }
+      // 状態を変えるリクエストの本文サイズの上限（JSON しか受けないので 256KB で十分）。
+      // 個々のハンドラも上限付きで読むが、Content-Length で分かるものはここで早く弾く。
+      if (request.method !== "GET" && request.method !== "HEAD" && path.startsWith("/api/")) {
+        const declared = Number(request.headers.get("content-length") ?? "");
+        if (Number.isFinite(declared) && declared > MAX_JSON_BODY) {
+          return json({ error: "リクエストが大きすぎます" }, 413, { "cache-control": "no-store" });
+        }
       }
       // --- API ---
       if (path === "/api/search" && request.method === "GET") {
@@ -296,7 +334,9 @@ export default {
         const res = await createList(request, env, user?.id ?? null);
         if (res.ok) {
           const { slug } = (await res.clone().json()) as { slug: string };
-          prewarmShareImage(env, ctx, slug, url.host);
+          // 作成者はすぐ /l/:slug を開くので、応答前にスナップショットを作っておく。
+          await refreshListView(env, slug, url.origin);
+          await queueShareImages(env, ctx, slug, url.host);
         }
         return res;
       }
@@ -312,10 +352,13 @@ export default {
       const listMatch = path.match(/^\/api\/lists\/([A-Za-z0-9_-]+)$/);
       if (listMatch) {
         const slug = listMatch[1];
-        if (request.method === "GET") return await getList(env, slug);
+        if (request.method === "GET") return await handleListJson(env, ctx, slug, url.origin);
         if (request.method === "PUT") {
           const res = await updateList(request, env, slug);
-          if (res.ok) prewarmShareImage(env, ctx, slug, url.host);
+          if (res.ok) {
+            await refreshListView(env, slug, url.origin);
+            await queueShareImages(env, ctx, slug, url.host);
+          }
           return res;
         }
         return new Response("Method Not Allowed", { status: 405 });
@@ -327,16 +370,17 @@ export default {
       // 開けても中身は API が閉じていれば無害だが、多重防御として HTML も塞ぐ。
       // これらのパスは assets.run_worker_first（wrangler.jsonc）で Worker が先に走る。
       // 認証を通したら末尾の env.ASSETS.fetch(request) が /admin → admin.html を配信する。
-      if (
-        path.startsWith("/api/admin/") ||
-        path === "/admin" ||
-        path === "/admin.html"
-      ) {
+      // admin.html に解決されうる変形（/ADMIN.html・/%61dmin・/admin/ 等）も isAdminUiPath で拾う。
+      // 状態を変える /api/admin/* は CSRF よけに Origin 必須・自オリジン一致も求める（adminCsrfOk）。
+      if (path.startsWith("/api/admin/") || isAdminUiPath(path)) {
         const denied = await requireAdmin(request, env);
         if (denied) return denied;
+        if (path.startsWith("/api/admin/") && !adminCsrfOk(request, env)) {
+          return json({ error: "不正なリクエストです" }, 403, { "cache-control": "no-store" });
+        }
       }
       if (path === "/api/admin/stats" && request.method === "GET") {
-        return await adminStats(env);
+        return await adminStats(request, env);
       }
       if (path === "/api/admin/todo" && request.method === "GET") {
         return await adminTodo(env);
@@ -350,7 +394,7 @@ export default {
       }
       // 開発用: マスターデータ以外を全削除して DB を初期化。dev（ADMIN_DEV_BYPASS）限定。
       if (path === "/api/admin/dev/reset" && request.method === "POST") {
-        return await adminDevReset(env);
+        return await adminDevReset(request, env);
       }
       if (path === "/api/admin/lists" && request.method === "GET") {
         return await adminListLists(env, parsePage(url));
@@ -359,7 +403,7 @@ export default {
       if (adminListMatch) {
         const slug = adminListMatch[1];
         if (request.method === "GET") return await adminGetList(env, slug);
-        if (request.method === "DELETE") return await adminDeleteList(env, slug);
+        if (request.method === "DELETE") return await adminDeleteList(env, slug, url.origin);
         return new Response("Method Not Allowed", { status: 405 });
       }
       if (path === "/api/admin/corrections" && request.method === "GET") {
@@ -559,7 +603,7 @@ export default {
       }
       const adminReportRedactMatch = path.match(/^\/api\/admin\/reports\/([0-9]+)\/redact$/);
       if (adminReportRedactMatch && request.method === "POST") {
-        return await adminRedactReport(env, Number(adminReportRedactMatch[1]));
+        return await adminRedactReport(env, Number(adminReportRedactMatch[1]), url.origin);
       }
       const adminReportMatch = path.match(/^\/api\/admin\/reports\/([0-9]+)$/);
       if (adminReportMatch && request.method === "DELETE") {
@@ -569,7 +613,7 @@ export default {
       // --- Public view page with OGP meta ---
       const viewMatch = path.match(/^\/l\/([A-Za-z0-9_-]+)$/);
       if (viewMatch && request.method === "GET") {
-        return await renderViewPage(env, viewMatch[1], url.origin, url.searchParams.get("i") === "1");
+        return await renderViewPage(env, ctx, viewMatch[1], url.origin, url.searchParams.get("i") === "1");
       }
 
       // --- Share image (all 100 covers in one picture; og:image + X attachment) ---
@@ -580,6 +624,8 @@ export default {
     } catch (err) {
       console.error("request failed", err);
       if (path.startsWith("/api/")) return json({ error: "サーバエラーが発生しました" }, 500);
+      // ブラウザで開かれるページには素のテキストではなく簡単なエラー画面を返す。
+      if ((request.headers.get("accept") ?? "").includes("text/html")) return errorPageHtml();
       return new Response("Internal Server Error", { status: 500 });
     }
 
@@ -598,6 +644,41 @@ export default {
     );
     // 公開リストのアクセス数の重複判定（list_view_seen）の古い記録を消す。
     ctx.waitUntil(purgeListViewSeen(env).catch((err) => console.error("list view purge failed", err)));
+    // 公開の監査ログ（publish_audit, IP・UA を含む）は 365 日で消す。期限切れのログインセッションも掃除する。
+    ctx.waitUntil(purgePublishAudit(env).catch((err) => console.error("publish audit purge failed", err)));
+    ctx.waitUntil(purgeExpiredSessions(env).catch((err) => console.error("session purge failed", err)));
+  },
+
+  // 共有画像の事前生成（SHARE_QUEUE, wrangler.jsonc queues）。max_batch_size 1 /
+  // max_concurrency 1 で、1 リストの og/full/q1–q4 を 1 枚ずつ描いて R2 に置く。
+  async queue(batch: MessageBatch<unknown>, env: Env, ctx: ExecutionContext): Promise<void> {
+    for (const msg of batch.messages) {
+      const job = msg.body as Partial<ShareJob> | null;
+      if (!job || typeof job.slug !== "string" || typeof job.host !== "string" || !/^[A-Za-z0-9_-]+$/.test(job.slug)) {
+        msg.ack(); // 形の壊れたメッセージは捨てる
+        continue;
+      }
+      try {
+        await renderAllShareImages(env, ctx, job.slug, job.host);
+        msg.ack();
+      } catch (err) {
+        console.error("share queue job failed", job.slug, err);
+        msg.retry();
+      }
+    }
+  },
+} satisfies ExportedHandler<Env>;
+
+export default {
+  ...worker,
+  async fetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
+    const res = await worker.fetch(request, env, ctx);
+    // 管理者の変更（結合・表紙承認・名前修正など）を閲覧ページに早く反映するため、admin の
+    // 更新系 API が成功したら表示データの世代を上げる（src/viewSnapshot.ts）。
+    if (res.ok && request.method !== "GET" && request.method !== "HEAD" && new URL(request.url).pathname.startsWith("/api/admin/")) {
+      ctx.waitUntil(bumpViewEpoch(env).catch((err) => console.error("view epoch bump failed", err)));
+    }
+    return withSecurityHeaders(res);
   },
 } satisfies ExportedHandler<Env>;
 
@@ -647,11 +728,12 @@ async function handleShareImage(
   slug: string,
   variant: ShareVariant
 ): Promise<Response> {
-  const data = await getListData(env, slug);
+  const data = await getListSnapshot(env, ctx, slug);
   if (!data) return new Response("not found", { status: 404 });
   let limited: Response | null = null;
+  const bot = isLinkPreviewBot(request.headers.get("user-agent"));
   const body = await getShareImage(env, ctx, data, variant, new URL(request.url).host, {
-    onMiss: async () => !(limited = await rateLimit(request, env.RL_COVERS, "share")),
+    onMiss: async () => bot || !(limited = await rateLimit(request, env.RL_COVERS, "share")),
   });
   if (!body) return limited ?? new Response("rate limited", { status: 429 });
   return new Response(body, {
@@ -662,74 +744,158 @@ async function handleShareImage(
   });
 }
 
-// Render the og variant right after a publish so X's crawler, which fetches it
-// when the link is first posted, doesn't wait on (or time out during) the render.
-function prewarmShareImage(env: Env, ctx: ExecutionContext, slug: string, host: string): void {
+// 作成/更新の直後に共有画像を描いておく。X 等のクローラは投稿直後に og:image を取りに来る
+// ので、そこで描画を待たせない（タイムアウトさせない）。キュー（SHARE_QUEUE）があれば全
+// variant を consumer に任せ、無ければ従来どおりこのリクエストの waitUntil で og だけ描く。
+async function queueShareImages(env: Env, ctx: ExecutionContext, slug: string, host: string): Promise<void> {
+  if (env.SHARE_QUEUE) {
+    try {
+      await env.SHARE_QUEUE.send({ slug, host } satisfies ShareJob);
+      return;
+    } catch (err) {
+      console.error("share queue send failed; prewarming og inline", err);
+    }
+  }
   ctx.waitUntil(
     (async () => {
-      const data = await getListData(env, slug);
+      const data = await getListSnapshot(env, ctx, slug);
       if (data) await getShareImage(env, ctx, data, "og", host);
     })().catch((err) => console.error("share image prewarm failed", err))
   );
 }
 
+/** キュー consumer の本体: og を先頭に全 variant を 1 枚ずつ、R2 に無いものだけ描く。 */
+async function renderAllShareImages(env: Env, ctx: ExecutionContext, slug: string, host: string): Promise<void> {
+  const data = await getListSnapshot(env, ctx, slug);
+  if (!data) return; // 削除済み
+  for (const variant of SHARE_VARIANTS) await ensureShareImage(env, ctx, data, variant, host);
+}
+
+// 閲覧レスポンスの cache-control。ブラウザは毎回取り直し（編集直後に古い版を見せない）、
+// colo キャッシュ（Cache API）には VIEW_CACHE_TTL 秒置く。
+const VIEW_CACHE_CONTROL = `public, max-age=0, s-maxage=${VIEW_CACHE_TTL}`;
+// キャッシュに置いたレスポンスに持たせる表示名（人気計測用）。返す前に外す。
+const OWNER_HEADER = "x-my100manga-owner";
+
+/** 公開 JSON（GET /api/lists/:slug）。スナップショットから返し、colo キャッシュに置く。
+ *  edit_token は MangaList に元から含まれない（編集用は /api/me/lists が返す）。 */
+async function handleListJson(env: Env, ctx: ExecutionContext, slug: string, origin: string): Promise<Response> {
+  const key = (await viewCacheKeys(env, origin, slug)).json;
+  const cached = await readViewCache(key);
+  if (cached) return cached;
+  const data = await getListSnapshot(env, ctx, slug);
+  if (!data) return notFound("リストが見つかりません");
+  const res = json(data, 200, { "cache-control": VIEW_CACHE_CONTROL });
+  ctx.waitUntil(writeViewCache(key, res.clone()));
+  return res;
+}
+
+// 見つからないリストは 404 のページを返す（以前は /?notfound=list へ 302 していた。
+// app.js 側の ?notfound=list 処理は古いリンク用にそのまま残る）。public/404.html があれば
+// それを使い、無ければ簡単なページを出す。
+async function listNotFoundPage(env: Env, origin: string): Promise<Response> {
+  const headers = { "content-type": "text/html; charset=utf-8", "cache-control": "no-store" };
+  try {
+    const res = await env.ASSETS.fetch(new Request(`${origin}/404`));
+    if (res.ok && (res.headers.get("content-type") ?? "").includes("text/html")) {
+      return await injectAnalytics(new Response(await res.text(), { status: 404, headers }), env);
+    }
+  } catch {
+    // フォールバックへ
+  }
+  const html = `<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex">
+<title>リストが見つかりません | My 100 Manga</title>
+<style>body{font-family:system-ui,-apple-system,"Hiragino Sans",sans-serif;margin:0;color:#222;background:#f7f8fb}header{padding:12px 16px;background:#fff;border-bottom:1px solid #e3e6ee}header a{color:#2a5bd7;font-weight:bold;text-decoration:none}main{max-width:560px;margin:48px auto;padding:0 16px;line-height:1.7}a.btn{display:inline-block;margin-top:16px;padding:8px 16px;border-radius:6px;background:#2a5bd7;color:#fff;text-decoration:none}</style>
+</head>
+<body>
+<header><a href="/">My 100 Manga</a></header>
+<main>
+<h1>リストが見つかりませんでした</h1>
+<p>削除されたか、URL が間違っている可能性があります。</p>
+<a class="btn" href="/">トップへ戻る</a>
+</main>
+</body>
+</html>`;
+  return new Response(html, { status: 404, headers });
+}
+
 // noCard（?i=1）は画像付きで投稿するとき用の URL（public/share-x.js）。リンクカードの
 // メタタグを出さないので、X 等がカードを作らず添付画像の邪魔をしない。
-async function renderViewPage(env: Env, slug: string, origin: string, noCard = false): Promise<Response> {
-  const data = await getListData(env, slug);
-  // ブラウザで開かれるページなので JSON の 404 ではなくトップへ戻し、そこでモーダルを出す。
-  if (!data) {
-    return new Response(null, {
-      status: 302,
-      headers: { location: `${origin}/?notfound=list`, "cache-control": "no-store" },
-    });
+async function renderViewPage(env: Env, ctx: ExecutionContext, slug: string, origin: string, noCard = false): Promise<Response> {
+  const keys = await viewCacheKeys(env, origin, slug);
+  const key = noCard ? keys.pageNoCard : keys.page;
+  const cached = await readViewCache(key);
+  if (cached) {
+    const owner = cached.headers.get(OWNER_HEADER);
+    bumpPopularity(env, "list", slug, owner ? decodeURIComponent(owner) : "");
+    const headers = new Headers(cached.headers);
+    headers.delete(OWNER_HEADER);
+    return new Response(cached.body, { status: cached.status, headers });
   }
+
+  const data = await getListSnapshot(env, ctx, slug);
+  if (!data) return await listNotFoundPage(env, origin);
   bumpPopularity(env, "list", slug, data.owner_name ?? "");
 
   const templateRes = await env.ASSETS.fetch(new Request(`${origin}/view.html`));
-  let html = await templateRes.text();
+  // script/stylesheet の ?v= と <meta app-version> は、ユーザ入力を差し込む前のテンプレートに付ける。
+  let html = injectVersion(await templateRes.text(), appVersion(env));
 
-  const meta = buildOgp(data, `${origin}/l/${slug}`, `${origin}/share/${slug}/og.jpg?v=${await shareImageHash(data)}`, noCard);
+  const pageUrl = `${origin}/l/${slug}`;
+  const meta = buildOgp(data, pageUrl, `${origin}/share/${slug}/og.jpg?v=${await shareImageHash(data)}`, noCard);
   const aff = affIds(env);
   const injected =
     `<script>window.__LIST__=${safeJson(data)};` +
     `window.__AFF__=${safeJson(aff)};</script>`;
 
-  html = html
-    .replace("<!--OGP_META-->", meta)
-    .replace("<!--ANALYTICS-->", analyticsTags(env))
-    .replace("<!--GTM_BODY-->", gtmBody(env))
-    .replace("<!--LIST_DATA-->", injected)
-    .replace("<!--HEADER_LINKS-->", headerLinksHtml())
-    .replace("<!--FOOTER_AFF-->", footerHtml(true));
+  // 置換文字列にユーザ入力（表示名・コメント）が入るので、関数で渡して `$&` 等を
+  // 特殊パターンとして解釈させない。
+  const fill: [string, string][] = [
+    ["<!--OGP_META-->", meta],
+    ["<!--ANALYTICS-->", analyticsTags(env)],
+    ["<!--GTM_BODY-->", gtmBody(env)],
+    ["<!--LIST_DATA-->", injected],
+    ["<!--HEADER_LINKS-->", headerLinksHtml()],
+    ["<!--FOOTER_AFF-->", footerHtml(true)],
+  ];
+  for (const [ph, value] of fill) html = replaceLiteral(html, ph, value);
 
   // 限定公開リストは検索エンジンに載せない（URL を知っている人だけが見る想定）。
-  const headers: Record<string, string> = { "content-type": "text/html; charset=utf-8" };
+  const headers: Record<string, string> = {
+    "content-type": "text/html; charset=utf-8",
+    "cache-control": VIEW_CACHE_CONTROL,
+  };
   if (data.unlisted) headers["x-robots-tag"] = "noindex";
-  return new Response(html, { headers });
+  const res = new Response(html, { headers });
+  const toCache = new Response(html, { headers: { ...headers, [OWNER_HEADER]: encodeURIComponent(data.owner_name ?? "") } });
+  ctx.waitUntil(writeViewCache(key, toCache));
+  return res;
 }
 
 function buildOgp(data: MangaList, pageUrl: string, image: string, noCard = false): string {
   const owner = data.owner_name ? `${data.owner_name}さん` : "誰か";
   const title = `${owner}を構成する100の漫画`;
-  const titles = data.items
-    .slice(0, 5)
-    .map((i) => i.title)
-    .filter(Boolean)
-    .join("、");
-  const desc = titles ? `${titles} など${data.items.length}作品` : `${data.items.length}作品のおすすめ漫画リスト`;
+  const titles = ogpWorkTitles(data).join("、");
+  const desc = titles ? `${titles} など${data.items.length}冊` : `${data.items.length}冊のおすすめ漫画リスト`;
   const robots = data.unlisted ? [`<meta name="robots" content="noindex">`] : [];
+  const canonical = `<link rel="canonical" href="${escapeHtml(pageUrl)}">`;
 
   if (noCard) {
     return [
       ...robots,
       `<meta name="description" content="${escapeHtml(desc)}">`,
-      `<link rel="canonical" href="${escapeHtml(pageUrl)}">`,
+      canonical,
       `<title>${escapeHtml(title)} | My 100 Manga</title>`,
     ].join("\n  ");
   }
   const tags = [
     ...robots,
+    canonical,
     `<meta property="og:type" content="website">`,
     `<meta property="og:site_name" content="My 100 Manga">`,
     `<meta property="og:title" content="${escapeHtml(title)}">`,

@@ -2,6 +2,7 @@ import { Env } from "./types";
 import { clientIp, json, toIsbn13 } from "./util";
 import { currentUser } from "./auth";
 import { parseStoredItems, resolveBooks } from "./listItems";
+import { edgeCacheKey, purgeEdgeCache, withEdgeCache } from "./edgeCache";
 
 // 公開リストの一覧（/lists）。並びは「新着（公開順）」と、公開ページのアクセス数順の
 // 4 窓（今日 / 7日間 / 30日間 / 累計）。限定公開 (unlisted = 1) のリストは出さない。
@@ -9,7 +10,7 @@ import { parseStoredItems, resolveBooks } from "./listItems";
 // アクセス数は list_views (slug × JST 日付の日別カウンタ) から数える。数えるのは閲覧ページの
 // JS が送るビーコン (POST /api/lists/:slug/view) だけで、JS を実行しないクローラは数えない。
 // 作者本人（編集リンクを持つ端末・ログイン中の所有者）はクライアントが送らず、サーバも弾く。
-// 同じ訪問者（IP + User-Agent のハッシュ）は 1 リストにつき 1 日 1 回だけ数える（list_view_seen）。
+// 同じ訪問者（IP のハッシュ）は 1 リストにつき 1 日 1 回だけ数える（list_view_seen）。
 // 人気傾向用の Analytics Engine (src/popularity.ts) は保持期間が 3 か月で累計を出せず、読むにも API
 // トークンが要るので、一覧の並びには D1 の日別カウンタを使う。
 
@@ -36,11 +37,12 @@ export function isCrawler(ua: string): boolean {
   return !ua || BOT_UA.test(ua);
 }
 
-/** 訪問者の識別子。IP + User-Agent + 日付の SHA-256 で、IP そのものは保存しない。日付を混ぜるので
- *  日をまたいで同じ人を追跡できない。同じ IP を共有する別の人（携帯キャリアの NAT 等）は
- *  User-Agent で区別する。 */
+/** 訪問者の識別子。IP + 日付の SHA-256 で、IP そのものは保存しない。日付を混ぜるので日をまたいで
+ *  同じ人を追跡できない。User-Agent は混ぜない: 混ぜると UA を変えて送り直すだけで 1 IP から
+ *  いくらでも数を伸ばせる。代わりに同じ IP を共有する別の人（携帯キャリアの NAT・社内 LAN 等）は
+ *  1 人として数える（少なめに数える側に倒す）。 */
 async function visitorKey(request: Request, day: string): Promise<string> {
-  const text = `${clientIp(request)}|${request.headers.get("user-agent") ?? ""}|${day}`;
+  const text = `${clientIp(request)}|${day}`;
   const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(text));
   return Array.from(new Uint8Array(digest), (b) => b.toString(16).padStart(2, "0")).join("");
 }
@@ -86,11 +88,28 @@ interface Row {
   views: number | null;
 }
 
+// エッジ（Cache API）で持つ秒数。ブラウザ向けの max-age と同じ 60 秒。新しく公開したリストが
+// 一覧に出るまで最大でこれだけ遅れる。
+const EDGE_TTL_SEC = 60;
+
 export async function handlePublicLists(url: URL, env: Env): Promise<Response> {
   const sortParam = url.searchParams.get("sort") as PublicListSort | null;
   const sort: PublicListSort = sortParam && SORTS.includes(sortParam) ? sortParam : "new";
   let page = Math.floor(Number(url.searchParams.get("page")));
   if (!Number.isFinite(page) || page < 1) page = 1;
+  // キーは正規化した sort / page だけ（他のクエリ文字列でキャッシュを散らされないように）。
+  return withEdgeCache(edgeCacheKey("/api/public-lists", { sort, page }), EDGE_TTL_SEC, () =>
+    buildPublicLists(env, sort, page)
+  );
+}
+
+/** 公開リスト一覧の 1 ページ目のエッジキャッシュを（このデータセンタで）消す。公開・更新・削除の
+ *  直後に呼べば、その人の見ている一覧にはすぐ出る（他のデータセンタは最大 EDGE_TTL_SEC 遅れる）。 */
+export async function purgePublicListsCache(): Promise<void> {
+  await purgeEdgeCache(SORTS.map((sort) => edgeCacheKey("/api/public-lists", { sort, page: 1 })));
+}
+
+async function buildPublicLists(env: Env, sort: PublicListSort, page: number): Promise<Response> {
   const offset = (page - 1) * PER;
 
   const totalRow = await env.DB.prepare(`SELECT COUNT(*) AS n FROM lists WHERE unlisted = 0`).first<{ n: number }>();
@@ -108,15 +127,23 @@ export async function handlePublicLists(url: URL, env: Env): Promise<Response> {
     rows = res.results ?? [];
   } else {
     // 窓の中で 1 回も見られていないリストも、新しい順で後ろに並べる（一覧から消さない）。
+    // 並べ替えは全公開リストが対象なので、まず細い列（rowid・created_at・アクセス数）だけで
+    // 並べてページ分の rowid を決め、items_json など重い列はそのページの行だけ読む（items_json を
+    // 抱えたまま全行をソートしない）。
     const days = WINDOW_DAYS[sort];
     const since = days ? jstDay(Date.now() - (days - 1) * DAY_MS) : "";
     const res = await env.DB.prepare(
-      `SELECT l.slug, l.owner_name, l.bio, l.items_json, l.created_at, COALESCE(v.n, 0) AS views
-         FROM lists l
-         LEFT JOIN (SELECT slug, SUM(views) AS n FROM list_views WHERE day >= ? GROUP BY slug) v
-           ON v.slug = l.slug
-        WHERE l.unlisted = 0
-        ORDER BY views DESC, l.created_at DESC, l.rowid DESC LIMIT ? OFFSET ?`
+      `WITH page AS (
+         SELECT l.rowid AS rid, l.created_at, COALESCE(v.n, 0) AS views
+           FROM lists l
+           LEFT JOIN (SELECT slug, SUM(views) AS n FROM list_views WHERE day >= ? GROUP BY slug) v
+             ON v.slug = l.slug
+          WHERE l.unlisted = 0
+          ORDER BY views DESC, l.created_at DESC, l.rowid DESC LIMIT ? OFFSET ?
+       )
+       SELECT l.slug, l.owner_name, l.bio, l.items_json, l.created_at, page.views
+         FROM page CROSS JOIN lists l ON l.rowid = page.rid
+        ORDER BY page.views DESC, page.created_at DESC, page.rid DESC`
     )
       .bind(since, PER, offset)
       .all<Row>();

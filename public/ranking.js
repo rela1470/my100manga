@@ -16,11 +16,9 @@ let active = "cumulative";
 async function load() {
   let data;
   try {
-    const res = await fetch("/api/ranking");
-    if (!res.ok) throw new Error(String(res.status));
-    data = await res.json();
-  } catch {
-    $("note").textContent = "ランキングの取得に失敗しました。時間をおいて再度お試しください。";
+    data = await apiFetch("/api/ranking");
+  } catch (e) {
+    $("note").textContent = apiErrorMessage(e, "ランキングの取得に失敗しました。時間をおいて再度お試しください。");
     return;
   }
   windows = data.windows || {};

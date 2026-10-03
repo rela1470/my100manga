@@ -36,6 +36,12 @@ const NG_WORDS: string[] = [
   "ちんこ",
   "ちんぽ",
   "まんこ",
+  // 英字だけの入力欄（独自 URL の slug）向けのローマ字・英語表記。
+  "fuck",
+  "chinko",
+  "chinpo",
+  "manko",
+  "kichigai",
 ];
 
 // NFKC で全角→半角を寄せ、英字は小文字化、カタカナ→ひらがなに寄せ、そのうえで区切りに

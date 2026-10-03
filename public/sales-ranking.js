@@ -23,11 +23,9 @@ function tabsFor(d) {
 async function load() {
   try {
     // 毎回取り直す。古い集計（データが入る前の空の集計を含む）をブラウザのキャッシュから出さない。
-    const res = await fetch("/api/sales-ranking", { cache: "no-cache" });
-    if (!res.ok) throw new Error(String(res.status));
-    data = await res.json();
-  } catch {
-    $("note").textContent = "ランキングの取得に失敗しました。時間をおいて再度お試しください。";
+    data = await apiFetch("/api/sales-ranking", { cache: "no-cache" });
+  } catch (e) {
+    $("note").textContent = apiErrorMessage(e, "ランキングの取得に失敗しました。時間をおいて再度お試しください。");
     return;
   }
   renderTabs();

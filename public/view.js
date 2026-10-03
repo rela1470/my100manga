@@ -8,6 +8,18 @@ let currentSlug = null;
 let viewItems = [];
 let currentIndex = -1;
 
+const EDIT_TOKEN_KEY = "my100manga_edit_token"; // sessionStorage。index.html / view.html の <head> と共通
+
+function heldEditToken(slug) {
+  const held = window.__EDIT_TOKEN__;
+  if (held && held.slug === slug && held.t) return held.t;
+  try {
+    const saved = JSON.parse(sessionStorage.getItem(EDIT_TOKEN_KEY) || "null");
+    if (saved && saved.slug === slug && saved.t) return saved.t;
+  } catch (e) {}
+  return null;
+}
+
 function getSlug() {
   const m = location.pathname.match(/^\/l\/([A-Za-z0-9_-]+)$/);
   return m ? m[1] : null;
@@ -31,19 +43,15 @@ async function sendReport(slug, target, position, btn) {
   btn.disabled = true;
   textEl.textContent = "通報中…";
   try {
-    const res = await fetch(`/api/lists/${encodeURIComponent(slug)}/reports`, {
+    await apiFetch(`/api/lists/${encodeURIComponent(slug)}/reports`, {
       method: "POST",
       headers: { "content-type": "application/json", ...(await botHeaders("report")) },
       body: JSON.stringify(position ? { target, position } : { target }),
     });
-    if (!res.ok) {
-      const data = await res.json().catch(() => ({}));
-      throw new Error(data.error || `HTTP ${res.status}`);
-    }
     textEl.textContent = "通報しました";
     btn.classList.add("revealed");
   } catch (e) {
-    await uiAlert("通報に失敗しました: " + e.message);
+    await uiAlert(apiErrorMessage(e, "通報に失敗しました。時間をおいてもう一度お試しください。"));
     btn.disabled = false;
     textEl.textContent = orig;
   }
@@ -71,18 +79,14 @@ async function sendTitleReport(isbn, btn) {
   btn.disabled = true;
   btn.textContent = "送信中…";
   try {
-    const res = await fetch(`/api/volume-title-reports`, {
+    await apiFetch(`/api/volume-title-reports`, {
       method: "POST",
       headers: { "content-type": "application/json", ...(await botHeaders("feedback")) },
       body: JSON.stringify({ isbn }),
     });
-    if (!res.ok) {
-      const data = await res.json().catch(() => ({}));
-      throw new Error(data.error || `HTTP ${res.status}`);
-    }
     btn.textContent = "修正を依頼しました";
   } catch (e) {
-    await uiAlert("修正依頼の送信に失敗しました: " + e.message);
+    await uiAlert(apiErrorMessage(e, "修正依頼の送信に失敗しました。時間をおいてもう一度お試しください。"));
     btn.disabled = false;
     btn.textContent = orig;
   }
@@ -128,7 +132,9 @@ function render(data) {
   const params = new URLSearchParams(location.search);
   // Prefer the token in the URL; otherwise recover it from this browser's
   // registry so the creator can still edit a list opened without the edit link.
-  let token = params.get("t");
+  // URL の ?t= は view.html <head> のスクリプトが計測タグより先に消して __EDIT_TOKEN__ /
+  // sessionStorage に移している。
+  let token = params.get("t") || heldEditToken(data.slug);
   if (!token && window.MyLists) {
     const rec = window.MyLists.get(data.slug);
     if (rec) token = rec.token;
@@ -137,7 +143,14 @@ function render(data) {
     const btn = $("editLink");
     btn.style.display = "";
     btn.addEventListener("click", () => {
-      location.href = `/?edit=${data.slug}&t=${encodeURIComponent(t)}`;
+      // token は URL に載せず sessionStorage で編集画面へ渡す（index.html / app.js takeEditToken）。
+      // 保存できない環境だけ従来どおり ?t= を付ける（編集画面の <head> ですぐ消える）。
+      try {
+        sessionStorage.setItem(EDIT_TOKEN_KEY, JSON.stringify({ slug: data.slug, t }));
+        location.href = `/?edit=${encodeURIComponent(data.slug)}`;
+      } catch (e) {
+        location.href = `/?edit=${data.slug}&t=${encodeURIComponent(t)}`;
+      }
     });
   };
   // アクセス数のビーコン（src/publicLists.ts）。作者本人の閲覧は数えない。
@@ -174,7 +187,9 @@ function render(data) {
   viewItems = data.items;
 
   data.items.forEach((it, idx) => {
-    const slot = document.createElement("div");
+    // キーボードでも開けるよう button にする（Enter / Space で詳細）。
+    const slot = document.createElement("button");
+    slot.type = "button";
     slot.className = "slot view";
 
     const badges = document.createElement("div");

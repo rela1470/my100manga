@@ -3,7 +3,14 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
+  <!-- 編集用の ?t=<token> 付きで開かれたら、計測・広告タグが読む前にアドレスバーから消す
+       （index.html と同じ。token は sessionStorage へ移し、view.js が読む）。 -->
+  <script>(function(){try{var u=new URL(location.href),t=u.searchParams.get("t");if(!t)return;var m=location.pathname.match(/^\/l\/([A-Za-z0-9_-]+)$/);if(m){window.__EDIT_TOKEN__={slug:m[1],t:t};try{sessionStorage.setItem("my100manga_edit_token",JSON.stringify({slug:m[1],t:t}));}catch(e){}}u.searchParams.delete("t");history.replaceState(history.state,"",u.pathname+u.search+u.hash);}catch(e){}})();</script>
   <!--OGP_META-->
+  <link rel="icon" href="/favicon.ico" sizes="32x32">
+  <link rel="icon" href="/favicon.svg" type="image/svg+xml">
+  <link rel="apple-touch-icon" href="/apple-touch-icon.png">
+  <meta name="theme-color" content="#3b82f6">
   <!--ANALYTICS-->
   <link rel="stylesheet" href="/styles.css">
 </head>
@@ -22,7 +29,7 @@
       <div style="flex:1"></div>
       <button class="x-post" id="xPost">𝕏 でポスト</button>
       <button id="xImage">画像でポスト</button>
-      <a href="/"><button>自分でも作る</button></a>
+      <a class="button" href="/">自分でも作る</a>
       <button id="editLink" style="display:none">このリストを編集</button>
     </div>
 
@@ -63,9 +70,10 @@
       <div class="dsynopsis" id="dSynopsisBox" style="display:none">
         <div class="dsynopsis-title">あらすじ</div>
         <p class="dsynopsis-text" id="dSynopsis"></p>
+        <p class="dsynopsis-src">出典: 楽天ブックス</p>
       </div>
       <div class="buy" id="dBuy" style="display:none">
-        <div class="buy-title">購入する</div>
+        <div class="buy-title">購入リンク<span class="pr-label">PR</span></div>
         <div class="buy-group" id="dBuyPrint"></div>
         <div class="buy-group" id="dBuyEbook"></div>
         <div class="buy-group" id="dBuyUsed"></div>
@@ -80,6 +88,7 @@
 
   <!--LIST_DATA-->
   <script src="/ui-dialog.js"></script>
+  <script src="/api.js"></script>
   <script src="/turnstile.js"></script>
   <script src="/cover-fit.js"></script>
   <script src="/affiliate.js"></script>

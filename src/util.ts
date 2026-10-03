@@ -93,9 +93,75 @@ export function json(data: unknown, status = 200, headers: Record<string, string
 /** Parse a JSON request body as a plain object for optional-field handlers. Anything
  *  else — unparseable text, or valid JSON that isn't an object such as `null` / `[]` /
  *  `"x"` — yields {} so reading `body.foo` can't throw (a `null` body used to 500). */
-export async function readJsonObject(request: Request): Promise<Record<string, unknown>> {
-  const body: unknown = await request.json().catch(() => null);
+export async function readJsonObject(
+  request: Request,
+  maxBytes = MAX_JSON_BODY
+): Promise<Record<string, unknown>> {
+  const body = await readJsonBody(request, maxBytes);
   return body && typeof body === "object" && !Array.isArray(body) ? (body as Record<string, unknown>) : {};
+}
+
+/** readJsonObject の既定の上限。作成中リストの自動保存（/api/me/draft, 100 冊分の
+ *  タイトル・著者・表紙 URL・コメント入り）が収まる大きさにしてある。超えたら {} 扱い。 */
+export const MAX_JSON_BODY = 256 * 1024;
+
+/** 本文が上限を超えたことを表す印（readJsonBody の戻り値）。 */
+export const BODY_TOO_LARGE: unique symbol = Symbol("BODY_TOO_LARGE");
+
+/** リクエスト本文を上限付きで読む。Content-Length が上限超えなら読まずに、ヘッダが無い／偽る
+ *  ストリームでも読みながら上限を超えた時点で打ち切って BODY_TOO_LARGE を返す。 */
+export async function readBodyCapped(request: Request, maxBytes: number): Promise<string | typeof BODY_TOO_LARGE> {
+  const declared = Number(request.headers.get("content-length") ?? "");
+  if (Number.isFinite(declared) && declared > maxBytes) return BODY_TOO_LARGE;
+  if (!request.body) return "";
+  const reader = request.body.getReader();
+  const chunks: Uint8Array[] = [];
+  let total = 0;
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    total += value.byteLength;
+    if (total > maxBytes) {
+      await reader.cancel().catch(() => {});
+      return BODY_TOO_LARGE;
+    }
+    chunks.push(value);
+  }
+  const buf = new Uint8Array(total);
+  let off = 0;
+  for (const c of chunks) {
+    buf.set(c, off);
+    off += c.byteLength;
+  }
+  return new TextDecoder().decode(buf);
+}
+
+/** 上限付きで JSON 本文を読む。壊れた JSON は null、上限超えは BODY_TOO_LARGE。 */
+export async function readJsonBody(request: Request, maxBytes: number): Promise<unknown> {
+  const text = await readBodyCapped(request, maxBytes).catch(() => "");
+  if (text === BODY_TOO_LARGE) return BODY_TOO_LARGE;
+  try {
+    return JSON.parse(text);
+  } catch {
+    return null;
+  }
+}
+
+/** 文字列の定数時間比較（edit_token 等の秘密値の照合用）。長さの違いは早期に分かってしまうが、
+ *  トークンは固定長なので問題にならない。Workers の crypto.subtle.timingSafeEqual を使う。 */
+export function timingSafeEqualStr(a: string, b: string): boolean {
+  const enc = new TextEncoder();
+  const x = enc.encode(a);
+  const y = enc.encode(b);
+  if (x.byteLength !== y.byteLength) return false;
+  return crypto.subtle.timingSafeEqual(x, y);
+}
+
+/** s の中の ph（最初の 1 個）を value にそのまま置き換える。String.prototype.replace の
+ *  第 2 引数に文字列を渡すと value 中の `$&` `$'` `` $` `` `$1` 等が特殊解釈されるので、
+ *  ユーザ由来の値を差し込むときは必ず関数置換のこれを使う。 */
+export function replaceLiteral(s: string, ph: string, value: string): string {
+  return s.replace(ph, () => value);
 }
 
 export function badRequest(message: string): Response {
@@ -278,4 +344,58 @@ export function clientIp(request: Request): string {
     request.headers.get("x-forwarded-for")?.split(",")[0]?.trim() ??
     ""
   );
+}
+
+// 全レスポンスに付けるセキュリティヘッダ（src/index.ts の fetch で包む）。CSP は GTM / AdSense が
+// 読み込む先が多く全面適用は壊しやすいので、いまはクリックジャッキング対策の frame-ancestors だけ。
+// 既に同名ヘッダがあるレスポンス（個別に付けたもの）は上書きしない。
+const SECURITY_HEADERS: Record<string, string> = {
+  "x-frame-options": "DENY",
+  "content-security-policy": "frame-ancestors 'none'",
+  "x-content-type-options": "nosniff",
+  "referrer-policy": "strict-origin-when-cross-origin",
+  "permissions-policy": "camera=(), microphone=(), geolocation=()",
+};
+
+/** レスポンスにセキュリティヘッダを足す。ASSETS / fetch 由来のレスポンスはヘッダが immutable
+ *  なことがあるので、そのときは本文ストリームをそのまま渡して作り直す（バッファしない）。 */
+export function withSecurityHeaders(res: Response): Response {
+  if (res.status === 101 || (res as { webSocket?: unknown }).webSocket) return res;
+  const apply = (h: Headers) => {
+    for (const [k, v] of Object.entries(SECURITY_HEADERS)) if (!h.has(k)) h.set(k, v);
+  };
+  try {
+    apply(res.headers);
+    return res;
+  } catch {
+    const out = new Response(res.body, res);
+    apply(out.headers);
+    return out;
+  }
+}
+
+/** HTML ページ向けの 500 エラー画面（素の HTML、外部リソース無し）。 */
+export function errorPageHtml(): Response {
+  const html = `<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex">
+<title>エラーが発生しました | My 100 Manga</title>
+<style>body{font-family:system-ui,-apple-system,"Hiragino Sans",sans-serif;margin:0;color:#222;background:#f7f8fb}header{padding:12px 16px;background:#fff;border-bottom:1px solid #e3e6ee}header a{color:#2a5bd7;font-weight:bold;text-decoration:none}main{max-width:560px;margin:48px auto;padding:0 16px;line-height:1.7}a.btn{display:inline-block;margin-top:16px;padding:8px 16px;border-radius:6px;background:#2a5bd7;color:#fff;text-decoration:none}</style>
+</head>
+<body>
+<header><a href="/">My 100 Manga</a></header>
+<main>
+<h1>エラーが発生しました</h1>
+<p>ページを表示できませんでした。時間をおいて再読み込みしてください。</p>
+<a class="btn" href="/">トップへ戻る</a>
+</main>
+</body>
+</html>`;
+  return new Response(html, {
+    status: 500,
+    headers: { "content-type": "text/html; charset=utf-8", "cache-control": "no-store" },
+  });
 }

@@ -7,6 +7,7 @@ import { json, randomSlug, randomToken } from "./util";
 //   GET  /auth/google/login?return=/path  … state / PKCE verifier を短命 Cookie に置いて Google へ
 //   GET  /auth/google/callback            … code を交換 → users を upsert → セッション Cookie を発行
 //   POST /auth/logout                     … セッション行を消して Cookie を破棄
+// 退会（DELETE /api/me）は src/account.ts。
 //
 // ID トークンはこちらから TLS で Google のトークンエンドポイントに取りに行ったものなので、
 // 署名検証は省き iss / aud / exp だけ確かめる（OIDC Core 3.1.3.7 で許容されている形）。
@@ -68,10 +69,23 @@ async function sessionHash(token: string): Promise<string> {
   return Array.from(await sha256(token), (b) => b.toString(16).padStart(2, "0")).join("");
 }
 
-/** ログイン後の戻り先。オープンリダイレクトにならないよう同一オリジンのパスだけ許す。 */
-function safeReturnPath(raw: string | null): string {
-  if (!raw || !raw.startsWith("/") || raw.startsWith("//") || raw.startsWith("/\\")) return "/";
-  return raw.slice(0, 500);
+/** ログイン後の戻り先。オープンリダイレクトにならないよう同一オリジンのパスだけ許す。
+ *  文字列の前方一致だけだと `/\tevil.com` や `/%5Cevil.com` のような変形を見落とすので、
+ *  制御文字・バックスラッシュを含むものは捨て、ダミーのオリジンで URL として解決して
+ *  オリジンが変わらないことを確かめ、pathname + search + hash を返す。 */
+export function safeReturnPath(raw: string | null): string {
+  if (!raw || raw.length > 500 || !raw.startsWith("/") || raw.startsWith("//")) return "/";
+  if (/[\u0000-\u001f\u007f\\]/.test(raw)) return "/";
+  const base = "https://x.invalid";
+  let u: URL;
+  try {
+    u = new URL(raw, base);
+  } catch {
+    return "/";
+  }
+  if (u.origin !== base) return "/";
+  const out = u.pathname + u.search + u.hash;
+  return out.startsWith("/") && !out.startsWith("//") ? out : "/";
 }
 
 function redirect(location: string, cookies: string[] = []): Response {
@@ -214,8 +228,13 @@ export async function logout(request: Request, env: Env): Promise<Response> {
   }
   return json({ ok: true }, 200, {
     "cache-control": "no-store",
-    "set-cookie": cookie(request, SESSION_COOKIE, "", 0),
+    "set-cookie": clearSessionCookie(request),
   });
+}
+
+/** セッション Cookie を消す Set-Cookie 値。ログアウトと退会で使う。 */
+export function clearSessionCookie(request: Request): string {
+  return cookie(request, SESSION_COOKIE, "", 0);
 }
 
 /** Cookie のセッションからログイン中のユーザを引く。未ログイン・期限切れ・未設定なら null。 */
@@ -229,4 +248,10 @@ export async function currentUser(request: Request, env: Env): Promise<User | nu
   )
     .bind(await sessionHash(token), Date.now())
     .first<User>();
+}
+
+/** 期限切れのセッション行を全ユーザ分消す（Cron, src/index.ts scheduled）。ログイン時にも
+ *  本人分は消しているが、ログインし直さないユーザの行が残り続けないように。 */
+export async function purgeExpiredSessions(env: Env, now = Date.now()): Promise<void> {
+  await env.DB.prepare(`DELETE FROM sessions WHERE expires_at < ?`).bind(now).run();
 }

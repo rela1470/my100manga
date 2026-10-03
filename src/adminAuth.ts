@@ -13,9 +13,10 @@ import { json } from "./util";
 // 必要な設定（wrangler.jsonc vars）:
 //   ACCESS_TEAM_DOMAIN … 例 "kyash.cloudflareaccess.com"（スキームなし）
 //   ACCESS_AUD          … Access アプリの Application Audience (AUD) タグ
-//   ADMIN_EMAILS        … 許可メール（カンマ区切り、任意の追加チェック）
+//   ADMIN_EMAILS        … 許可メール（カンマ区切り、必須。空だと 403）
 // ローカル `wrangler dev` 用:
-//   ADMIN_DEV_BYPASS="true" … Access が無いローカルで検証をスキップ（.dev.vars のみ）
+//   ADMIN_DEV_BYPASS="true" … Access が無いローカルで検証をスキップ（.dev.vars のみ）。
+//     フラグがあってもローカルからのリクエストでなければ効かない（devBypassActive）。
 //
 // 方針は fail-closed。設定が欠けていれば 403 を返し、決して素通りさせない。
 
@@ -125,12 +126,13 @@ async function verifyAccessJwt(
  */
 export async function requireAdmin(request: Request, env: Env): Promise<Response | null> {
   // ローカル dev のみ: Access が存在しないので明示フラグでバイパス。
-  if (env.ADMIN_DEV_BYPASS === "true") return null;
+  if (devBypassActive(request, env)) return null;
 
   const teamDomain = env.ACCESS_TEAM_DOMAIN;
   const aud = env.ACCESS_AUD;
-  // 設定漏れは fail-closed（素通りさせない）。
-  if (!teamDomain || !aud) {
+  const allow = adminEmails(env);
+  // 設定漏れは fail-closed（素通りさせない）。許可メールが空のときも同じく閉じる。
+  if (!teamDomain || !aud || allow.length === 0) {
     return json({ error: "管理機能は未設定です" }, 403, { "cache-control": "no-store" });
   }
 
@@ -150,16 +152,94 @@ export async function requireAdmin(request: Request, env: Env): Promise<Response
   }
 
   // Access ポリシーで許可メールは既に絞れるが、多重防御として Worker でも照合。
-  const allow = (env.ADMIN_EMAILS ?? "")
-    .split(",")
-    .map((e) => e.trim().toLowerCase())
-    .filter(Boolean);
-  if (allow.length > 0) {
-    const email = (claims.email ?? "").toLowerCase();
-    if (!email || !allow.includes(email)) {
-      return json({ error: "権限がありません" }, 403, { "cache-control": "no-store" });
-    }
+  const email = (claims.email ?? "").toLowerCase();
+  if (!email || !allow.includes(email)) {
+    return json({ error: "権限がありません" }, 403, { "cache-control": "no-store" });
   }
 
   return null;
+}
+
+function adminEmails(env: Env): string[] {
+  return (env.ADMIN_EMAILS ?? "")
+    .split(",")
+    .map((e) => e.trim().toLowerCase())
+    .filter(Boolean);
+}
+
+const LOOPBACK_HOSTS = new Set(["localhost", "127.0.0.1", "[::1]", "::1"]);
+const LOOPBACK_IPS = new Set(["127.0.0.1", "::1", "::ffff:127.0.0.1"]);
+
+/**
+ * ADMIN_DEV_BYPASS を効かせてよいか。フラグが "true" で、かつリクエストがローカルから
+ * 来ていることが確かなときだけ true。誤って本番 vars / secret にフラグが入っても素通りしない。
+ *
+ * ローカル判定は「ホスト名が localhost / 127.0.0.1 / [::1]」か「cf-connecting-ip がループバック」。
+ * `wrangler dev` は request.url を routes のドメインに書き換えるのでホスト名だけでは判定できず、
+ * Miniflare が付ける cf-connecting-ip（接続元 = 127.0.0.1 / ::1）も見る。本番の Cloudflare は
+ * cf-connecting-ip を実際の接続元 IP で上書きするので、外からループバックを名乗ることはできない。
+ */
+export function devBypassActive(request: Request, env: Env): boolean {
+  if (env.ADMIN_DEV_BYPASS !== "true") return false;
+  const host = new URL(request.url).hostname.toLowerCase();
+  if (LOOPBACK_HOSTS.has(host)) return true;
+  const ip = (request.headers.get("cf-connecting-ip") ?? "").trim().toLowerCase();
+  return LOOPBACK_IPS.has(ip);
+}
+
+/**
+ * admin API の CSRF よけ。状態を変えるメソッド（GET/HEAD 以外）は Origin ヘッダ必須で、
+ * 自オリジンと一致しなければ拒否する（Origin 無しも拒否）。ブラウザは同一オリジンの
+ * fetch POST/DELETE に Origin を付けるので public/admin.js はそのまま通る。
+ * ローカル dev（バイパス中）は request.url が routes のドメインに書き換わって Origin
+ * （http://localhost:8787）と食い違うので、ループバックの Origin も許す。
+ */
+export function adminCsrfOk(request: Request, env: Env): boolean {
+  if (request.method === "GET" || request.method === "HEAD") return true;
+  const origin = request.headers.get("origin");
+  if (!origin || origin === "null") return false;
+  if (origin === new URL(request.url).origin) return true;
+  if (devBypassActive(request, env)) {
+    try {
+      return LOOPBACK_HOSTS.has(new URL(origin).hostname.toLowerCase());
+    } catch {
+      return false;
+    }
+  }
+  return false;
+}
+
+/**
+ * 静的アセットとして admin.html に解決されうるパスか。/admin・/admin.html に加え、
+ * 大文字小文字・パーセントエンコード（/%61dmin）・末尾スラッシュ・重複スラッシュ・
+ * バックスラッシュ・/admin/index.html のような変形も拾う。過剰に拾う分には requireAdmin
+ * を通すだけなので害は無い。
+ */
+export function isAdminUiPath(pathname: string): boolean {
+  let p = pathname;
+  for (let i = 0; i < 3; i++) {
+    let d: string;
+    try {
+      d = decodeURIComponent(p);
+    } catch {
+      break;
+    }
+    if (d === p) break;
+    p = d;
+  }
+  // 重複スラッシュは URL 解決の前に潰す（"//admin" がプロトコル相対 URL と解釈されないように）。
+  p = p.replace(/\\/g, "/").replace(/\/{2,}/g, "/");
+  try {
+    // デコード後に現れた ../ や ./ を解決する。
+    p = new URL(p, "https://x.invalid").pathname;
+  } catch {
+    // 解決できなければそのまま判定する。
+  }
+  p = p
+    .toLowerCase()
+    .replace(/\/{2,}/g, "/")
+    .replace(/\/+$/, "")
+    .replace(/\.html?$/, "")
+    .replace(/\/index$/, "");
+  return p === "/admin";
 }

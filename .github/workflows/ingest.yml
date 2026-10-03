@@ -3,6 +3,11 @@ name: MADB ingest
 # Manual import of the メディア芸術データベース (MADB) LOD dump into the remote D1.
 # MADB publishes a new release roughly monthly; we pull the latest tag and rebuild
 # the series/volumes master. Run on demand via the Actions "Run workflow" button.
+#
+# 既定の投入先は dev。本番 (prod) を選んだ実行は GitHub Environment `production` に紐づけ、
+# その Environment の必須レビュアー（Settings → Environments → production → Required reviewers）
+# の承認を待ってから走る。Environment が未作成だと承認なしで走ってしまうので、先に作っておくこと。
+# 本番に流す前は dev で一度通し、リポ直下 CLAUDE.md の手順（全セッションへの予告）に従う。
 on:
   workflow_dispatch:
     inputs:
@@ -10,9 +15,9 @@ on:
         description: "target D1 environment"
         type: choice
         options:
-          - prod
           - dev
-        default: prod
+          - prod
+        default: dev
       tag:
         description: "MADB release tag (blank = latest)"
         required: false
@@ -26,6 +31,8 @@ jobs:
   ingest:
     runs-on: ubuntu-latest
     timeout-minutes: 120
+    # prod のときだけ承認ゲート付きの Environment に入れる（空文字なら Environment なし）。
+    environment: ${{ inputs.environment == 'prod' && 'production' || '' }}
     steps:
       - uses: actions/checkout@v4
 
@@ -54,6 +61,18 @@ jobs:
           else
             test -n "$PROD_DB_ID" || { echo "::error::secret CLOUDFLARE_D1_DATABASE_ID is empty"; exit 1; }
           fi
+
+      # 失敗時に戻せるよう、投入直前の Time Travel ブックマークをログに残す（db/MIGRATIONS.md）。
+      # 戻すとき: npx wrangler d1 time-travel restore DB [--env dev] --bookmark=<bookmark>
+      - name: Record D1 Time Travel bookmark
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          TARGET_ENV: ${{ inputs.environment }}
+        run: |
+          ENV_ARGS=""
+          [ "$TARGET_ENV" = "dev" ] && ENV_ARGS="--env dev"
+          npx wrangler d1 time-travel info DB $ENV_ARGS | tee -a "$GITHUB_STEP_SUMMARY"
 
       - name: Ingest MADB → remote D1
         env:

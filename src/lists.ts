@@ -9,9 +9,22 @@ import {
   randomSlug,
   randomToken,
   toIsbn13,
+  BODY_TOO_LARGE,
+  readJsonBody,
+  timingSafeEqualStr,
 } from "./util";
-import { checkListContent } from "./ngwords";
+import { checkListContent, findNgWord } from "./ngwords";
 import { parseStoredItems, resolveListItems } from "./listItems";
+import { adultBlockMessage, findAdultIsbns } from "./adult";
+
+/** リスト 1 件とその付随データを消す文。lists 本体に加え、ランキングが消えたリストを数え
+ *  続けないよう追加イベント (src/ranking.ts) を、一覧のアクセス数順 (src/publicLists.ts) の
+ *  日別カウンタも一緒に掃除する。管理者削除と退会時の削除で使う。 */
+export function deleteListStatements(env: Env, slug: string): D1PreparedStatement[] {
+  return ["lists", "list_item_events", "list_views", "list_view_seen"].map((t) =>
+    env.DB.prepare(`DELETE FROM ${t} WHERE slug = ?`).bind(slug)
+  );
+}
 
 const REQUIRED_ITEMS = 100;
 const MAX_COMMENT = 200;
@@ -24,6 +37,8 @@ const MAX_BIO = 100;
  *  ignored and never stored. Every book needs an ISBN — it's the only key we have. */
 function sanitizeItems(raw: unknown): { items: StoredListItem[] } | { error: string } {
   if (!Array.isArray(raw)) return { error: "作品リストが不正です" };
+  // 件数超過は 1 件ずつの検証（ISBN 正規化・URL 除去）を回す前に弾く。
+  if (raw.length > REQUIRED_ITEMS) return { error: `作品はちょうど${REQUIRED_ITEMS}件にしてください` };
   const items: StoredListItem[] = [];
   for (let i = 0; i < raw.length; i++) {
     const it = raw[i] as Record<string, unknown>;
@@ -40,13 +55,21 @@ function sanitizeItems(raw: unknown): { items: StoredListItem[] } | { error: str
   return { items };
 }
 
+// スキーム無しの URL（example.com/x, bit.ly/abc）。誤検知を避けるため、英数字のラベルが
+// ドットで繋がり、末尾が誘導に使われがちな TLD で終わるものだけを拾う（「Vol.2」「Dr.STONE」
+// のような作品名・巻表記は TLD に当たらないので残る）。前後が英数字・ドット・@ に続くもの
+// （メールアドレスの一部や長い英単語の途中）は対象外。
+const BARE_URL_RE =
+  /(?<![A-Za-z0-9.@-])(?:[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?\.)+(?:com|net|org|jp|io|co|info|biz|xyz|ly|gl|be|tv|cc|app|dev|site|online|top|link|shop|me|to|ru|cn|club|live|page|work|fun|blog|tokyo)(?![A-Za-z0-9-])(?:[/?#:][^\s]*)?/gi;
+
 /** コメントはアカウント無しの匿名公開なので URL を書けないようにする（スパム・誘導リンク
- *  対策）。http(s):// や www. で始まるトークンを除去する。クライアントでも入力時に弾くが、
- *  バイパスされうるのでサーバ側を最終防衛線にする。 */
-function stripUrls(text: string): string {
+ *  対策）。http(s):// や www. で始まるトークンと、スキーム無しのドメイン形式（BARE_URL_RE）を
+ *  除去する。クライアントでも入力時に弾くが、バイパスされうるのでサーバ側を最終防衛線にする。 */
+export function stripUrls(text: string): string {
   return text
     .replace(/https?:\/\/\S+/gi, "")
     .replace(/www\.\S+/gi, "")
+    .replace(BARE_URL_RE, "")
     .replace(/[ \t]{2,}/g, " ")
     .trim();
 }
@@ -99,16 +122,41 @@ async function recordPublishAudit(
   }
 }
 
+/** 成年向け（adult_volumes）の巻が入っていれば拒否文言を返す。検索・巻の追加でも止めているが、
+ *  下書きの古いデータや API 直叩きで紛れ込むので公開時に最終確認する。書名は最初の 1 件だけ添える。 */
+async function adultItemError(env: Env, items: StoredListItem[]): Promise<string | null> {
+  const adult = await findAdultIsbns(env, items.map((it) => it.isbn));
+  if (!adult.size) return null;
+  const first = items.find((it) => adult.has(it.isbn));
+  return adultBlockMessage(first ? adult.get(first.isbn) : "");
+}
+
+/** リスト作成・更新の本文の上限。100 冊分（クライアントは title / author / cover_url も送って
+ *  くるが保存はしない）にコメント 200 字を足しても 150KB 程度に収まる。 */
+export const MAX_LIST_BODY = 200 * 1024;
+
+/** リスト作成・更新の JSON 本文を上限付きで読む。上限超えは 413、壊れた JSON・オブジェクト
+ *  以外は 400 のレスポンスを返す。 */
+async function readListBody(request: Request): Promise<Record<string, unknown> | Response> {
+  const body = await readJsonBody(request, MAX_LIST_BODY);
+  if (body === BODY_TOO_LARGE) return json({ error: "リクエストが大きすぎます" }, 413);
+  if (!body || typeof body !== "object" || Array.isArray(body)) return badRequest("不正なリクエストです");
+  return body as Record<string, unknown>;
+}
+
 /** userId はログイン中ならそのアカウント（リストを紐付ける）、匿名なら null。編集権限は
  *  どちらでも edit_token で、ログイン中のユーザには /api/me/lists がそれを返す。 */
 export async function createList(request: Request, env: Env, userId: string | null): Promise<Response> {
-  const body = (await request.json().catch(() => null)) as Record<string, unknown> | null;
-  if (!body) return badRequest("不正なリクエストです");
+  const parsed = await readListBody(request);
+  if (parsed instanceof Response) return parsed;
+  const body = parsed;
 
   const sanitized = sanitizeItems(body.items);
   if ("error" in sanitized) return badRequest(sanitized.error);
   const items = sanitized.items;
   if (items.length !== REQUIRED_ITEMS) return badRequest(`作品はちょうど${REQUIRED_ITEMS}件にしてください`);
+  const adultError = await adultItemError(env, items);
+  if (adultError) return badRequest(adultError);
 
   const owner_name = stripUrls(String(body.owner_name ?? "")).slice(0, MAX_NAME);
   const bio = sanitizeBio(body.bio);
@@ -132,6 +180,8 @@ export async function createList(request: Request, env: Env, userId: string | nu
     if (slug === null) {
       return badRequest(`URLは英数字・ハイフン・アンダースコアのみ、${MAX_CUSTOM_SLUG}文字以内で指定してください`);
     }
+    // 公開 URL に出るので、お名前・コメントと同じ NG ワードを当てる。
+    if (findNgWord(slug)) return badRequest("URLに不適切な表現が含まれています");
     const existing = await env.DB.prepare(`SELECT 1 FROM lists WHERE slug = ?`).bind(slug).first();
     if (existing) return json({ error: "このURLはすでに使われています" }, 409);
     try {
@@ -200,7 +250,9 @@ async function loadList(env: Env, slug: string): Promise<StoredList | null> {
   };
 }
 
-export async function getListData(env: Env, slug: string): Promise<MangaList | null> {
+/** strict: 解決（resolveListItems）の失敗を握り潰さず投げる。R2 の閲覧スナップショット
+ *  （src/viewSnapshot.ts）は ISBN だけの縮退表示を 24 時間残さないよう strict で作る。 */
+export async function getListData(env: Env, slug: string, opts: { strict?: boolean } = {}): Promise<MangaList | null> {
   const list = await loadList(env, slug);
   if (!list) return null;
   const { edit_token, items: stored, ...rest } = list;
@@ -212,6 +264,7 @@ export async function getListData(env: Env, slug: string): Promise<MangaList | n
   try {
     items = await resolveListItems(env, stored);
   } catch (err) {
+    if (opts.strict) throw err;
     console.error("resolveListItems failed", err);
     items = stored.map((it) => ({ ...it, title: `ISBN ${it.isbn}`, author: "", cover_url: "" }));
   }
@@ -228,16 +281,20 @@ export async function updateList(request: Request, env: Env, slug: string): Prom
   const list = await loadList(env, slug);
   if (!list) return notFound("リストが見つかりません");
 
-  const body = (await request.json().catch(() => null)) as Record<string, unknown> | null;
-  if (!body) return badRequest("不正なリクエストです");
+  const parsed = await readListBody(request);
+  if (parsed instanceof Response) return parsed;
+  const body = parsed;
 
   const token = String(body.edit_token ?? request.headers.get("x-edit-token") ?? "");
-  if (token !== list.edit_token) return json({ error: "編集権限がありません" }, 403);
+  // 定数時間比較（応答時間の差から edit_token を 1 文字ずつ当てられないように）。
+  if (!timingSafeEqualStr(token, list.edit_token)) return json({ error: "編集権限がありません" }, 403);
 
   const sanitized = sanitizeItems(body.items);
   if ("error" in sanitized) return badRequest(sanitized.error);
   const items = sanitized.items;
   if (items.length !== REQUIRED_ITEMS) return badRequest(`作品はちょうど${REQUIRED_ITEMS}件にしてください`);
+  const adultError = await adultItemError(env, items);
+  if (adultError) return badRequest(adultError);
 
   const owner_name = stripUrls(String(body.owner_name ?? list.owner_name)).slice(0, MAX_NAME);
   // bio を送らない古いクライアント（キャッシュ済み app.js）で消さないよう、未指定なら現状維持。

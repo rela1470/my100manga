@@ -35,9 +35,10 @@
       <div class="dsynopsis" id="bdSynopsisBox" style="display:none">
         <div class="dsynopsis-title">あらすじ</div>
         <p class="dsynopsis-text" id="bdSynopsis"></p>
+        <p class="dsynopsis-src">出典: 楽天ブックス</p>
       </div>
       <div class="buy" id="bdBuy" style="display:none">
-        <div class="buy-title">購入する</div>
+        <div class="buy-title">購入リンク<span class="pr-label">PR</span></div>
         <div class="buy-group" id="bdBuyPrint"></div>
         <div class="buy-group" id="bdBuyEbook"></div>
         <div class="buy-group" id="bdBuyUsed"></div>

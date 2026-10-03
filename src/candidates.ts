@@ -6,6 +6,7 @@ import { probeYahooCover } from "./yahoo";
 import { ichibaCovers } from "./ichiba";
 import { rakutenResolveFull, rakutenSearchTitle, RakutenBook } from "./rakuten";
 import { bookMetaInsertFromRakuten, cacheBookMetaBatch } from "./book";
+import { findAdultIsbns } from "./adult";
 
 interface Candidate {
   src: string;
@@ -119,8 +120,11 @@ export async function volumeCandidates(request: Request, env: Env): Promise<Resp
   const vnum = parseInt(volume, 10);
   if (!title || !Number.isFinite(vnum)) return badRequest("title と volume を指定してください");
 
-  const hits = await searchVolume(env, title, String(vnum));
-  await cacheBookMetaBatch(env, hits);
+  const found = await searchVolume(env, title, String(vnum));
+  await cacheBookMetaBatch(env, found);
+  // 成年向けとして取り込みから外した巻（adult_volumes）は候補に出さない（選んでも追加で弾かれる）。
+  const adult = await findAdultIsbns(env, found.map((b) => b.isbn));
+  const hits = found.filter((b) => !adult.has(b.isbn));
   const candidates: VolumeCandidate[] = hits.map((b) => ({
     isbn: b.isbn,
     title: b.title,

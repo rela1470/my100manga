@@ -294,6 +294,22 @@ wrangler d1 execute DB --env dev --remote --file db/add-creators.sql # 開発
 npm run ingest:remote        # 本番（列を埋めるには取り込み直しが必要）
 ```
 
+公開前の索引見直し（`db/add-indexes-2026-10.sql`: 公開リスト一覧・巻一覧・リスト表示の全表スキャン解消と、
+ライブ補完の ISBN 逆引き表 `series_supplement_isbn`）。Worker が逆引き表を引くので**デプロイ前に**流す（冪等）:
+
+```bash
+wrangler d1 execute DB --remote --file db/add-indexes-2026-10.sql          # 本番
+wrangler d1 execute DB --env dev --remote --file db/add-indexes-2026-10.sql # 開発
+```
+
+どの migration をどの環境にいつ流したかは [`db/MIGRATIONS.md`](db/MIGRATIONS.md) の台帳で管理する。リモートに
+流す前・ingest の前には、同じファイルの「バックアップ」の手順（Time Travel のブックマークを控える・
+`wrangler d1 export`）を行う。
+
+MADB の取り込みでは成年コミック（MADB の `schema:contentRating` が「成年コミック」等の巻）を除外し、
+成年向けの巻しか無いシリーズも入れない。ライブ検索・補完（`src/madbLive.ts`）も同じ条件で落とす。判定に
+書名の文字列照合を使わない理由は `src/adult.ts` に書いてある。
+
 シークレット（楽天API）は環境ごとに設定する（下記参照）。
 
 ## データモデル（D1）

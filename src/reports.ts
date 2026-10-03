@@ -76,3 +76,13 @@ export async function addReport(request: Request, env: Env, slug: string): Promi
 
   return json({ ok: true }, 200, { "cache-control": "no-store" });
 }
+
+/** publish_audit（公開の監査ログ。IP・User-Agent を含む）の保持期間。 */
+export const PUBLISH_AUDIT_RETENTION_MS = 365 * 24 * 60 * 60 * 1000;
+
+/** 保持期間を過ぎた publish_audit を消す（Cron, src/index.ts scheduled）。created_at は epoch ms。 */
+export async function purgePublishAudit(env: Env, now = Date.now()): Promise<void> {
+  await env.DB.prepare(`DELETE FROM publish_audit WHERE created_at < ?`)
+    .bind(now - PUBLISH_AUDIT_RETENTION_MS)
+    .run();
+}

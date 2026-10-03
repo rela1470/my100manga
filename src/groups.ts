@@ -12,6 +12,13 @@ import {
 } from "./util";
 import { readCachedCovers } from "./covers";
 
+/** series.name_norm の前方一致を idx_series_name_norm で引く WHERE 句。同じ前方一致文字列を 2 回
+ *  bind する（下限と上限）。SQLite の LIKE は既定で ASCII の大小を無視するため BINARY の索引では
+ *  LIKE 'x%' の前方一致最適化が効かず、シリーズ全行（~14 万）のスキャンになっていた。name_norm と
+ *  前方一致文字列はどちらも normTitle 済み（小文字）なので、範囲比較で LIKE と同じ行が引ける。
+ *  上限の char(1114111) は Unicode の最大の文字。LIKE のバイト上限も関係なくなる。 */
+export const NAME_NORM_PREFIX = `name_norm >= ? AND name_norm < ? || char(1114111)`;
+
 // シリーズに属さない巻のまとまり（グループ）と、独自シリーズ。
 //
 // MADB の巻の ~20% は schema:isPartOf を持たず（volumes.series_id IS NULL）、どのシリーズにも
@@ -246,14 +253,12 @@ export async function attributeTitles(env: Env, titles: string[]): Promise<Map<s
     else needsBase.push(t);
   }
 
-  // 基本書名: name_norm LIKE base||'%' で拾い（前方一致なので索引が効く）、baseTitle(name)
+  // 基本書名: name_norm の前方一致（NAME_NORM_PREFIX、索引で引く）で拾い、baseTitle(name)
   // === base を JS で確かめて「…外伝」のような長い基本書名の兄弟を除く。1 つだけなら確定。
   const idsByBase = new Map<string, Set<string>>();
   for (const base of new Set(needsBase.map(baseTitle).filter(Boolean))) {
-    const r = await env.DB.prepare(`SELECT id, name FROM series WHERE name_norm LIKE ? ESCAPE '\\'`)
-      // 長い基本書名は D1 の LIKE バイト上限を超えるので短い前方一致に詰める（下の再判定で
-      // 一致は厳密に保たれる）。
-      .bind(escapeLikeClamped(base, LIKE_MAX_BYTES - 1) + "%")
+    const r = await env.DB.prepare(`SELECT id, name FROM series WHERE ${NAME_NORM_PREFIX}`)
+      .bind(base, base)
       .all<{ id: string; name: string }>();
     const set = new Set<string>();
     for (const row of r.results ?? []) if (baseTitle(row.name) === base) set.add(row.id);

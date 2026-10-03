@@ -33,12 +33,27 @@ function forbidden(): Response {
   );
 }
 
+// 片方だけ設定されている（例: サイトキーを vars に入れたが secret の投入を忘れた）と公開・通報が
+// 全部 403 になるので、運用者が気付けるようアイソレートごとに 1 回だけログに出す。
+let misconfigWarned = false;
+function warnMisconfigOnce(missing: string): void {
+  if (misconfigWarned) return;
+  misconfigWarned = true;
+  console.error(
+    `turnstile misconfigured: ${missing} is not set (TURNSTILE_SITE_KEY と TURNSTILE_SECRET は両方必要)。` +
+      `ボット確認対象の書き込み（リスト公開・通報・データ修正）はすべて 403 になります。`
+  );
+}
+
 // 検証に通れば null、通らなければ 403 のレスポンスを返す。
 export async function verifyTurnstile(request: Request, env: Env, action: string): Promise<Response | null> {
   const siteKey = (env.TURNSTILE_SITE_KEY ?? "").trim();
   const secret = (env.TURNSTILE_SECRET ?? "").trim();
   if (!siteKey && !secret) return null;
-  if (!siteKey || !secret) return forbidden();
+  if (!siteKey || !secret) {
+    warnMisconfigOnce(siteKey ? "TURNSTILE_SECRET" : "TURNSTILE_SITE_KEY");
+    return forbidden();
+  }
 
   const token = request.headers.get("cf-turnstile-response") ?? "";
   if (token.length === 0 || token.length > 2048) return forbidden();

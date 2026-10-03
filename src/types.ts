@@ -86,6 +86,16 @@ export interface Env {
   // RL_COVERS は表紙解決（外部 API を叩く /api/covers）用。binding 未設定なら fail-open。
   RL_WRITE?: RateLimit;
   RL_COVERS?: RateLimit;
+  // 共有画像（src/shareImage.ts）の事前生成キュー。リストの作成/更新で {slug, host} を積み、
+  // consumer（src/index.ts queue）が og/full/q1–q4 を 1 枚ずつ R2 に描いておく。未設定
+  // （ローカル・キュー未作成）なら従来どおり waitUntil で og だけ先に描く。
+  SHARE_QUEUE?: Queue<ShareJob>;
+}
+
+/** SHARE_QUEUE のメッセージ。host は画像のヘッダーに印字するリスト URL のホスト。 */
+export interface ShareJob {
+  slug: string;
+  host: string;
 }
 
 export interface Book {
@@ -111,6 +121,7 @@ export interface ListItem extends StoredListItem {
   title: string;
   author: string;
   cover_url: string;
+  series_title?: string; // シリーズの表示名（シリーズに属さない本は ""）
 }
 
 export interface MangaList {

@@ -1,0 +1,44 @@
+name: CI
+
+# push / PR ごとに型検査とテスト（vitest を Workers ランタイム上で）を回す。
+# Cloudflare の認証は要らない（D1 はテストファイルごとの空のローカル DB、外部 API は叩かない）。
+on:
+  push:
+  pull_request:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - run: npm ci
+
+      # worker-configuration.d.ts（Env の型）と wrangler.jsonc は .gitignore 済み。tsconfig が前者を
+      # 読むので、sample から wrangler.jsonc を作って `wrangler types` で生成する（DB ID は型に関係ない）。
+      # vitest は vitest.config.mts が wrangler.jsonc.sample から wrangler.test.jsonc を作るので不要。
+      - name: Generate Worker types
+        run: |
+          cp wrangler.jsonc.sample wrangler.jsonc
+          npx wrangler types
+
+      - name: Type check
+        run: |
+          npx tsc --noEmit
+          npx tsc --noEmit -p test
+
+      - name: Test
+        run: npx vitest run

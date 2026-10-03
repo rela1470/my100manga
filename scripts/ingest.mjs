@@ -6,6 +6,9 @@
 // JSON-LD, and loads series/volumes into D1. This is the source of truth for
 // series→volume→ISBN correlation that powers search and the "add all volumes"
 // button. Run monthly (see .github/workflows/ingest.yml).
+// 成年コミック（schema:contentRating / description）は取り込まない（isAdult, src/adult.ts）。
+// 落とした巻（ISBN あり）は adult_volumes に記録し、検索・追加で「成年向けは追加できない」と
+// 明示するのに使う（src/adult.ts findAdultIsbns）。
 //
 // Usage:
 //   node scripts/ingest.mjs --local            # apply to local D1
@@ -51,10 +54,15 @@ const VOLUMES_COLS =
   "isbn TEXT PRIMARY KEY, series_id TEXT, volume_number TEXT, vol_sort INTEGER, " +
   "title TEXT NOT NULL, title_search TEXT, creator TEXT, creators TEXT, creators_norm TEXT, publisher TEXT, label TEXT, pubdate TEXT";
 
+// 成年向けとして取り込みから外した巻（db/schema.sql adult_volumes と揃える）。title_norm は
+// searchKey(title)（src/search.ts のキーワード照合と同じ正規化）。
+const ADULT_COLS = "isbn TEXT PRIMARY KEY, title TEXT NOT NULL, title_norm TEXT NOT NULL, series_name TEXT";
+
 const DROP_AND_CREATE_SHADOW_SQL =
-  "DROP TABLE IF EXISTS series_new; DROP TABLE IF EXISTS volumes_new; " +
+  "DROP TABLE IF EXISTS series_new; DROP TABLE IF EXISTS volumes_new; DROP TABLE IF EXISTS adult_volumes_new; " +
   `CREATE TABLE series_new (${SERIES_COLS}); ` +
-  `CREATE TABLE volumes_new (${VOLUMES_COLS});`;
+  `CREATE TABLE volumes_new (${VOLUMES_COLS}); ` +
+  `CREATE TABLE adult_volumes_new (${ADULT_COLS});`;
 
 // Drop supplement volumes the new master now carries (same ISBN, or the same volume
 // number within the series) so they aren't counted/listed twice. Volumes the master
@@ -90,17 +98,25 @@ const APPLY_LINKS_SQL = [
 const SWAP_SQL = [
   `CREATE TABLE IF NOT EXISTS series (${SERIES_COLS});`,
   `CREATE TABLE IF NOT EXISTS volumes (${VOLUMES_COLS});`,
+  `CREATE TABLE IF NOT EXISTS adult_volumes (${ADULT_COLS});`,
   "DROP TABLE IF EXISTS series_old;",
   "DROP TABLE IF EXISTS volumes_old;",
+  "DROP TABLE IF EXISTS adult_volumes_old;",
   "ALTER TABLE series RENAME TO series_old;",
   "ALTER TABLE volumes RENAME TO volumes_old;",
+  "ALTER TABLE adult_volumes RENAME TO adult_volumes_old;",
   "ALTER TABLE series_new RENAME TO series;",
   "ALTER TABLE volumes_new RENAME TO volumes;",
+  "ALTER TABLE adult_volumes_new RENAME TO adult_volumes;",
   "DROP TABLE series_old;",
   "DROP TABLE volumes_old;",
+  "DROP TABLE adult_volumes_old;",
   "CREATE INDEX IF NOT EXISTS idx_series_name_norm ON series (name_norm);",
   "CREATE INDEX IF NOT EXISTS idx_series_kana_norm ON series (name_kana_norm);",
   "CREATE INDEX IF NOT EXISTS idx_volumes_series ON volumes (series_id, vol_sort);",
+  // db/add-indexes-2026-10.sql で足した索引。表を作り直すたびに張り直さないと消える。
+  "CREATE INDEX IF NOT EXISTS idx_series_name_label ON series (name, label);",
+  "CREATE INDEX IF NOT EXISTS idx_volumes_unlinked_title ON volumes (title, label) WHERE series_id IS NULL;",
   "CREATE TABLE IF NOT EXISTS series_supplement (series_id TEXT PRIMARY KEY, volumes_json TEXT NOT NULL, checked_at INTEGER NOT NULL);",
   PRUNE_SUPPLEMENT_SQL,
   ...APPLY_LINKS_SQL,
@@ -479,6 +495,28 @@ function isbn13(raw) {
   return "";
 }
 
+// ── 成年向けの除外 ──────────────────────────────────────────────────────────
+// 全年齢向けサイトなので成年コミックは取り込まない。判定は MADB の明示的なメタデータだけ:
+// schema:contentRating（NDL 由来の「成年コミック」等。2026-09 のダンプで 8,317 巻）と、
+// schema:description 末尾の「/ 成年コミック」。書名・レーベル・出版社の文字列照合は一般向けの
+// 誤検出が多いので使わない（理由と実測は src/adult.ts）。src/adult.ts ADULT_RATING と揃えること。
+const ADULT_RATING = /(?<!未)成年|成人/;
+const ADULT_DESCRIPTION = /(?<!未)成年コミック|成人コミック|成年向け/;
+
+function strings(v) {
+  const arr = Array.isArray(v) ? v : [v];
+  return arr
+    .map((x) => (typeof x === "string" ? x : x && typeof x === "object" ? x["@value"] : ""))
+    .filter((x) => typeof x === "string" && x);
+}
+
+function isAdult(node) {
+  return (
+    strings(node["schema:contentRating"]).some((x) => ADULT_RATING.test(x)) ||
+    strings(node["schema:description"]).some((x) => ADULT_DESCRIPTION.test(x))
+  );
+}
+
 // ── SQL emission ────────────────────────────────────────────────────────────
 
 function sqlStr(s) {
@@ -598,6 +636,9 @@ async function main() {
     a.chunk
   );
   let seriesCount = 0;
+  // シリーズ名の引き当て用（成年向けの巻の series_name。成年向けだけのシリーズは series から
+  // 消すので、ここで覚えておかないと名前が残らない）。
+  const seriesNames = new Map();
   await streamGraph(seriesJson, (node) => {
     if (node["@type"] !== "class:MangaBookSeries") return;
     const id = (node["@id"] || "").startsWith(ID_PREFIX)
@@ -605,6 +646,7 @@ async function main() {
       : node["@id"];
     const name = primary(node["schema:name"]) || node["rdfs:label"] || "";
     if (!id || !name) return;
+    seriesNames.set(id, name);
     const readings = kanaReadings(node["schema:name"]);
     const nameKana = readings.join(" / ");
     // Store each reading normalized and "|"-delimited so search can match either a
@@ -640,6 +682,10 @@ async function main() {
   const seen = new Set();
   let volCount = 0;
   let processed = 0;
+  let adultCount = 0;
+  const adultWriter = new SqlChunkWriter(a.out, "adult_volumes_new", ["isbn", "title", "title_norm", "series_name"], a.chunk);
+  const adultSeries = new Set(); // 成年向けの巻を持つシリーズ
+  const keptSeries = new Set(); // 取り込んだ巻を持つシリーズ
   await streamGraph(volumesJson, (node) => {
     if (a.limit && processed >= a.limit) return;
     processed++;
@@ -648,11 +694,20 @@ async function main() {
     if (!isbn || seen.has(isbn)) return;
     const title = primary(node["schema:name"]) || node["rdfs:label"] || "";
     if (!title) return;
-    seen.add(isbn);
+    seen.add(isbn); // 成年向けで落とす巻も seen に入れ、同じ ISBN の重複ノードから入り込ませない
+    const seriesId = cid(node, "schema:isPartOf");
+    if (isAdult(node)) {
+      adultCount++;
+      if (seriesId) adultSeries.add(seriesId);
+      // 検索・追加で「成年向けは追加できません」と明示するために記録する（src/adult.ts）。
+      adultWriter.add([sqlStr(isbn), sqlStr(title), sqlStr(searchKey(title) || normTitle(title) || title), sqlStr(seriesNames.get(seriesId) ?? null)]);
+      return;
+    }
+    if (seriesId) keptSeries.add(seriesId);
     const vnum = primary(node["schema:volumeNumber"]);
     volumesWriter.add([
       sqlStr(isbn),
-      sqlStr(cid(node, "schema:isPartOf")),
+      sqlStr(seriesId),
       sqlStr(vnum),
       sqlInt(volSort(vnum)),
       sqlStr(title),
@@ -667,7 +722,22 @@ async function main() {
     volCount++;
   });
   const volumeFiles = volumesWriter.finish();
-  log(`volumes: ${volCount} rows → ${volumeFiles.length} files`);
+  const adultFiles = adultWriter.finish();
+  log(`volumes: ${volCount} rows → ${volumeFiles.length} files (成年向け ${adultCount} 巻を除外し adult_volumes へ)`);
+
+  // 成年向けの巻しか持たないシリーズは series_new から消す（巻が 0 になったシリーズを検索・収録数に
+  // 残さない）。一般向けの巻も持つシリーズは残す。volumes_new の読み込み後に流す。
+  const pruneIds = [...adultSeries].filter((id) => !keptSeries.has(id));
+  const pruneFile = path.join(a.out, "series_new_prune_adult.sql");
+  const pruneStmts = [];
+  // keptSeries（一般向けの巻を 1 冊でも残したシリーズ）を除いた後なので、ここで volumes_new を
+  // 見直す必要はない。NOT EXISTS で volumes_new を引くと、取り込み中の volumes_new には
+  // series_id の索引が無く ID ごとに全件走査になって D1 の CPU 上限で落ちる（2026-10-03 dev で発生）。
+  for (let i = 0; i < pruneIds.length; i += 500) {
+    pruneStmts.push(`DELETE FROM series_new WHERE id IN (${pruneIds.slice(i, i + 500).map(sqlStr).join(",")});\n`);
+  }
+  fs.writeFileSync(pruneFile, pruneStmts.join(""));
+  log(`series: 成年向けの巻だけのシリーズ ${pruneIds.length} 件を除外予定`);
 
   // Emit a manifest so a resumable per-day loader (scripts/seed-daily.mjs) can
   // budget exactly how many rows each file writes, in apply order.
@@ -678,6 +748,9 @@ async function main() {
     files: [
       ...seriesFiles.map((f) => ({ file: path.basename(f.path), table: "series", rows: f.rows })),
       ...volumeFiles.map((f) => ({ file: path.basename(f.path), table: "volumes", rows: f.rows })),
+      ...adultFiles.map((f) => ({ file: path.basename(f.path), table: "adult_volumes", rows: f.rows })),
+      // 書き込みではなく削除。volumes の後に流す。
+      { file: path.basename(pruneFile), table: "series_prune", rows: pruneIds.length },
     ],
   };
   fs.writeFileSync(path.join(a.out, "manifest.json"), JSON.stringify(manifest, null, 2));
@@ -702,9 +775,23 @@ async function main() {
 
   // 2. Stream the chunks into the shadow tables. The live site keeps serving the
   //    current master untouched throughout.
-  for (const f of [...seriesFiles, ...volumeFiles]) {
-    log("apply", path.basename(f.path));
-    execWrangler(envArgs, targetFlag, "--file", f.path);
+  //    remote は `d1 execute --file`（D1 の import API）を使わない。import は 1 ファイルごとに
+  //    DB 全体を止めるので、取り込み中にサイトの検索・公開などが 500 になり、逆にサイトの
+  //    クエリが import を「Not currently importing anything」で落とす（2026-10-03 本番で発生）。
+  //    代わりに通常のクエリ API（/query）へ小分けに投げ、利用者のクエリと交互に処理させる。
+  const loadFiles = [...seriesFiles, ...volumeFiles, ...adultFiles].map((f) => f.path);
+  if (pruneStmts.length) loadFiles.push(pruneFile);
+  if (a.target === "remote") {
+    const conn = await remoteD1(envArgs);
+    for (const file of loadFiles) {
+      log("apply", path.basename(file));
+      await applyFileViaQueryApi(conn, file);
+    }
+  } else {
+    for (const file of loadFiles) {
+      log("apply", path.basename(file));
+      execWrangler(envArgs, targetFlag, "--file", file);
+    }
   }
 
   // 3. Atomic cutover: rename shadow → live, drop the old tables (freeing the index
@@ -718,7 +805,7 @@ async function main() {
   // once), so stop here and leave the shadow tables for inspection; the next ingest's
   // step 1 drops them.
   if (a.limit) {
-    log(`--limit ${a.limit}: loaded series_new / volumes_new only; skipped swap (live tables untouched).`);
+    log(`--limit ${a.limit}: loaded series_new / volumes_new / adult_volumes_new only; skipped swap (live tables untouched).`);
     return;
   }
 
@@ -744,6 +831,98 @@ async function main() {
 function firstExisting(paths) {
   for (const p of paths) if (fs.existsSync(p)) return p;
   throw new Error(`none exist: ${paths.join(", ")}`);
+}
+
+// ── remote: D1 の通常クエリ API で shadow 表へ投入 ──────────────────────────
+// 認証・対象 DB は wrangler と同じものを使う: トークンは CLOUDFLARE_API_TOKEN（CI）か
+// `wrangler auth token`（ローカルの OAuth ログイン）、アカウントは CLOUDFLARE_ACCOUNT_ID か
+// whoami の唯一のアカウント、DB は `wrangler d1 info DB [--env]` の uuid。
+
+// 1 リクエストの SQL の上限。D1 は 1 文 100KB まで（生成 SQL の 1 文は最大 30KB 程度）。
+// 1 回の処理を数百 ms に抑えて、その間に利用者のクエリが待たされすぎないようにする。
+const QUERY_BATCH_BYTES = 200_000;
+// バッチの間に空ける時間。利用者のクエリが割り込めるように。
+const QUERY_BATCH_PAUSE_MS = 50;
+
+function wranglerJson(args) {
+  const out = execFileSync("npx", ["wrangler", ...args, "--json"], { encoding: "utf8", stdio: ["ignore", "pipe", "inherit"] });
+  return JSON.parse(out);
+}
+
+async function remoteD1(envArgs) {
+  const token = process.env.CLOUDFLARE_API_TOKEN || wranglerJson(["auth", "token"]).token;
+  if (!token) throw new Error("no Cloudflare API token (set CLOUDFLARE_API_TOKEN or run `wrangler login`)");
+  let accountId = process.env.CLOUDFLARE_ACCOUNT_ID;
+  if (!accountId) {
+    const accounts = wranglerJson(["whoami"]).accounts ?? [];
+    if (accounts.length !== 1) throw new Error("set CLOUDFLARE_ACCOUNT_ID (multiple or no accounts)");
+    accountId = accounts[0].id;
+  }
+  const dbId = wranglerJson(["d1", "info", DB_BINDING, ...envArgs]).uuid;
+  if (!dbId) throw new Error("could not resolve D1 database id");
+  return { url: `https://api.cloudflare.com/client/v4/accounts/${accountId}/d1/database/${dbId}/query`, token };
+}
+
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+// 投入は INSERT OR REPLACE / DELETE なので、同じバッチを流し直しても結果は変わらない。
+// 429・5xx・通信エラーは間を空けてリトライする。
+async function d1Query(conn, sql, attempts = 6) {
+  for (let i = 1; ; i++) {
+    let detail;
+    try {
+      const res = await fetch(conn.url, {
+        method: "POST",
+        headers: { authorization: `Bearer ${conn.token}`, "content-type": "application/json" },
+        body: JSON.stringify({ sql }),
+      });
+      const body = await res.json().catch(() => null);
+      if (res.ok && body?.success) return;
+      detail = `${res.status} ${JSON.stringify(body?.errors ?? body).slice(0, 300)}`;
+      // 4xx（429 以外）は SQL かリクエストの誤りなのでリトライしない。
+      if (res.status < 500 && res.status !== 429) throw new Error(`D1 query failed: ${detail}`);
+    } catch (err) {
+      if (String(err.message).startsWith("D1 query failed")) throw err;
+      detail = err.message;
+    }
+    if (i >= attempts) throw new Error(`D1 query failed after ${attempts} attempts: ${detail}`);
+    const wait = Math.min(2 ** i, 30) * 1000;
+    log(`  retry in ${wait / 1000}s (${detail})`);
+    await sleep(wait);
+  }
+}
+
+// 生成 SQL の文は INSERT OR REPLACE / DELETE で始まり「;\n」で終わる（SqlChunkWriter と
+// prune の書き方）。値の中の「;\n」で切らないよう、次の文の頭も見て区切る。
+function splitStatements(sqlText) {
+  return sqlText
+    .split(/;\n(?=INSERT OR REPLACE INTO |DELETE FROM )/)
+    .map((x) => x.trim().replace(/;$/, ""))
+    .filter(Boolean)
+    .map((x) => x + ";");
+}
+
+async function applyFileViaQueryApi(conn, file) {
+  const stmts = splitStatements(fs.readFileSync(file, "utf8"));
+  let batch = [];
+  let bytes = 0;
+  let done = 0;
+  const flush = async () => {
+    if (!batch.length) return;
+    await d1Query(conn, batch.join("\n"));
+    done += batch.length;
+    batch = [];
+    bytes = 0;
+    await sleep(QUERY_BATCH_PAUSE_MS);
+  };
+  for (const st of stmts) {
+    const n = Buffer.byteLength(st);
+    if (bytes + n > QUERY_BATCH_BYTES) await flush();
+    batch.push(st);
+    bytes += n;
+  }
+  await flush();
+  log(`  ${done} statements`);
 }
 
 function execWrangler(envArgs, targetFlag, ...args) {

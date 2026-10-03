@@ -12,6 +12,8 @@
   let apiPromise = null;
   let host = null;
   let queue = Promise.resolve();
+  // api.js apiErrorMessage がそのまま画面に出せるよう userMessage を付ける。
+  const failError = () => Object.assign(new Error(FAIL), { userMessage: FAIL });
 
   function siteKey() {
     const m = document.querySelector('meta[name="turnstile-sitekey"]');
@@ -25,11 +27,11 @@
         const s = document.createElement("script");
         s.src = API;
         s.async = true;
-        s.onload = () => (window.turnstile ? resolve(window.turnstile) : reject(new Error(FAIL)));
+        s.onload = () => (window.turnstile ? resolve(window.turnstile) : reject(failError()));
         s.onerror = () => {
           apiPromise = null;
           s.remove();
-          reject(new Error(FAIL));
+          reject(failError());
         };
         document.head.appendChild(s);
       });
@@ -60,7 +62,7 @@
     let id = null;
     try {
       return await new Promise((resolve, reject) => {
-        const timer = setTimeout(() => reject(new Error(FAIL)), 120000);
+        const timer = setTimeout(() => reject(failError()), 120000);
         const done = (fn) => (v) => { clearTimeout(timer); fn(v); };
         id = ts.render(slot, {
           sitekey: key,
@@ -68,9 +70,9 @@
           language: "ja",
           appearance: "interaction-only",
           callback: done(resolve),
-          "error-callback": done(() => reject(new Error(FAIL))),
-          "expired-callback": done(() => reject(new Error(FAIL))),
-          "timeout-callback": done(() => reject(new Error(FAIL))),
+          "error-callback": done(() => reject(failError())),
+          "expired-callback": done(() => reject(failError())),
+          "timeout-callback": done(() => reject(failError())),
           "before-interactive-callback": () => { box.style.display = "block"; },
           "after-interactive-callback": () => { box.style.display = "none"; },
         });

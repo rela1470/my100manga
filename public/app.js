@@ -3,6 +3,7 @@
 const TARGET = 100; // must have exactly this many to publish
 const MAX_ITEMS = 1000; // soft cap while curating (drafts are localStorage-only, so this is safe)
 const DRAFT_KEY = "my100manga_draft_v1";
+const EDIT_TOKEN_KEY = "my100manga_edit_token"; // sessionStorage。index.html <head> と共通
 
 // A Worker restart mid-request (wrangler dev hot-reload) or an origin failure can
 // return a non-JSON body — e.g. the plain-text "Your worker restarted…" 503 — which
@@ -42,7 +43,7 @@ const $ = (id) => document.getElementById(id);
 async function init() {
   const params = new URLSearchParams(location.search);
   const slug = params.get("edit");
-  const token = params.get("t");
+  const token = takeEditToken(params, slug);
   if (slug && token) {
     await loadExisting(slug, token);
   } else {
@@ -65,6 +66,33 @@ async function init() {
     history.replaceState(null, "", location.pathname + (qs ? `?${qs}` : "") + location.hash);
     uiAlert("リストが見つかりませんでした。削除されたか、URLが間違っている可能性があります。");
   }
+}
+
+// 編集用URL（/?edit=<slug>&t=<token>）の token を取り出す。token は計測・広告タグに URL ごと
+// 渡らないよう index.html <head> の小さなスクリプトがアドレスバーから消して sessionStorage
+// （使えなければ window.__EDIT_TOKEN__）へ移している。ここではそれを読み、URL に残っていれば
+// （head のスクリプトが動かなかった場合）同じように消す。どれにも無ければこのブラウザの
+// 「作ったリスト」の記録（MyLists）から補う。?edit= は残すので再読み込みしても編集を続けられる。
+function takeEditToken(params, slug) {
+  if (!slug) return null;
+  let token = params.get("t");
+  if (token) {
+    try {
+      sessionStorage.setItem(EDIT_TOKEN_KEY, JSON.stringify({ slug, t: token }));
+    } catch (e) {}
+    params.delete("t");
+    const qs = params.toString();
+    history.replaceState(history.state, "", location.pathname + (qs ? `?${qs}` : "") + location.hash);
+    return token;
+  }
+  const held = window.__EDIT_TOKEN__;
+  if (held && held.slug === slug && held.t) return held.t;
+  try {
+    const saved = JSON.parse(sessionStorage.getItem(EDIT_TOKEN_KEY) || "null");
+    if (saved && saved.slug === slug && saved.t) return saved.t;
+  } catch (e) {}
+  const rec = window.MyLists?.get(slug);
+  return rec ? rec.token : null;
 }
 
 // 閲覧画面の本の詳細の「シリーズ」リンク（/?series=<C-id>&st=<シリーズ名>）。巻一覧を開き、
@@ -598,6 +626,9 @@ function render() {
   if (!state.reorder && state.items.length < MAX_ITEMS) grid.appendChild(addSlot(state.items.length));
 
   const filled = state.items.length;
+  // はじめての人向けの説明は、リストが空のときだけ（公開済みリストの編集中は出さない）。
+  const guide = $("emptyGuide");
+  if (guide) guide.hidden = filled > 0 || !!state.editSlug;
   updatePublishButton(filled);
   renderReorderBar(filled);
   renderEditDiff();
@@ -635,6 +666,7 @@ async function clearAll() {
 // Progress counter and publish CTA are merged into one button: it only becomes
 // an enabled "公開する" at exactly TARGET, otherwise it shows how far off you are.
 function updatePublishButton(filled) {
+  if (publishing) return; // 送信中は setPublishing の「公開中…」表示を保つ
   const btn = $("publish");
   const verb = state.editSlug ? "更新" : "公開";
   btn.disabled = filled !== TARGET;
@@ -697,19 +729,24 @@ function filledSlot(it, i) {
     slot.addEventListener("click", () => toggleSelect(i));
     return slot;
   }
-  const rm = document.createElement("span");
-  rm.className = "slot-remove";
-  rm.textContent = "×";
-  rm.title = "削除";
-  rm.setAttribute("aria-label", `${i + 1}番目を削除`);
-  rm.addEventListener("click", (e) => {
-    e.stopPropagation();
-    removeAt(i);
-  });
-  slot.appendChild(rm);
   appendCoverMeta(slot, it);
   slot.addEventListener("click", () => openEdit(i));
-  return slot;
+  // × はカード（button）の中に入れ子にできないので、外側の .slot-cell に兄弟として置く。
+  const cell = document.createElement("div");
+  cell.className = "slot-cell";
+  const rm = document.createElement("button");
+  rm.type = "button";
+  rm.className = "slot-remove";
+  rm.title = "削除";
+  rm.setAttribute("aria-label", `${i + 1}番目「${it.title || ""}」を削除`);
+  const x = document.createElement("span");
+  x.className = "slot-remove-x";
+  x.setAttribute("aria-hidden", "true");
+  x.textContent = "×";
+  rm.appendChild(x);
+  rm.addEventListener("click", () => removeAt(i));
+  cell.append(slot, rm);
+  return cell;
 }
 
 // Cover, spoiler/comment badges and title/comment meta — shared by the normal and
@@ -746,10 +783,29 @@ function appendCoverMeta(slot, it) {
   slot.appendChild(meta);
 }
 
+// 削除はすぐ反映し、数秒だけ「元に戻す」を出す（スマホの × の誤タップ対策）。戻すと同じ位置へ。
 function removeAt(i) {
-  state.items.splice(i, 1);
+  const [removed] = state.items.splice(i, 1);
   render();
   saveDraft();
+  if (removed) offerUndoRemove(removed, i);
+}
+
+function offerUndoRemove(item, index) {
+  const name = item.title || "作品";
+  uiToast(`『${name}』を削除しました`, {
+    actionLabel: "元に戻す",
+    duration: 6000,
+    onAction: () => {
+      if (state.items.length >= MAX_ITEMS) return;
+      // 戻すまでの間に同じ本を追加し直していたら二重にしない。
+      if (item.isbn && state.items.some((x) => x.isbn === item.isbn)) return;
+      state.items.splice(Math.min(index, state.items.length), 0, item);
+      state.selected.clear();
+      render();
+      saveDraft();
+    },
+  });
 }
 
 /* ---------- reorder mode ---------- */
@@ -1338,19 +1394,24 @@ async function doSearch(q) {
   lastQuery = q;
   liveFetchedQuery = "";
   searchNextOffset = null;
+  searchAdult = { blocked: "", hits: "" };
   $("searchSpinner").style.display = "";
   clearResults();
   try {
-    const res = await fetch(`/api/search?q=${encodeURIComponent(q)}`);
-    const data = await res.json();
-    if (!res.ok) throw new Error(data.error || "検索に失敗しました");
+    const data = await apiFetch(`/api/search?q=${encodeURIComponent(q)}`);
     searchNextOffset = data.next_offset ?? null;
+    // 成年向けの作品（サーバの adult_volumes）: ISBN 検索で当たれば blocked、書名検索で当たれば
+    // adult_hits。「見つからない」と区別して、追加できない理由を結果欄に出す（src/adult.ts）。
+    searchAdult = {
+      blocked: data.blocked && data.blocked.reason === "adult" ? data.blocked.message || ADULT_BLOCK_MESSAGE : "",
+      hits: data.adult_hits ? data.adult_message || ADULT_BLOCK_MESSAGE : "",
+    };
     renderResults(data.results || [], data.isbn_miss);
   } catch (e) {
     clearResults();
     const p = document.createElement("p");
     p.className = "hint";
-    p.textContent = e.message || "検索に失敗しました";
+    p.textContent = apiErrorMessage(e, "検索に失敗しました");
     $("results").appendChild(p);
   } finally {
     $("searchSpinner").style.display = "none";
@@ -1364,12 +1425,39 @@ let lastQuery = "";
 let liveFetchedQuery = "";
 // 31件目以降があるときの次ページの offset（サーバの next_offset）。無ければ null。
 let searchNextOffset = null;
+// 直近の検索の成年向け判定（doSearch が設定）。blocked = ISBN が成年向けで追加不可の文言、
+// hits = 書名が成年向けの巻にも当たったときの注記。「さらに表示」等の描き直しでも出し続ける。
+const ADULT_BLOCK_MESSAGE = "成年向けの作品は、こちら側のサイトでは追加できません。";
+// 文言のうち太字にする部分（成年向けは別サイトで扱う予定なので「こちら側の」を強調）。src/adult.ts と揃える。
+const ADULT_EMPHASIS = "こちら側のサイトでは";
+
+/** 成年向けの文言を el に入れる。ADULT_EMPHASIS の部分だけ <strong> にする（文言はテキストノードで入れる）。 */
+function setAdultText(el, text) {
+  const i = text.indexOf(ADULT_EMPHASIS);
+  if (i < 0) {
+    el.textContent = text;
+    return;
+  }
+  const strong = document.createElement("strong");
+  strong.textContent = ADULT_EMPHASIS;
+  el.replaceChildren(text.slice(0, i), strong, text.slice(i + ADULT_EMPHASIS.length));
+}
+let searchAdult = { blocked: "", hits: "" };
 
 // Search returns series-level results. Clicking one drills into its volumes.
 function renderResults(results, isbnMiss = false) {
   lastResults = results;
   const box = clearResults();
 
+  if (results.length === 0 && searchAdult.blocked) {
+    // 収録漏れではなく成年向けで追加できない ISBN。最新DBからの取得でも出ないので導線は出さない。
+    const p = document.createElement("p");
+    p.className = "adult-block";
+    p.setAttribute("role", "alert");
+    setAdultText(p, searchAdult.blocked);
+    box.appendChild(p);
+    return;
+  }
   if (results.length === 0) {
     const p = document.createElement("p");
     p.className = "hint";
@@ -1384,6 +1472,12 @@ function renderResults(results, isbnMiss = false) {
   for (const r of results) box.appendChild(buildResultCard(r, pending));
   mountCoverFetch($("searchActions"), pending);
   if (searchNextOffset != null) box.appendChild(buildMoreButton());
+  if (searchAdult.hits) {
+    const p = document.createElement("p");
+    p.className = "hint adult-note";
+    setAdultText(p, searchAdult.hits);
+    box.appendChild(p);
+  }
 
   // 常設: マスタ(月次ダンプ)に無い作品を live MADB からキーワードで取得する導線。
   // マスタ検索が0件でも手詰まりにならないよう、結果の有無にかかわらず末尾に出す。
@@ -1429,9 +1523,7 @@ function buildMoreButton() {
     btn.disabled = true;
     btn.textContent = "読み込み中…";
     try {
-      const res = await fetch(`/api/search?q=${encodeURIComponent(q)}&offset=${searchNextOffset}`);
-      const data = await res.json();
-      if (!res.ok) throw new Error(data.error || "検索に失敗しました");
+      const data = await apiFetch(`/api/search?q=${encodeURIComponent(q)}&offset=${searchNextOffset}`);
       if (q !== lastQuery) return; // 待っている間に別の語で検索し直した
       searchNextOffset = data.next_offset ?? null;
       const shown = new Set(lastResults.map((r) => r.series_id));
@@ -1442,7 +1534,7 @@ function buildMoreButton() {
     } catch (e) {
       btn.disabled = false;
       btn.textContent = "さらに表示";
-      uiAlert(e.message || "検索に失敗しました");
+      uiAlert(apiErrorMessage(e, "検索に失敗しました"));
     }
   });
   return btn;
@@ -1550,9 +1642,7 @@ async function liveFetch(q, btn) {
   const orig = btn.textContent;
   btn.textContent = "最新DBを検索中…";
   try {
-    const res = await fetch(`/api/live-search?q=${encodeURIComponent(q)}`);
-    const data = await readJson(res);
-    if (!res.ok) throw new Error(data.error || "取得に失敗しました。少し待って再度お試しください。");
+    const data = await apiFetch(`/api/live-search?q=${encodeURIComponent(q)}`);
     const live = data.results || [];
     liveFetchedQuery = q;
     if (!live.length) {
@@ -1581,7 +1671,7 @@ async function liveFetch(q, btn) {
   } catch (e) {
     btn.disabled = false;
     btn.textContent = orig;
-    uiAlert(e.message || "取得に失敗しました");
+    uiAlert(apiErrorMessage(e, "取得に失敗しました"));
   }
 }
 
@@ -1760,9 +1850,7 @@ async function openSeries(series) {
   spin.textContent = "巻を読み込み中...";
   box.appendChild(spin);
   try {
-    const res = await fetch(`/api/series/${encodeURIComponent(series.series_id)}/volumes`);
-    const data = await res.json();
-    if (!res.ok) throw new Error(data.error || "取得に失敗しました");
+    const data = await apiFetch(`/api/series/${encodeURIComponent(series.series_id)}/volumes`);
     // 管理者が結合済みのシリーズを開いた場合、サーバは残す側を返す。以降の通報・補完・
     // ID 表示が残す側に向くよう読み替える。
     if (data.series_id && data.series_id !== series.series_id) {
@@ -1784,7 +1872,7 @@ async function openSeries(series) {
     box.innerHTML = "";
     const p = document.createElement("p");
     p.className = "hint";
-    p.textContent = e.message || "取得に失敗しました";
+    p.textContent = apiErrorMessage(e, "取得に失敗しました");
     box.appendChild(p);
   }
 }
@@ -1792,11 +1880,9 @@ async function openSeries(series) {
 // live MADB を probe して未リンクの新刊を補完する。補完後の巻一覧を含む /volumes 相当の
 // レスポンス全体（volumes・supplement_checked_at・master_updated_at）を返す。
 async function probeSupplement(seriesId) {
-  const res = await fetch(`/api/series/${encodeURIComponent(seriesId)}/supplement`, {
+  const data = await apiFetch(`/api/series/${encodeURIComponent(seriesId)}/supplement`, {
     method: "POST",
   });
-  const data = await readJson(res);
-  if (!res.ok) throw new Error(data.error || "取得に失敗しました。少し待って再度お試しください。");
   return data;
 }
 
@@ -1824,7 +1910,7 @@ async function fetchSupplement(series, btn) {
   } catch (e) {
     btn.disabled = false;
     btn.textContent = orig;
-    uiAlert(e.message || "取得に失敗しました");
+    uiAlert(apiErrorMessage(e, "取得に失敗しました"));
   }
 }
 
@@ -1837,9 +1923,7 @@ async function refetchLiveSeries(series, btn) {
   btn.disabled = true;
   btn.textContent = "取得中…";
   try {
-    const res = await fetch(`/api/live-search?q=${encodeURIComponent(series.title)}`);
-    const data = await res.json();
-    if (!res.ok) throw new Error(data.error || "取得に失敗しました");
+    const data = await apiFetch(`/api/live-search?q=${encodeURIComponent(series.title)}`);
     const match = (data.results || []).find((r) => normKey(r.title) === normKey(series.title));
     supplementFetched.add(supKey(series));
     if (!match) {
@@ -1854,7 +1938,7 @@ async function refetchLiveSeries(series, btn) {
   } catch (e) {
     btn.disabled = false;
     btn.textContent = orig;
-    uiAlert(e.message || "取得に失敗しました");
+    uiAlert(apiErrorMessage(e, "取得に失敗しました"));
   }
 }
 
@@ -2245,7 +2329,7 @@ async function openGapPicker(series, gap, volumes, opts) {
   box.appendChild(bar);
 
   const head = document.createElement("p");
-  head.className = "hint";
+  head.className = "spinner";
   const what = mkGap ? `の新刊（${gap.disp}）` : ` ${gap.disp}`;
   head.textContent = `${series.title}${what} の候補を検索中...`;
   box.appendChild(head);
@@ -2319,19 +2403,19 @@ async function openGapPicker(series, gap, volumes, opts) {
 
   let candidates = [];
   try {
-    const res = await fetch(
+    const data = await apiFetch(
       `/api/volume-candidates?title=${encodeURIComponent(series.title)}&volume=${gap.n}`
     );
-    const data = await res.json();
-    if (!res.ok) throw new Error(data.error || "検索に失敗しました");
     candidates = data.candidates || [];
     // 新刊の追加では、一覧にある巻（検索に既刊も混ざる）は候補から外す。
     if (mkGap) candidates = candidates.filter((c) => !inList(c.isbn));
   } catch (e) {
-    head.textContent = e.message || "検索に失敗しました";
+    head.className = "hint";
+    head.textContent = apiErrorMessage(e, "検索に失敗しました");
     appendIsbnRow();
     return;
   }
+  head.className = "hint";
 
   if (!candidates.length) {
     head.textContent = `${series.title}${what} の候補が見つかりませんでした。`;
@@ -2412,17 +2496,29 @@ async function pickManualVolume(series, gap, c, volumes) {
     pubdate: "",
     cover_url: c.cover_url || "",
   };
+  // サーバ側で書影・書誌を引き直すので数秒かかる。候補画面の先頭にスピナーを出し、
+  // 二重送信しないよう画面内のボタン・入力を止める（失敗したら戻す）。
+  const box = $("results");
+  const busy = document.createElement("div");
+  busy.className = "spinner";
+  busy.textContent = `${gap.disp}を追加しています...`;
+  const bar = box.querySelector(".vol-bar");
+  if (bar) bar.after(busy);
+  else box.prepend(busy);
+  busy.scrollIntoView({ block: "nearest" });
+  const locked = [...box.querySelectorAll("button, input")].filter((el) => !el.disabled);
+  for (const el of locked) el.disabled = true;
   try {
-    const res = await fetch(`/api/series/${encodeURIComponent(series.series_id)}/corrections`, {
+    const data = await apiFetch(`/api/series/${encodeURIComponent(series.series_id)}/corrections`, {
       method: "POST",
       headers: { "content-type": "application/json", ...(await botHeaders("feedback")) },
       body: JSON.stringify({ isbn: c.isbn, volume_number: gap.vol }),
     });
-    const data = await res.json();
-    if (!res.ok) throw new Error(data.error || "保存に失敗しました");
     if (data.volume) vol = data.volume;
   } catch (e) {
-    uiAlert(e.message || "保存に失敗しました");
+    busy.remove();
+    for (const el of locked) el.disabled = false;
+    uiAlert(apiErrorMessage(e, "保存に失敗しました"));
     return;
   }
 
@@ -2448,7 +2544,7 @@ async function reportWrongVolume(series, v, volumes, btn, opts) {
   if (!(await uiConfirm(`「${volLabel(v)}」を誤りとして通報します。あなたの画面では非表示になります（他の人には管理者が確認するまで表示されます）。誤って通報しても「非表示にした巻」からいつでも戻せます。よろしいですか？`))) return;
   btn.disabled = true;
   try {
-    const res = await fetch(
+    const data = await apiFetch(
       `/api/series/${encodeURIComponent(series.series_id)}/corrections/report`,
       {
         method: "POST",
@@ -2456,10 +2552,8 @@ async function reportWrongVolume(series, v, volumes, btn, opts) {
         body: JSON.stringify({ isbn: v.isbn }),
       }
     );
-    const data = await res.json().catch(() => ({}));
-    if (!res.ok) throw new Error(data.error || "通報に失敗しました");
   } catch (e) {
-    uiAlert(e.message || "通報に失敗しました");
+    uiAlert(apiErrorMessage(e, "通報に失敗しました"));
     btn.disabled = false;
     return;
   }
@@ -2523,15 +2617,13 @@ async function reportWrongSeriesName(series, btn, textEl) {
   const suggested = normalize(input);
   btn.disabled = true;
   try {
-    const res = await fetch(`/api/series/${encodeURIComponent(series.series_id)}/report`, {
+    const data = await apiFetch(`/api/series/${encodeURIComponent(series.series_id)}/report`, {
       method: "POST",
       headers: { "content-type": "application/json", ...(await botHeaders("feedback")) },
       body: JSON.stringify({ suggested_name: suggested.slice(0, 100) }),
     });
-    const data = await res.json().catch(() => ({}));
-    if (!res.ok) throw new Error(data.error || "通報に失敗しました");
   } catch (e) {
-    uiAlert(e.message || "通報に失敗しました");
+    uiAlert(apiErrorMessage(e, "通報に失敗しました"));
     btn.disabled = false;
     return;
   }
@@ -2716,13 +2808,11 @@ async function openMergeRequest(series, volumes, opts) {
     list.replaceChildren();
     let results = [];
     try {
-      const res = await fetch(`/api/search?q=${encodeURIComponent(q)}`);
-      const data = await res.json();
-      if (!res.ok) throw new Error(data.error || "検索に失敗しました");
+      const data = await apiFetch(`/api/search?q=${encodeURIComponent(q)}`);
       results = data.results || [];
     } catch (e) {
       if (my !== seq) return;
-      status.textContent = e.message || "検索に失敗しました";
+      status.textContent = apiErrorMessage(e, "検索に失敗しました");
       if (extra && extra.length) renderList(extra);
       return;
     }
@@ -2856,11 +2946,9 @@ function buildMergePreview(seriesId) {
   (async () => {
     let data;
     try {
-      const res = await fetch(`/api/series/${encodeURIComponent(seriesId)}/volumes`);
-      data = await res.json();
-      if (!res.ok) throw new Error(data.error || "取得に失敗しました");
+      data = await apiFetch(`/api/series/${encodeURIComponent(seriesId)}/volumes`);
     } catch (e) {
-      msg.textContent = e.message || "取得に失敗しました";
+      msg.textContent = apiErrorMessage(e, "取得に失敗しました");
       return;
     }
     const vols = data.volumes || [];
@@ -2925,15 +3013,13 @@ async function sendMergeRequest(series, otherIds, btn) {
   const orig = btn.textContent;
   btn.textContent = "送信中…";
   try {
-    const res = await fetch(`/api/series/${encodeURIComponent(series.series_id)}/merge-request`, {
+    const data = await apiFetch(`/api/series/${encodeURIComponent(series.series_id)}/merge-request`, {
       method: "POST",
       headers: { "content-type": "application/json", ...(await botHeaders("feedback")) },
       body: JSON.stringify({ other_ids: otherIds }),
     });
-    const data = await res.json().catch(() => ({}));
-    if (!res.ok) throw new Error(data.error || "依頼に失敗しました");
   } catch (e) {
-    uiAlert(e.message || "依頼に失敗しました");
+    uiAlert(apiErrorMessage(e, "依頼に失敗しました"));
     btn.textContent = orig;
     btn.disabled = false;
     return false;
@@ -3036,15 +3122,13 @@ function openSplitRequest(series, volumes, opts) {
     sendBtn.disabled = true;
     sendBtn.textContent = "送信中…";
     try {
-      const res = await fetch(`/api/series/${encodeURIComponent(series.series_id)}/split-request`, {
+      const data = await apiFetch(`/api/series/${encodeURIComponent(series.series_id)}/split-request`, {
         method: "POST",
         headers: { "content-type": "application/json", ...(await botHeaders("feedback")) },
         body: JSON.stringify({ isbns }),
       });
-      const data = await res.json().catch(() => ({}));
-      if (!res.ok) throw new Error(data.error || "依頼に失敗しました");
     } catch (e) {
-      uiAlert(e.message || "依頼に失敗しました");
+      uiAlert(apiErrorMessage(e, "依頼に失敗しました"));
       refresh();
       return;
     }
@@ -3480,10 +3564,12 @@ function wireEditSwipe(content) {
 }
 
 function removeSlot() {
-  if (state.editIndex >= 0) state.items.splice(state.editIndex, 1);
+  const index = state.editIndex;
+  const removed = index >= 0 ? state.items.splice(index, 1)[0] : null;
   closeEdit();
   render();
   saveDraft();
+  if (removed) offerUndoRemove(removed, index);
 }
 
 function closeEdit() {
@@ -3523,6 +3609,7 @@ function openPublishModal() {
       $("slugPrefix").textContent = `${location.host}/l/`;
     }
   }
+  $("confirmPublish").textContent = state.editSlug ? "更新する" : "公開する";
   $("publishModal").classList.add("open");
   $("ownerInput").focus();
 }
@@ -3538,6 +3625,7 @@ function updatePublicHint() {
 }
 
 function confirmPublish() {
+  if (publishing) return;
   const name = $("ownerInput").value.trim();
   // 表示名も匿名公開の自由入力なので URL は不可（スパム・誘導リンク対策）。
   if (/https?:\/\/|www\./i.test(name)) {
@@ -3561,43 +3649,73 @@ function confirmPublish() {
   state.owner = name.slice(0, 40);
   state.bio = bio.slice(0, 100);
   state.unlisted = !$("publicInput").checked;
-  $("publishModal").classList.remove("open");
   doPublish();
 }
 
+// 公開・更新の送信中。ボット確認（Turnstile）と送信に数秒かかることがあるので、公開モーダルを
+// 開いたままボタンを「公開中…」にして二重送信を防ぐ。失敗したらモーダルに戻る（URL の重複など
+// 入力を直せばよいエラーもあるため）。成功したらモーダルを閉じて共有モーダルを出す。
+let publishing = false;
+
+function setPublishing(on, label) {
+  publishing = on;
+  const verb = state.editSlug ? "更新" : "公開";
+  const btn = $("confirmPublish");
+  btn.disabled = on;
+  btn.textContent = on ? label || `${verb}中…` : verb === "更新" ? "更新する" : "公開する";
+  $("cancelPublish").disabled = on;
+  $("publish").disabled = on || state.items.length !== TARGET;
+  if (on) $("publish").textContent = label || `${verb}中…`;
+}
+
+function closePublishModal() {
+  if (publishing) return; // 送信中は閉じない（結果を必ず見せる）
+  $("publishModal").classList.remove("open");
+}
+
 async function doPublish() {
+  if (publishing) return;
   const items = collectItems();
   if (items.length !== TARGET) {
     uiAlert(`公開にはちょうど${TARGET}作品が必要です（現在${items.length}作品）。`);
     return;
   }
-  $("publish").disabled = true;
+  const verb = state.editSlug ? "更新" : "公開";
+  let ok = false;
+  setPublishing(true);
   try {
-    let res;
     if (state.editSlug) {
-      res = await fetch(`/api/lists/${state.editSlug}`, {
+      await apiFetch(`/api/lists/${state.editSlug}`, {
         method: "PUT",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({ owner_name: state.owner, bio: state.bio, unlisted: state.unlisted, items, edit_token: state.editToken }),
       });
-      const data = await res.json();
-      if (!res.ok) throw new Error(data.error || "更新に失敗しました");
       clearEditDraft(state.editSlug);
       // What we just PUT is now the 公開状態 — rebase the diff on it.
       state.published = { owner: state.owner, bio: state.bio, items: items.map(normItem) };
       window.MyLists?.save({ slug: state.editSlug, token: state.editToken, owner: state.owner });
       window.Account?.refreshLists();
+      ok = true;
+      setPublishing(false);
+      $("publishModal").classList.remove("open");
       showShare(state.editSlug, state.editToken);
     } else {
       const payload = { owner_name: state.owner, bio: state.bio, unlisted: state.unlisted, items };
       if (state.customSlug) payload.slug = state.customSlug;
-      res = await fetch(`/api/lists`, {
+      // ボット確認は普段は一瞬だが、チェックが出ると操作待ちになる。今どこで待っているかを出す。
+      const slow = setTimeout(() => publishing && setPublishing(true, "確認中…"), 1500);
+      let headers;
+      try {
+        headers = await botHeaders("publish");
+      } finally {
+        clearTimeout(slow);
+      }
+      setPublishing(true, "公開中…");
+      const data = await apiFetch(`/api/lists`, {
         method: "POST",
-        headers: { "content-type": "application/json", ...(await botHeaders("publish")) },
+        headers: { "content-type": "application/json", ...headers },
         body: JSON.stringify(payload),
       });
-      const data = await res.json();
-      if (!res.ok) throw new Error(data.error || "公開に失敗しました");
       state.editSlug = data.slug;
       state.editToken = data.edit_token;
       state.customSlug = "";
@@ -3605,26 +3723,69 @@ async function doPublish() {
       try { localStorage.removeItem(DRAFT_KEY); } catch (e) {}
       deleteServerDraft();
       window.Account?.refreshLists();
+      ok = true;
+      setPublishing(false);
+      $("publishModal").classList.remove("open");
       showShare(data.slug, data.edit_token);
     }
   } catch (e) {
-    uiAlert(e.message || "エラーが発生しました");
+    uiAlert(apiErrorMessage(e, `${verb}に失敗しました。もう一度お試しください。`));
   } finally {
+    if (!ok) setPublishing(false);
     render();
     renderMyLists();
   }
 }
 
+/* ---------- 公開後の共有モーダル ---------- */
+// 編集用URLは失くすと別の端末から編集できなくなるので、背景クリックでは閉じない。
+// 編集用URLを一度もコピーしないまま閉じようとしたら確認する（Esc も同じ）。
 let shareSlug = null;
+let editUrlCopied = false;
 
-function showShare(slug, token) {
+async function showShare(slug, token) {
   shareSlug = slug;
+  editUrlCopied = false;
   const shareUrl = `${location.origin}/l/${slug}`;
   const editUrl = `${location.origin}/?edit=${slug}&t=${token}`;
   $("shareUrl").value = shareUrl;
   $("editUrl").value = editUrl;
   $("openShare").href = shareUrl;
+  for (const id of ["copyShare", "copyEdit"]) resetCopyButton($(id));
+  // 注意書き: ログイン中はアカウントに保存されるので、警告色ではなく案内にする。
+  const warn = $("editUrlWarn");
+  if (warn._orig == null) warn._orig = warn.innerHTML; // 未ログイン時の文面（index.html）
+  const me = window.Account ? await window.Account.ready.catch(() => null) : null;
+  if (me && me.user) {
+    warn.classList.add("safe");
+    warn.textContent = "ログイン中のGoogleアカウントに保存されました。どの端末からでもトップの「あなたのリスト」から編集できます。念のためこのリンクも控えておくと安心です。";
+  } else {
+    warn.classList.remove("safe");
+    warn.innerHTML = warn._orig;
+    $("editUrlWarnLogin").hidden = !(me && me.enabled);
+  }
   $("shareModal").classList.add("open");
+}
+
+async function requestCloseShare() {
+  if (!editUrlCopied) {
+    const ok = await uiConfirm(
+      "編集用URLをまだコピーしていません。\n失くすと、ほかの端末からはこのリストを編集できなくなります（この端末ではトップから編集に戻れます）。\n閉じてもよいですか？",
+      { okLabel: "閉じる", cancelLabel: "戻ってコピーする" }
+    );
+    if (!ok) {
+      $("copyEdit").focus();
+      return;
+    }
+  }
+  $("shareModal").classList.remove("open");
+}
+
+const COPY_LABEL = "コピー";
+function resetCopyButton(btn) {
+  clearTimeout(btn._copiedTimer);
+  btn.textContent = COPY_LABEL;
+  btn.classList.remove("copied");
 }
 
 /* ---------- events ---------- */
@@ -3645,7 +3806,7 @@ function wireEvents() {
   $("publish").addEventListener("click", openPublishModal);
   $("confirmPublish").addEventListener("click", confirmPublish);
   $("publicInput").addEventListener("change", updatePublicHint);
-  $("cancelPublish").addEventListener("click", () => $("publishModal").classList.remove("open"));
+  $("cancelPublish").addEventListener("click", closePublishModal);
   $("ownerInput").addEventListener("keydown", (e) => { if (e.key === "Enter" && !e.isComposing) confirmPublish(); });
   $("cancelSearch").addEventListener("click", closeSearch);
   $("saveSlot").addEventListener("click", saveSlot);
@@ -3674,9 +3835,17 @@ function wireEvents() {
   $("skipFix").addEventListener("click", () => { if (state.fixIndex >= 0) advanceFix(state.fixIndex); });
   $("pickModal").addEventListener("click", (e) => { if (e.target.id === "pickModal") closeCoverPicker(); });
 
-  $("copyShare").addEventListener("click", () => copy($("shareUrl")));
-  $("copyEdit").addEventListener("click", () => copy($("editUrl")));
-  $("closeShare").addEventListener("click", () => $("shareModal").classList.remove("open"));
+  $("copyShare").addEventListener("click", (e) => copy($("shareUrl"), e.currentTarget));
+  $("copyEdit").addEventListener("click", (e) => {
+    editUrlCopied = true;
+    copy($("editUrl"), e.currentTarget);
+  });
+  $("closeShare").addEventListener("click", requestCloseShare);
+  // 背景クリックでは閉じない。Esc は ui-dialog.js から modal-escape で届くので確認付きで閉じる。
+  $("shareModal").addEventListener("modal-escape", (e) => {
+    e.preventDefault();
+    requestCloseShare();
+  });
 
   $("searchModal").addEventListener("click", (e) => { if (e.target.id === "searchModal") closeSearch(); });
   $("volModal").addEventListener("click", (e) => { if (e.target.id === "volModal") closeVolumeDetail(); });
@@ -3685,17 +3854,27 @@ function wireEvents() {
   $("editModal").addEventListener("click", (e) => { if (e.target.id === "editModal") closeEdit(); });
   wireEditSwipe($("editModal").querySelector(".modal"));
 
-  for (const id of ["shareModal", "publishModal"]) {
-    $(id).addEventListener("click", (e) => { if (e.target.id === id) $(id).classList.remove("open"); });
-  }
+  $("publishModal").addEventListener("click", (e) => { if (e.target.id === "publishModal") closePublishModal(); });
 }
 
-function copy(input) {
+// URL をクリップボードへ。btn を渡すと数秒「コピーしました ✓」にする。
+function copy(input, btn) {
   input.select();
-  navigator.clipboard?.writeText(input.value).then(
-    () => { input.blur(); },
-    () => { document.execCommand("copy"); }
-  );
+  const done = () => {
+    input.blur();
+    if (!btn) return;
+    clearTimeout(btn._copiedTimer);
+    btn.textContent = "コピーしました ✓";
+    btn.classList.add("copied");
+    btn._copiedTimer = setTimeout(() => resetCopyButton(btn), 3000);
+  };
+  const legacy = () => {
+    try {
+      if (document.execCommand("copy")) done();
+    } catch (e) {}
+  };
+  if (navigator.clipboard && navigator.clipboard.writeText) navigator.clipboard.writeText(input.value).then(done, legacy);
+  else legacy();
 }
 
 init();

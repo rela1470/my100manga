@@ -14,24 +14,37 @@
 // covers everything drawn (owner name, ISBNs, cover URLs, layout version), so a
 // list edit or a cover filled in later yields a fresh image, and the og:image URL
 // carries it as ?v= so X re-fetches.
+//
+// 書影の出典（楽天ブックス / 楽天市場 / Yahoo!ショッピング 等）と「© 各著作権者」を全種類の
+// 画像の下端に 1 行で入れる。出典は実際に描くセルの表紙 URL から割り出す（creditLine）。
+//
+// フォントは描画時に外部（Google Fonts）へ取りに行かず、静的アセットの Noto Sans JP Bold
+// （JIS X 0208 + ASCII + 半角カナ/全角英数にサブセット化した OTF, public/fonts/, OFL）を
+// env.ASSETS から読んで isolate 内に保持する。JIS 第 3・4 水準や絵文字は描かれない。
+//
+// メモリ: Workers の isolate は 128MB。resvg と mozjpeg の wasm メモリは一度伸びると縮まない
+// ので、描画は isolate 内で 1 本ずつ（renderLock）にし、同じ画像の同時リクエストは 1 回の
+// 描画を共有する（inflight）。表紙は楽天の _ex= でセルの大きさ近くまで縮めて取る（shareCoverUrl）。
 import { initWasm, Resvg } from "@resvg/resvg-wasm";
 // CF Workers can't dynamically import wasm — bundle it explicitly (as covertrim.ts does).
 import RESVG_WASM from "../node_modules/@resvg/resvg-wasm/index_bg.wasm";
 import { getCoverBytes, sha256Hex } from "./coverBytes";
 import { encodeRgba } from "./covertrim";
 import { escapeHtml } from "./util";
-import { Env, MangaList } from "./types";
+import { Env, ListItem, MangaList } from "./types";
 
 export type ShareVariant = "og" | "full" | "q1" | "q2" | "q3" | "q4";
 export const SHARE_VARIANTS: readonly ShareVariant[] = ["og", "full", "q1", "q2", "q3", "q4"];
 
 // Bump to regenerate every stored image after a design change.
-const LAYOUT_VERSION = 3;
+const LAYOUT_VERSION = 4;
 const CELLS = 100;
 const COVER_CONCURRENCY = 10;
 const MAX_NAME_CHARS = 16;
 const FONT_FAMILY = "Noto Sans JP";
 const SITE = "my100manga.com";
+// public/fonts/ の静的アセット（ライセンスは同じディレクトリの OFL.txt）。
+const FONT_PATH = "/fonts/NotoSansJP-Bold-subset.otf";
 
 const COLOR = {
   bg: "#f4f8ff",
@@ -53,6 +66,8 @@ interface Layout {
   cellH: number;
   headerY: number; // header text baseline
   headerSize: number; // largest header font size (shrunk to fit a long name/URL)
+  creditY: number; // 出典クレジットの baseline（下端）
+  creditSize: number;
   first: number; // index of the first cell drawn (quarters start at 0/25/50/75)
   count: number; // cells drawn
 }
@@ -67,14 +82,16 @@ function quarterIndex(variant: ShareVariant): number | null {
 function layout(variant: ShareVariant): Layout {
   const header =
     variant === "og"
-      ? { width: 1200, pad: 16, gap: 4, gridTop: 56, headerY: 40, headerSize: 28 }
-      : { width: 1200, pad: 24, gap: variant === "full" ? 8 : 12, gridTop: 80, headerY: 54, headerSize: 36 };
+      ? { width: 1200, pad: 16, gap: 4, gridTop: 56, headerY: 40, headerSize: 28, creditSize: 13 }
+      : { width: 1200, pad: 24, gap: variant === "full" ? 8 : 12, gridTop: 80, headerY: 54, headerSize: 36, creditSize: 18 };
+  // グリッドの下に出典クレジット 1 行ぶん（og は約 22px）を空ける。
+  const creditH = Math.round(header.creditSize * 1.7);
   const areaW = header.width - header.pad * 2;
   if (variant === "og") {
     // Fixed canvas: take whichever column count gives the biggest covers (3:4) in the
     // area under the header, and centre the grid horizontally.
     const height = 630;
-    const areaH = height - header.gridTop - header.pad;
+    const areaH = height - header.gridTop - creditH;
     let cols = 1;
     let cellW = 0;
     for (let c = 1; c <= CELLS; c++) {
@@ -86,7 +103,8 @@ function layout(variant: ShareVariant): Layout {
       }
     }
     const gridW = cols * cellW + (cols - 1) * header.gap;
-    return { ...header, height, cols, cellW, cellH: (cellW * 4) / 3, gridLeft: (header.width - gridW) / 2, first: 0, count: CELLS };
+    const creditY = height - Math.round((creditH - header.creditSize) / 2) - 2;
+    return { ...header, height, creditY, cols, cellW, cellH: (cellW * 4) / 3, gridLeft: (header.width - gridW) / 2, first: 0, count: CELLS };
   }
   // Portrait grid filling the width (10×10, or 5×5 for a quarter); the height follows.
   const q = quarterIndex(variant);
@@ -96,8 +114,9 @@ function layout(variant: ShareVariant): Layout {
   const cellH = (cellW * 4) / 3; // the site's cover frames are 3:4
   const rows = Math.ceil(count / cols);
   const gridH = rows * cellH + (rows - 1) * header.gap;
-  const height = Math.ceil(header.gridTop + gridH + header.pad);
-  return { ...header, height, cols, cellW, cellH, gridLeft: header.pad, first: q === null ? 0 : q * QUARTER, count };
+  const creditY = Math.ceil(header.gridTop + gridH + header.gap + header.creditSize);
+  const height = Math.ceil(header.gridTop + gridH + creditH + header.pad / 2);
+  return { ...header, height, creditY, cols, cellW, cellH, gridLeft: header.pad, first: q === null ? 0 : q * QUARTER, count };
 }
 
 export const SHARE_IMAGE_SIZE = Object.fromEntries(
@@ -106,12 +125,53 @@ export const SHARE_IMAGE_SIZE = Object.fromEntries(
 
 /** Identifies what a share image would show; changes whenever it would look different. */
 export async function shareImageHash(list: MangaList): Promise<string> {
+  // 出典クレジットは variant ごとに描くセルで変わりうるので、全 variant の文言を入れる。
   const key = JSON.stringify([
     LAYOUT_VERSION,
     list.owner_name,
     list.items.map((it) => [it.position, it.isbn, it.cover_url]),
+    SHARE_VARIANTS.map((v) => creditLine(list, v)),
   ]);
   return (await sha256Hex(key)).slice(0, 16);
+}
+
+// 書影の出典。表示順は固定（主な取得元から）。
+const SOURCE_ORDER = ["楽天ブックス", "楽天市場", "Yahoo!ショッピング", "Google Books", "各販売サイト"] as const;
+type CoverSource = (typeof SOURCE_ORDER)[number];
+
+/** 表紙 URL がどの販売サイトの画像か。/cover?u=…（整形プロキシ）経由なら元 URL で判定する。 */
+export function coverSource(url: string): CoverSource | null {
+  if (!url) return null;
+  let u: URL;
+  try {
+    u = new URL(url, `https://${SITE}`);
+    if (u.hostname === SITE && u.pathname === "/cover" && u.searchParams.get("u")) u = new URL(u.searchParams.get("u")!);
+  } catch {
+    return "各販売サイト";
+  }
+  const host = u.hostname;
+  // 楽天ブックスの書影も /@0_mall/book/ 配下（楽天ブックス自体が楽天市場の 1 店舗）。それ以外の
+  // /@0_mall/<店舗>/ が楽天市場の商品画像（src/ichiba.ts）。
+  if (host === "thumbnail.image.rakuten.co.jp") {
+    return u.pathname.startsWith("/@0_mall/") && !u.pathname.startsWith("/@0_mall/book/") ? "楽天市場" : "楽天ブックス";
+  }
+  if (/(^|\.)rakuten\.co\.jp$/.test(host)) return "楽天ブックス";
+  if (/(^|\.)yimg\.jp$/.test(host)) return "Yahoo!ショッピング";
+  if (host === "books.google.com" || /(^|\.)books\.googleusercontent\.com$/.test(host)) return "Google Books";
+  return "各販売サイト";
+}
+
+/** 画像下端のクレジット: 「書影: 楽天ブックス / Yahoo!ショッピング　© 各著作権者」。
+ *  出典はこの variant が描くセル（表紙のあるもの）に実際に含まれるものだけ。 */
+export function creditLine(list: MangaList, variant: ShareVariant): string {
+  const L = layout(variant);
+  const found = new Set<CoverSource>();
+  for (const it of list.items.slice(L.first, L.first + L.count) as ListItem[]) {
+    const src = coverSource(it.cover_url);
+    if (src) found.add(src);
+  }
+  const sources = SOURCE_ORDER.filter((s) => found.has(s));
+  return (sources.length ? `書影: ${sources.join(" / ")}　` : "") + "© 各著作権者";
 }
 
 /** 「rela1470's 」 before the brand; nothing when the list has no name. */
@@ -152,7 +212,8 @@ function buildSvg(list: MangaList, variant: ShareVariant, hasCover: boolean[], h
     `<defs><clipPath id="r" clipPathUnits="objectBoundingBox"><rect width="1" height="1" rx="0.07" ry="0.0525"/></clipPath></defs>`,
     `<rect width="100%" height="100%" fill="${COLOR.bg}"/>`,
     `<text x="${L.pad}" y="${L.headerY}" font-size="${size}" fill="${COLOR.text}">${escapeHtml(owner)}My <tspan fill="${COLOR.accent}">100</tspan> Manga${range ? `<tspan dx="0.4em" fill="${COLOR.muted}">${range}</tspan>` : ""}</text>`,
-    `<text x="${L.width - L.pad}" y="${L.headerY}" font-size="${Math.round(size * 0.75)}" fill="${COLOR.muted}" text-anchor="end">${escapeHtml(url)}</text>`
+    `<text x="${L.width - L.pad}" y="${L.headerY}" font-size="${Math.round(size * 0.75)}" fill="${COLOR.muted}" text-anchor="end">${escapeHtml(url)}</text>`,
+    `<text x="${L.width - L.pad}" y="${L.creditY}" font-size="${L.creditSize}" fill="${COLOR.muted}" text-anchor="end">${escapeHtml(creditLine(list, variant))}</text>`
   );
 
   const r = (L.cellW * 0.07).toFixed(1);
@@ -190,27 +251,42 @@ function coverHref(i: number): string {
 
 let wasmReady: Promise<void> | null = null;
 
-// Google Fonts serves a subset holding only the requested glyphs (text=), as TrueType
-// to a plain non-browser UA — resvg can't read woff2. Both responses are edge-cached.
-async function loadFont(text: string): Promise<Uint8Array> {
-  const chars = [...new Set(text)].join("");
-  const cssUrl = `https://fonts.googleapis.com/css2?family=${encodeURIComponent(FONT_FAMILY)}:wght@700&text=${encodeURIComponent(chars)}`;
-  const cssRes = await fetch(cssUrl, {
-    headers: { "user-agent": "my100manga-share-image" },
-    cf: { cacheEverything: true, cacheTtl: 30 * 86400 },
-  });
-  if (!cssRes.ok) throw new Error(`font css ${cssRes.status}`);
-  const m = (await cssRes.text()).match(/url\((https:[^)]+)\)\s*format\('(?:truetype|opentype)'\)/);
-  if (!m) throw new Error("font css: no truetype source");
-  const fontRes = await fetch(m[1], { cf: { cacheEverything: true, cacheTtl: 30 * 86400 } });
-  if (!fontRes.ok) throw new Error(`font ${fontRes.status}`);
-  return new Uint8Array(await fontRes.arrayBuffer());
+// 静的アセットのフォント（約 1.5MB）。isolate ごとに 1 回だけ読む。失敗したら次回また試す。
+let fontBytes: Promise<Uint8Array> | null = null;
+
+function loadFont(env: Env): Promise<Uint8Array> {
+  if (!fontBytes) {
+    fontBytes = (async () => {
+      const res = await env.ASSETS.fetch(new Request(`https://${SITE}${FONT_PATH}`));
+      if (!res.ok) throw new Error(`font asset ${res.status}`);
+      return new Uint8Array(await res.arrayBuffer());
+    })();
+    fontBytes.catch(() => (fontBytes = null));
+  }
+  return fontBytes;
+}
+
+/** 楽天の表紙は ?_ex=WxH で縮小版を返すので、セルの大きさ（の約 2 倍）で取る。resvg は
+ *  表紙を全部デコードして持つので、600px の画像を 100 枚読むと wasm メモリが 60MB 近く伸びる。
+ *  もったいない本舗の画像は /cover の整形済み（R2）を使うので触らない。 */
+export function shareCoverUrl(url: string, cellW: number): string {
+  let u: URL;
+  try {
+    u = new URL(url);
+  } catch {
+    return url;
+  }
+  if (u.hostname !== "thumbnail.image.rakuten.co.jp" || !u.searchParams.has("_ex")) return url;
+  if (/^\/@0_mall\/(comicset|mottainaihonpo|mottainaihonpo-omatome)\/cabinet\//.test(u.pathname)) return url;
+  const px = Math.min(300, Math.max(100, Math.ceil((cellW * 2 * 4) / 3 / 50) * 50));
+  u.searchParams.set("_ex", `${px}x${px}`);
+  return u.toString();
 }
 
 // Only the cells this image draws (a quarter fetches 25); the result is indexed by
 // list position like list.items.
-async function fetchCovers(env: Env, ctx: ExecutionContext, list: MangaList, first: number, count: number): Promise<(Uint8Array | null)[]> {
-  const urls = list.items.slice(0, first + count).map((it, i) => (i >= first ? it.cover_url : ""));
+async function fetchCovers(env: Env, ctx: ExecutionContext, list: MangaList, first: number, count: number, cellW: number): Promise<(Uint8Array | null)[]> {
+  const urls = list.items.slice(0, first + count).map((it, i) => (i >= first && it.cover_url ? shareCoverUrl(it.cover_url, cellW) : ""));
   const out: (Uint8Array | null)[] = new Array(urls.length).fill(null);
   let next = first;
   async function worker() {
@@ -230,10 +306,7 @@ async function fetchCovers(env: Env, ctx: ExecutionContext, list: MangaList, fir
 
 async function generate(env: Env, ctx: ExecutionContext, list: MangaList, variant: ShareVariant, host: string): Promise<ArrayBuffer> {
   const L = layout(variant);
-  const [covers, font] = await Promise.all([
-    fetchCovers(env, ctx, list, L.first, L.count),
-    loadFont(`${ownerPossessive(list.owner_name)}My Manga–${listUrlLabel(host, list.slug)}0123456789`),
-  ]);
+  const [covers, font] = await Promise.all([fetchCovers(env, ctx, list, L.first, L.count, L.cellW), loadFont(env)]);
   if (!wasmReady) wasmReady = initWasm(RESVG_WASM);
   await wasmReady;
 
@@ -272,27 +345,88 @@ export async function getShareImage(
   host: string,
   opts: { onMiss?: () => Promise<boolean> } = {}
 ): Promise<ArrayBuffer | ReadableStream | null> {
-  const hash = await shareImageHash(list);
-  const prefix = `share/${list.slug}/`;
-  const key = `${prefix}${variant}-${hash}.jpg`;
+  const key = await shareImageKey(list, variant);
   if (env.COVERS) {
     const hit = await env.COVERS.get(key);
     if (hit) return hit.body;
   }
+  // 描画中の同じ画像があれば（レート制限を数えずに）それを待つ。
+  const pending = inflight.get(key);
+  if (pending) return (await pending).slice(0);
   if (opts.onMiss && !(await opts.onMiss())) return null;
+  return (await renderAndStore(env, ctx, list, variant, host, key)).slice(0);
+}
 
-  const jpeg = await generate(env, ctx, list, variant, host);
-  if (env.COVERS) {
-    const bucket = env.COVERS;
-    ctx.waitUntil(
-      (async () => {
-        await bucket.put(key, jpeg, { httpMetadata: { contentType: "image/jpeg" } });
-        const stale = (await bucket.list({ prefix: `${prefix}${variant}-` })).objects
-          .map((o) => o.key)
-          .filter((k) => k !== key);
-        if (stale.length) await bucket.delete(stale);
-      })().catch((err) => console.error("share image store failed", err))
-    );
+/** R2 に無ければ描いて保存する（キュー consumer 用）。描いたら true。 */
+export async function ensureShareImage(
+  env: Env,
+  ctx: ExecutionContext,
+  list: MangaList,
+  variant: ShareVariant,
+  host: string
+): Promise<boolean> {
+  const key = await shareImageKey(list, variant);
+  if (env.COVERS && (await env.COVERS.head(key))) return false;
+  const pending = inflight.get(key);
+  if (pending) {
+    await pending;
+    return false;
   }
-  return jpeg;
+  await renderAndStore(env, ctx, list, variant, host, key);
+  return true;
+}
+
+async function shareImageKey(list: MangaList, variant: ShareVariant): Promise<string> {
+  return `share/${list.slug}/${variant}-${await shareImageHash(list)}.jpg`;
+}
+
+// R2 キー → 描画中の Promise。同じ画像への同時リクエストは 1 回の描画を共有する。
+const inflight = new Map<string, Promise<ArrayBuffer>>();
+// isolate 内の描画は 1 本ずつ（wasm メモリのピークを 1 枚ぶんに抑える）。
+let renderQueue: Promise<unknown> = Promise.resolve();
+
+function withRenderLock<T>(fn: () => Promise<T>): Promise<T> {
+  const run = renderQueue.then(fn, fn);
+  renderQueue = run.catch(() => {});
+  return run;
+}
+
+function renderAndStore(
+  env: Env,
+  ctx: ExecutionContext,
+  list: MangaList,
+  variant: ShareVariant,
+  host: string,
+  key: string
+): Promise<ArrayBuffer> {
+  const existing = inflight.get(key);
+  if (existing) return existing;
+  const p = withRenderLock(async () => {
+    const jpeg = await generate(env, ctx, list, variant, host);
+    if (env.COVERS) {
+      const bucket = env.COVERS;
+      // 保存し終えてから inflight を外す（外した直後のリクエストが R2 で拾えるように）。
+      try {
+        await bucket.put(key, jpeg.slice(0), { httpMetadata: { contentType: "image/jpeg" } });
+        const prefix = `share/${list.slug}/${variant}-`;
+        const stale = (await bucket.list({ prefix })).objects.map((o) => o.key).filter((k) => k !== key);
+        if (stale.length) await bucket.delete(stale);
+      } catch (err) {
+        console.error("share image store failed", err); // 画像自体は返せるので応答は失敗させない
+      }
+    }
+    return jpeg;
+  }).finally(() => inflight.delete(key));
+  inflight.set(key, p);
+  // 最初のリクエストが切断されても描画・保存は最後まで走らせる（待っている他のリクエスト用）。
+  ctx.waitUntil(p.catch((err) => console.error("share image render failed", err)));
+  return p;
+}
+
+// リンクプレビューのクローラ。投稿直後に og 画像を取りに来るので、R2 ミス時の描画を
+// レート制限に数えない（同じ IP から多数のリストを取りに来るため。描画自体は renderLock で直列）。
+const LINK_PREVIEW_BOT = /Twitterbot|facebookexternalhit|Facebot|Slackbot|Slack-ImgProxy|Discordbot|line-poker|LINE\/|Bluesky Cardyb|Cardyb|TelegramBot|WhatsApp|Mastodon|misskey/i;
+
+export function isLinkPreviewBot(ua: string | null): boolean {
+  return !!ua && LINK_PREVIEW_BOT.test(ua);
 }

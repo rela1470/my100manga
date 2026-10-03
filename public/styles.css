@@ -6,16 +6,23 @@
   --panel-2: #eef4ff;
   --border: #dde7f5;
   --text: #16202e;
-  --muted: #6b7684;
+  --muted: #5b6574;       /* 本文背景・panel-2 の上でも 4.5:1 を満たす濃さ */
 
   /* pop multi-color accents */
   --accent: #3b82f6;      /* hero blue */
-  --accent-2: #0891b2;    /* cyan (links / secondary) */
+  --accent-2: #0e7490;    /* cyan (links / secondary)。白背景で 4.5:1 以上 */
   --accent-3: #8b5cf6;    /* violet */
   --accent-4: #f59e0b;    /* amber */
   --ok: #19c37d;          /* green */
   --warn: #f59e0b;
   --danger: #ef4444;
+  /* 白文字を載せる塗り用の濃いめの色（WCAG AA 4.5:1 以上）。上の明るい色は枠線・装飾用。 */
+  --accent-strong: #2563eb;
+  --accent-strong-2: #1d4ed8;
+  --accent-3-strong: #7c3aed;
+  --ok-strong: #15803d;
+  --ok-strong-2: #047857;
+  --warn-text: #b45309;
 
   /* radii */
   --radius: 18px;
@@ -103,7 +110,7 @@ header.site .header-link {
 }
 header.site .header-link:hover {
   transform: translateY(-1px); box-shadow: var(--shadow-pop);
-  background: linear-gradient(135deg, var(--accent), var(--accent-3)); border-color: transparent; color: #fff;
+  background: linear-gradient(135deg, var(--accent-strong), var(--accent-3-strong)); border-color: transparent; color: #fff;
 }
 header.site .header-link-icon { font-size: 14px; line-height: 1; }
 header.site .header-link + .header-link { margin-left: 8px; }
@@ -133,6 +140,8 @@ header.site { position: relative; }
   color: var(--text); font-size: 13px; text-align: left; text-decoration: none; cursor: pointer;
 }
 .account-menu a:hover, .account-menu button:hover { background: var(--panel-2); color: var(--accent); }
+.account-danger { margin-top: 32px; padding-top: 12px; border-top: 1px solid var(--border); color: var(--muted); font-size: 13px; }
+.account-danger summary { cursor: pointer; }
 .mylists-note a { color: var(--accent); font-weight: 600; }
 
 .toolbar {
@@ -197,16 +206,32 @@ button {
 button:hover { filter: brightness(1.04); transform: translateY(-1px); box-shadow: var(--shadow-sm); }
 button:active { transform: translateY(1px) scale(.97); box-shadow: none; }
 button:focus-visible { outline: 3px solid rgba(59,130,246,.45); outline-offset: 2px; }
-button.primary {
-  background: linear-gradient(135deg, var(--accent), #60a5fa);
+button.primary, a.button.primary {
+  background: linear-gradient(135deg, var(--accent-strong), var(--accent-strong-2));
   border: 1.5px solid transparent;
   color: #fff;
   font-weight: 800;
   box-shadow: var(--shadow-sm);
 }
-button.primary:hover { filter: brightness(1.03); transform: translateY(-1px); box-shadow: var(--shadow-pop); }
+button.primary:hover, a.button.primary:hover { filter: brightness(1.08); transform: translateY(-1px); box-shadow: var(--shadow-pop); }
+/* ボタンの見た目のリンク（<a><button> の入れ子をやめて <a class="button"> にしたもの）。 */
+a.button {
+  display: inline-flex; align-items: center; justify-content: center;
+  font-weight: 600; padding: 9px 16px;
+  border-radius: var(--radius-pill);
+  border: 1.5px solid var(--border);
+  background: var(--panel-2);
+  color: var(--text);
+  text-decoration: none; line-height: inherit;
+  transition: transform var(--dur) var(--ease-bounce), box-shadow var(--dur) var(--ease), filter var(--dur) var(--ease), background var(--dur) var(--ease);
+}
+a.button:hover { filter: brightness(1.04); transform: translateY(-1px); box-shadow: var(--shadow-sm); }
+a.button:active { transform: translateY(1px) scale(.97); box-shadow: none; }
+a.button:focus-visible { outline: 3px solid rgba(59,130,246,.45); outline-offset: 2px; }
+a.button.primary { border-color: transparent; color: #fff; font-weight: 800; box-shadow: var(--shadow-sm); }
+.publish-bar a.button.primary { padding: 12px 48px; font-size: 16px; }
 button.ok {
-  background: linear-gradient(135deg, var(--ok), #39d98a);
+  background: linear-gradient(135deg, var(--ok-strong), var(--ok-strong-2));
   border: 1.5px solid transparent;
   color: #fff;
   font-weight: 800;
@@ -228,8 +253,8 @@ button:disabled { opacity: .5; cursor: not-allowed; transform: none; box-shadow:
 .publish-bar button.primary { padding: 12px 48px; font-size: 16px; }
 /* At exactly TARGET the merged counter/CTA turns green and pulses so it's obvious you can publish. */
 .publish-bar button.primary.exact {
-  background: var(--ok);
-  border-color: var(--ok);
+  background: var(--ok-strong);
+  border-color: var(--ok-strong);
   box-shadow: 0 0 0 0 var(--ok);
   animation: publishReady 1.6s ease-out 2;
 }
@@ -251,7 +276,7 @@ button:disabled { opacity: .5; cursor: not-allowed; transform: none; box-shadow:
   border-radius: var(--radius-sm);
   background: rgba(245, 158, 11, .10);
 }
-.diff-bar .diff-count { color: #b45309; font-size: 14px; font-weight: 600; }
+.diff-bar .diff-count { color: var(--warn-text); font-size: 14px; font-weight: 600; }
 .diff-bar button.ghost {
   background: transparent;
   border: 1px solid var(--muted);
@@ -969,7 +994,7 @@ h3.mylists-title { margin-top: 24px; font-size: 14px; }
   text-decoration: none;
   font-size: 14px;
 }
-.ml-edit:hover { background: var(--accent); color: #fff; }
+.ml-edit:hover { background: var(--accent-strong); color: #fff; }
 .ml-del {
   flex: 0 0 auto;
   background: transparent;
@@ -1002,7 +1027,7 @@ h3.mylists-title { margin-top: 24px; font-size: 14px; }
 .slot .num {
   position: absolute;
   top: 6px; left: 6px;
-  background: linear-gradient(135deg, var(--accent-3), var(--accent));
+  background: linear-gradient(135deg, var(--accent-3-strong), var(--accent-strong));
   color: #fff;
   font-weight: 700;
   font-size: 12px;
@@ -1015,7 +1040,7 @@ h3.mylists-title { margin-top: 24px; font-size: 14px; }
   border-color: var(--accent);
   box-shadow: 0 0 0 2px var(--accent);
 }
-.slot.over-limit .num { background: var(--accent); }
+.slot.over-limit .num { background: var(--accent-strong); }
 .slot.empty {
   align-items: center;
   justify-content: center;
@@ -1059,27 +1084,46 @@ h3.mylists-title { margin-top: 24px; font-size: 14px; }
   max-height: 2.4em;
   overflow: hidden;
 }
+/* 削除ボタン（×）。カード（button.slot）の中に入れ子にせず、外側の .slot-cell に兄弟として
+   置く。見た目の丸は中の .slot-remove-x、押せる範囲はボタン本体（タッチ端末では 44px 四方）。 */
+.slot-cell { position: relative; display: flex; flex-direction: column; min-width: 0; }
+.slot-cell > .slot { width: 100%; }
 .slot-remove {
   position: absolute;
   top: 6px; right: 6px;
   width: 26px; height: 26px;
-  display: none;
+  padding: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: transparent;
+  border: none;
+  border-radius: 50%;
+  opacity: 0;
+  z-index: 4;
+}
+.slot-remove:hover, .slot-remove:active { transform: none; box-shadow: none; filter: none; }
+.slot-remove-x {
+  width: 26px; height: 26px;
+  display: flex;
   align-items: center;
   justify-content: center;
   background: rgba(0,0,0,.65);
   color: #fff;
   border-radius: 50%;
   font-size: 18px;
+  font-weight: 400;
   line-height: 1;
-  z-index: 4;
+  pointer-events: none;
 }
-.slot-remove:hover { background: var(--accent); }
-/* Desktop: reveal × on hover. Touch devices have no hover, so keep it always visible. */
+.slot-remove:hover .slot-remove-x { background: var(--accent-strong); }
+/* Desktop: reveal × on hover / keyboard focus. Touch devices have no hover, so keep it always visible. */
 @media (hover: hover) {
-  .slot:hover .slot-remove { display: flex; }
+  .slot-cell:hover .slot-remove, .slot-remove:focus-visible { opacity: 1; }
+  .slot-cell:hover .slot-remove { transform: translateY(-3px); } /* 浮き上がるカードに合わせる */
 }
 @media (hover: none) {
-  .slot .slot-remove { display: flex; }
+  .slot-cell .slot-remove { opacity: 1; top: 0; right: 0; width: 44px; height: 44px; }
 }
 
 .slot .badges {
@@ -1099,13 +1143,13 @@ h3.mylists-title { margin-top: 24px; font-size: 14px; }
   border-radius: var(--radius-pill);
   box-shadow: var(--shadow-sm);
 }
-.slot .badge-spoiler { background: var(--accent); }
-.slot .badge-comment { background: var(--accent-3); }
+.slot .badge-spoiler { background: var(--accent-strong); }
+.slot .badge-comment { background: var(--accent-3-strong); }
 
 /* ---------- reorder mode ---------- */
 #reorderToggle.active {
-  background: var(--accent);
-  border-color: var(--accent);
+  background: var(--accent-strong);
+  border-color: var(--accent-strong);
   color: #fff;
   font-weight: 700;
 }
@@ -1122,7 +1166,7 @@ h3.mylists-title { margin-top: 24px; font-size: 14px; }
   display: none;
   align-items: center;
   justify-content: center;
-  background: var(--accent);
+  background: var(--accent-strong);
   color: #fff;
   border-radius: 50%;
   font-size: 15px;
@@ -1389,6 +1433,14 @@ html:has(.modal-backdrop.open) { overflow: hidden; }
 .search-actions { flex: 1; display: flex; align-items: center; flex-wrap: wrap; gap: 8px; min-width: 0; }
 .search-actions .cover-status { margin: 0; }
 .hint { color: var(--muted); font-size: 13px; }
+/* 成年向けで追加できない ISBN を検索したときの結果欄（src/adult.ts）。「見つからない」と見分けがつくよう枠付き。 */
+.adult-block {
+  margin: 8px 0; padding: 12px 14px;
+  border: 1px solid var(--warn); border-radius: var(--radius-sm);
+  background: #fffbeb; color: var(--warn-text); font-size: 14px; font-weight: 700;
+}
+/* 書名検索が成年向けの巻にも当たったときの注記（結果の下）。 */
+.adult-note { margin: 10px 0 0; }
 .spinner { color: var(--muted); font-size: 14px; padding: 10px 0; display: flex; align-items: center; gap: 8px; }
 .spinner::before {
   content: "";
@@ -1452,6 +1504,9 @@ footer.site {
   padding: 24px 12px;
 }
 footer.site .aff-disclosure { font-size: 11px; margin: 6px 0 0; opacity: .8; }
+/* 楽天・Yahoo! の公式クレジット（src/footer.ts。中身の HTML は規定のまま変えないので外側から整える）。 */
+footer.site .foot-credits { font-size: 12px; margin: 8px 0 0; color: var(--muted); text-align: center; line-height: 1.8; }
+footer.site .foot-credits a { color: var(--accent-2); }
 footer.site .foot-links { font-size: 12px; margin: 8px 0 0; }
 footer.site .foot-links a { color: var(--muted); }
 footer.site .foot-reset { margin: 10px 0 0; }
@@ -1654,7 +1709,7 @@ footer.site .foot-reset button:hover { opacity: 1; }
 }
 .rank-tab:hover { transform: translateY(-1px); box-shadow: var(--shadow-sm); }
 .rank-tab.active {
-  background: linear-gradient(135deg, var(--accent), var(--accent-3));
+  background: linear-gradient(135deg, var(--accent-strong), var(--accent-3-strong));
   border-color: transparent; color: #fff; box-shadow: var(--shadow-pop);
 }
 .rank-note { color: var(--muted); font-size: 12px; margin: 4px 0 12px; }
@@ -1696,7 +1751,7 @@ a.rank-slot { color: inherit; text-decoration: none; }
 /* ランキングの本の詳細（book-detail.js）の「巻一覧を開く」。リンクだが primary ボタンの見た目に。 */
 a.bd-series {
   display: inline-block; margin-top: 12px; padding: 9px 16px; border-radius: var(--radius-pill);
-  background: linear-gradient(135deg, var(--accent), #60a5fa); color: #fff; /* button.primary と同じ */
+  background: linear-gradient(135deg, var(--accent-strong), var(--accent-strong-2)); color: #fff; /* button.primary と同じ */
   font-weight: 800; font-size: 13px; text-decoration: none; box-shadow: var(--shadow-sm);
 }
 a.bd-series:hover { filter: brightness(1.03); box-shadow: var(--shadow-pop); }
@@ -1769,3 +1824,65 @@ a.bd-series:hover { filter: brightness(1.03); box-shadow: var(--shadow-pop); }
   .toolbar input[type="text"],
   .modal input[type="text"], .modal textarea { font-size: 16px; }
 }
+
+/* ダイアログのパネル自体（ui-dialog.js がフォーカスを移す先）にはフォーカス枠を出さない。 */
+.modal:focus, .ui-dialog:focus { outline: none; }
+
+/* 画面下の通知（ui-dialog.js uiToast）。「元に戻す」などのボタンを 1 つ持てる。 */
+.ui-toast {
+  position: fixed; left: 50%; bottom: 20px; z-index: 1200;
+  display: flex; align-items: center; gap: 12px;
+  max-width: calc(100vw - 24px); padding: 10px 12px 10px 18px;
+  background: #1e293b; color: #fff; border-radius: var(--radius-pill);
+  box-shadow: var(--shadow-md); font-size: 14px;
+  transform: translate(-50%, 16px); opacity: 0; pointer-events: none;
+  transition: opacity var(--dur) var(--ease), transform var(--dur) var(--ease);
+}
+.ui-toast.open { opacity: 1; transform: translate(-50%, 0); pointer-events: auto; }
+.ui-toast-msg { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
+.ui-toast-action {
+  flex: none; padding: 6px 14px; min-height: 36px;
+  background: transparent; border: 1.5px solid #93c5fd; color: #bfdbfe; font-size: 13px;
+}
+.ui-toast-action:hover { background: rgba(147,197,253,.15); }
+
+/* はじめての人向けの説明（index.html #emptyGuide。リストが空のときだけ出る）。 */
+.empty-guide {
+  margin: 0 0 16px; padding: 16px 20px;
+  background: var(--panel); border: 1.5px dashed var(--accent); border-radius: var(--radius);
+  box-shadow: var(--shadow-sm);
+}
+.empty-guide[hidden] { display: none; }
+.empty-guide-title { margin: 0 0 8px; font-size: 16px; color: var(--accent-strong); }
+.empty-guide-steps { margin: 0 0 10px; padding-left: 1.4em; font-size: 14px; }
+.empty-guide-steps li { margin: 4px 0; }
+.empty-guide-steps b { display: block; }
+.empty-guide-link { font-weight: 700; font-size: 14px; }
+
+/* 公開後モーダルの編集用URLの注意書き。 */
+.edit-url-warn {
+  margin: 4px 0; padding: 8px 12px; font-size: 13px; line-height: 1.6;
+  color: var(--warn-text); background: rgba(245, 158, 11, .10);
+  border: 1px solid var(--warn); border-radius: var(--radius-sm);
+}
+.edit-url-warn.safe { color: var(--muted); background: var(--panel-2); border-color: var(--border); }
+button.copied { border-color: var(--ok-strong); color: var(--ok-strong); }
+
+/* 購入リンクの広告表記（ステマ規制）。見出しの横に小さく「PR」。 */
+.pr-label {
+  display: inline-block; margin-left: 6px; padding: 0 6px;
+  border: 1px solid var(--muted); border-radius: 4px;
+  font-size: 11px; font-weight: 700; line-height: 1.5; color: var(--muted); vertical-align: 1px;
+}
+/* あらすじの出典表記。 */
+.dsynopsis-src { margin: 6px 0 0; font-size: 11px; color: var(--muted); text-align: right; }
+
+/* 404 ページ（public/404.html）。 */
+.notfound { text-align: center; padding: 24px 0 8px; }
+.notfound-code {
+  margin: 0; font-size: 64px; font-weight: 800; line-height: 1;
+  background: linear-gradient(135deg, var(--accent-strong), var(--accent-3-strong));
+  -webkit-background-clip: text; background-clip: text; color: transparent;
+}
+.notfound h2 { margin: 12px 0 8px; font-size: 20px; }
+.notfound-more { margin-top: 20px; font-size: 14px; }

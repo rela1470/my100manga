@@ -1717,6 +1717,14 @@ async function fetchCovers(isbns, pending) {
       headers: { "content-type": "application/json" },
       body: JSON.stringify(body),
     });
+    // 429（レート制限）は「今は無理」であって「表紙が無い」ではない。retry-after を控えて、
+    // 呼び出し側のループがその分だけ待てるようにする（控えないと進捗ゼロのラウンドと
+    // 見分けが付かず、そのまま打ち切ってしまう）。
+    if (res.status === 429) {
+      const sec = Number(res.headers.get("retry-after"));
+      coverRetryAfterMs = Math.min(Math.max(Number.isFinite(sec) ? sec : 60, 1), 60) * 1000;
+      return {};
+    }
     if (!res.ok) return {};
     const data = await res.json();
     if (data.queue) coverQueue = data.queue;
@@ -1772,11 +1780,30 @@ const COVER_CHUNK = 6;
 // from the response (undetermined — not cached). We keep re-POSTing just those
 // leftovers, pausing between rounds so Rakuten/Yahoo's 1 req/s limiters refill,
 // until everything resolves. An isbn that comes back present-but-empty ("") is a
-// determined "no cover" and is final — we don't retry it. We stop when a whole
-// round makes no progress (server genuinely can't resolve the rest right now), so
-// even a long series fills over as many rounds as it takes without looping forever.
+// determined "no cover" and is final — we don't retry it. We only give up after
+// several consecutive rounds make no progress (one such round usually just means
+// someone else is filling covers and has the limiter's slots booked), so even a long
+// series fills over as many rounds as it takes without looping forever.
 const COVER_RETRY_PAUSE_MS = 1200;
 const COVER_RETRY_CAP = 40; // hard backstop against a pathological no-progress loop
+
+// 進捗ゼロのラウンドは「もう解決できない」とは限らない。楽天の枠はサイト全体で 1 秒 1 件なので、
+// 他の人が取得中だと枠が全部埋まっていて、サーバは待たずに即「未確定」を返す（実測で 3 人同時
+// なら 2 人は 20ms で 0 件）。1 ラウンドで諦めると、その瞬間に誰かが取得していただけで途中で
+// 止まってしまうので、進捗ゼロが続いたときだけ、間隔を空けながら数回ねばる。
+const COVER_STALL_ROUNDS = 5;
+const COVER_STALL_MAX_PAUSE_MS = 8000;
+// 429 を受けたときの retry-after（ミリ秒）。fetchCovers が立てて、次の待ち時間で使い切る。
+let coverRetryAfterMs = 0;
+
+/** 進捗ゼロが stalls 回続いたあとの待ち時間。429 を受けていればそちらを優先する。 */
+function coverRoundPauseMs(stalls) {
+  const limited = coverRetryAfterMs;
+  coverRetryAfterMs = 0;
+  if (!stalls) return Math.max(COVER_RETRY_PAUSE_MS, limited);
+  const backoff = Math.min(COVER_RETRY_PAUSE_MS * Math.pow(2, stalls), COVER_STALL_MAX_PAUSE_MS);
+  return Math.max(backoff, limited);
+}
 
 function mountCoverFetch(barEl, entries) {
   if (!entries.length) return;
@@ -1801,8 +1828,9 @@ function mountCoverFetch(barEl, entries) {
     };
     paint();
     let todo = entries.slice();
+    let stalls = 0;
     for (let round = 0; round < COVER_RETRY_CAP && todo.length; round++) {
-      if (round > 0) await new Promise((r) => setTimeout(r, COVER_RETRY_PAUSE_MS));
+      if (round > 0) await new Promise((r) => setTimeout(r, coverRoundPauseMs(stalls)));
       const next = [];
       for (let i = 0; i < todo.length; i += COVER_CHUNK) {
         const chunk = todo.slice(i, i + COVER_CHUNK);
@@ -1822,13 +1850,20 @@ function mountCoverFetch(barEl, entries) {
         }
         paint();
       }
-      // Stop if a whole round resolved nothing new — retrying further won't help
-      // (server can't resolve these right now); leave them as placeholders.
-      if (next.length === todo.length) break;
+      // 進捗ゼロが続いたときだけ諦める（他の人の取得で枠が埋まっているだけのことがある）。
+      stalls = next.length === todo.length ? stalls + 1 : 0;
+      if (stalls >= COVER_STALL_ROUNDS) break;
       todo = next;
     }
     leaveCoverQueue();
-    status.style.display = "none";
+    // 残したまま終わったら、押し直せるようにボタンを戻す（黙って消すと再開する手段が無い）。
+    if (todo.length) {
+      btn.textContent = `表紙を取得（残り${todo.length}件）`;
+      btn.style.display = "";
+      status.textContent = "混み合っています。少し待ってからもう一度お試しください。";
+    } else {
+      status.style.display = "none";
+    }
   });
 }
 
@@ -3439,10 +3474,11 @@ async function fetchMissingCovers() {
   // レスポンスから *欠落* で返る（未確定・未キャッシュ）。その欠落分だけを再 POST し、
   // レート制限が回復するよう間を置いて全部埋まるまで繰り返す。map に present-but-empty（""）で
   // 返ったものは「確定：表紙なし」なので retry せず coverTried に入れて打ち切る。欠落は
-  // coverTried に入れず残すので、丸ごと 1 ラウンド進捗ゼロなら打ち切る（後で再クリック可能）。
+  // coverTried に入れず残すので、進捗ゼロのラウンドが続いたら打ち切る（後で再クリック可能）。
   let todo = targets.slice();
+  let stalls = 0;
   for (let round = 0; round < COVER_RETRY_CAP && todo.length; round++) {
-    if (round > 0) await new Promise((r) => setTimeout(r, COVER_RETRY_PAUSE_MS));
+    if (round > 0) await new Promise((r) => setTimeout(r, coverRoundPauseMs(stalls)));
     const next = [];
     for (let i = 0; i < todo.length; i += COVER_CHUNK) {
       const batch = todo.slice(i, i + COVER_CHUNK);
@@ -3468,7 +3504,9 @@ async function fetchMissingCovers() {
       }
       paint();
     }
-    if (next.length === todo.length) break; // 進捗ゼロ — これ以上は解決しない
+    // 進捗ゼロが続いたときだけ諦める。coverTried に入れていないので、ボタンを押し直せば続きから。
+    stalls = next.length === todo.length ? stalls + 1 : 0;
+    if (stalls >= COVER_STALL_ROUNDS) break;
     todo = next;
   }
   leaveCoverQueue();

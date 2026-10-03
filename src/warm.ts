@@ -1,6 +1,7 @@
 import { Env } from "./types";
 import { isValidIsbn, json } from "./util";
 import { resolveCovers } from "./covers";
+import { limiterStub } from "./ratelimiter";
 import { circulationSeriesIds } from "./circulation";
 import { salesSeriesIds } from "./salesRanking";
 
@@ -30,6 +31,14 @@ const MAX_LIMIT = 30;
 const SERIES_CHUNK = 60; // 一度に見るシリーズ数（D1 の bind 上限 90 の内側）
 const MAX_CHUNKS = 25; // 1 要求で読み飛ばしてよいチャンク数（温め済みのシリーズを飛ばす）
 const CANDIDATE_FACTOR = 5; // 不正な ISBN で埋まらないよう limit より多めに候補を取る
+
+// 暖機が 1 件あたり枠を待つ上限。利用者の取得（最大 8 秒待つ）より短くしておくと、枠を
+// 取り合ったとき必ず利用者が勝つ。楽天の枠はサイト全体で 1 秒 1 件・同じレーンの早い者勝ちで、
+// 暖機は休みなく回るので、これが無いと利用者の取得が 1 件も通らなくなる。
+const WARM_SLOT_WAIT_MS = 1000;
+// 閲覧者が表紙を取得している間は、暖機そのものを休ませる（枠を譲るだけでなく、D1 の読みも
+// 止める）。待ち行列には入らないよう pending 0 で人数だけ聞く。
+const WARM_PRESENCE_CLIENT = "warm-cache-probe";
 
 /** scope ごとの「次に見るシリーズ」。cursor は scope ごとに意味が違う（下の説明を参照）。 */
 interface SeriesPage {
@@ -95,6 +104,20 @@ export interface WarmResult {
   chunks: number; // 読み飛ばしたぶんも含めて見たシリーズのチャンク数
   attempted: number; // 温めようとした ISBN 数
   cached: number; // 実際に covers に入った数（レート制限で取れなかったぶんは入らない）
+  /** 閲覧者が表紙を取得中なので今回は何もしなかった。呼び出し側は少し待って同じ cursor で
+   *  やり直す（「進まない」として打ち切らない）。 */
+  paused?: number;
+}
+
+/** いま表紙を取得している閲覧者の数。取れなければ 0（存在確認は飾りなので失敗させない）。 */
+async function coverFillsInFlight(env: Env): Promise<number> {
+  if (!env.RAKUTEN_LIMITER) return 0;
+  try {
+    const q = await limiterStub(env.RAKUTEN_LIMITER, "cover-queue").report(WARM_PRESENCE_CLIENT, 0);
+    return q.users;
+  } catch {
+    return 0;
+  }
 }
 
 /** 次のひとかたまりを温める。温める対象が見つかったチャンクで止まり、その cursor を返す
@@ -106,6 +129,11 @@ export async function warmNext(
   limit: number
 ): Promise<WarmResult> {
   const want = Math.min(Math.max(1, limit), MAX_LIMIT);
+  // 閲覧者が取得中なら何もしない。暖機は何時間でも待てるが、利用者は待てない。
+  const inFlight = await coverFillsInFlight(env);
+  if (inFlight > 0) {
+    return { scope, cursor: cursor || null, done: false, chunks: 0, attempted: 0, cached: 0, paused: inFlight };
+  }
   let cur: string | null = cursor;
   let chunks = 0;
 
@@ -122,7 +150,7 @@ export async function warmNext(
     }
 
     const batch = cands.slice(0, want);
-    const resolved = await resolveCovers(env, batch);
+    const resolved = await resolveCovers(env, batch, { maxSlotWaitMs: WARM_SLOT_WAIT_MS });
     // resolveCovers はキャッシュ済みのぶんも返すが、batch は全部 covers に無かったものなので
     // 返ってきた件数 = 今回 covers に入った件数。
     return { scope, cursor: cur, done: false, chunks: chunks + 1, attempted: batch.length, cached: resolved.size };

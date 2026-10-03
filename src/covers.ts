@@ -65,6 +65,14 @@ export async function readCachedCovers(env: Env, isbns: string[]): Promise<Map<s
   return out;
 }
 
+export interface ResolveOpts {
+  /** 1 件あたり枠を待つ上限。既定はこの呼び出しに残っている予算いっぱい。公開前の暖機
+   *  （src/warm.ts）のような裏方は短く指定して、利用者の取得に枠を譲る: 楽天の枠は
+   *  サイト全体で 1 秒 1 件・同じ優先度レーンの早い者勝ちなので、裏方が連続で予約し続けると
+   *  利用者の取得が 1 件も通らなくなる（実測で即 0 件が返る）。 */
+  maxSlotWaitMs?: number;
+}
+
 /** Resolve the best cover URL for each ISBN: the Rakuten Books cover (exact-ISBN)
  *  if one exists, else a Yahoo!ショッピング cover (exact-ISBN via jan_code), else a
  *  楽天市場 cover (ISBN keyword — only a 楽天ブックス/used-book-shop image applies directly;
@@ -73,7 +81,11 @@ export async function readCachedCovers(env: Env, isbns: string[]): Promise<Map<s
  *  permanently in the `covers` table; only cache misses hit the network, so each
  *  API's rate limit is paid at most once per ISBN. Returns a map isbn → cover URL
  *  (""=none). */
-export async function resolveCovers(env: Env, isbns: string[]): Promise<Map<string, string>> {
+export async function resolveCovers(
+  env: Env,
+  isbns: string[],
+  opts: ResolveOpts = {}
+): Promise<Map<string, string>> {
   const out = await readCachedCovers(env, isbns);
   const uniq = [...new Set(isbns.filter(Boolean))];
 
@@ -85,6 +97,9 @@ export async function resolveCovers(env: Env, isbns: string[]): Promise<Map<stri
 
   const now = Date.now();
   const deadline = now + RESOLVE_BUDGET_MS;
+  // 残り予算と、呼び出し側が指定した上限の小さい方。
+  const slotWait = (remaining: number): number =>
+    opts.maxSlotWaitMs === undefined ? remaining : Math.min(remaining, opts.maxSlotWaitMs);
 
   // Only ISBNs with a *determined* answer are cached: a real cover URL, or "" when
   // a source definitively has no cover. ISBNs we skip (out of budget) or that come
@@ -107,7 +122,7 @@ export async function resolveCovers(env: Env, isbns: string[]): Promise<Map<stri
       if (remaining <= 0) break; // out of time — leave the rest uncached
       const batch = toResolve.slice(i, i + RAKUTEN_CONCURRENCY);
       const results = await Promise.all(
-        batch.map((isbn) => rakutenResolveFull(env, isbn, "low", remaining))
+        batch.map((isbn) => rakutenResolveFull(env, isbn, "low", slotWait(remaining)))
       );
       batch.forEach((isbn, j) => {
         const { cover, meta } = results[j];
@@ -134,7 +149,7 @@ export async function resolveCovers(env: Env, isbns: string[]): Promise<Map<stri
     for (const isbn of needFallback) {
       const remaining = deadline - Date.now();
       if (remaining <= 0) break; // out of time — leave the rest uncached
-      const cover = await yahooResolveCover(env, isbn, "low", remaining);
+      const cover = await yahooResolveCover(env, isbn, "low", slotWait(remaining));
       if (cover === null) continue; // undetermined — don't cache, retry on a later POST
       if (cover) determined.set(isbn, cover); // found
       else needIchiba.push(isbn); // Yahoo confirmed none — fall through to 楽天市場
@@ -154,7 +169,7 @@ export async function resolveCovers(env: Env, isbns: string[]): Promise<Map<stri
     for (const isbn of needIchiba) {
       const remaining = deadline - Date.now();
       if (remaining <= 0) break; // out of time — leave the rest uncached
-      const found = await ichibaCovers(env, isbn, "low", remaining);
+      const found = await ichibaCovers(env, isbn, "low", slotWait(remaining));
       if (found === null) continue; // undetermined — don't cache, retry on a later POST
       if (!found.length) {
         needGoogle.push(isbn); // 楽天市場 confirmed none — fall through to Google

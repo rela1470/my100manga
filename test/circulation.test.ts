@@ -255,6 +255,29 @@ describe("キャッシュ暖機", () => {
     expect(r.attempted).toBe(0);
   });
 
+  it("閲覧者が表紙を取得中なら、暖機は何もせず譲る", async () => {
+    await seedSeries("C1", "テスト作品A", 3);
+    await seedCirculation([{ title: "テスト作品A", copies: 100_000_000 }]);
+    await refreshCirculation(env);
+
+    // 閲覧者が表紙取得中であることを、本番と同じ経路（限界器の presence）で登録する。
+    const limiter = env.RAKUTEN_LIMITER!.getByName("cover-queue");
+    await limiter.report("test-browser-0001", 5);
+
+    const paused = await warmNext(env, "circulation", "", 8);
+    expect(paused.paused).toBe(1);
+    expect(paused.attempted).toBe(0);
+    expect(paused.done).toBe(false);
+    // 同じところからやり直せるよう cursor は進めない。
+    expect(paused.cursor).toBeNull();
+
+    // 取得が終われば（pending 0）また動く。
+    await limiter.report("test-browser-0001", 0);
+    const resumed = await warmNext(env, "circulation", "", 8);
+    expect(resumed.paused).toBeUndefined();
+    expect(resumed.attempted).toBe(3);
+  });
+
   it("series は巻数の多いシリーズから順に進み、cursor で続きから再開できる", async () => {
     await seedSeries("C1", "巻の多い作品", 5);
     await seedSeries("C2", "巻の少ない作品", 2);

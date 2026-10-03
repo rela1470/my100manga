@@ -3397,6 +3397,12 @@ async function warmLoop() {
       progress.textContent = `中断しました: ${e.message}`;
       break;
     }
+    // 閲覧者が表紙を取得中。暖機は譲って待つ（進捗ゼロとして数えない）。
+    if (r.paused) {
+      progress.textContent = `${cached} 件 / 表紙を取得中の人がいるので待機中（${r.paused} 人）`;
+      await new Promise((resolve) => setTimeout(resolve, 5000));
+      continue;
+    }
     cached += r.cached;
     cursor = r.cursor || "";
     if (r.done) {

@@ -33,6 +33,8 @@ const MAX_IDLE = 5;
 // 要求のあいだに置く休み。resolveCovers が枠を待つので普段は不要だが、空振り（温め済みを
 // 読み飛ばすだけ）のときに連打しないよう少しだけ空ける。
 const IDLE_PAUSE_MS = 500;
+// 閲覧者が表紙を取得している間の待ち時間。暖機は何時間でも待てるので、利用者に譲る。
+const PAUSED_WAIT_MS = 5000;
 
 function arg(name, fallback = null) {
   const i = process.argv.indexOf(name);
@@ -95,6 +97,13 @@ async function warmScope(scope, limit, max, startCursor) {
     const q = new URLSearchParams({ scope, limit: String(limit) });
     if (cursor) q.set("cursor", cursor);
     const r = await call(`/api/admin/warm?${q}`, { method: "POST" });
+
+    // 閲覧者が表紙を取得中。暖機は譲って待つ（「進まない」として数えない）。
+    if (r.paused) {
+      process.stdout.write(`\r  ${cached} 件 / 取得中の人がいるので待機（${r.paused} 人）        `);
+      await sleep(PAUSED_WAIT_MS);
+      continue;
+    }
 
     cached += r.cached;
     attempted += r.attempted;

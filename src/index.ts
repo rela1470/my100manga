@@ -536,7 +536,7 @@ export default {
       // --- Public view page with OGP meta ---
       const viewMatch = path.match(/^\/l\/([A-Za-z0-9_-]+)$/);
       if (viewMatch && request.method === "GET") {
-        return await renderViewPage(env, viewMatch[1], url.origin);
+        return await renderViewPage(env, viewMatch[1], url.origin, url.searchParams.get("i") === "1");
       }
 
       // --- Share image (all 100 covers in one picture; og:image + X attachment) ---
@@ -638,7 +638,9 @@ function prewarmShareImage(env: Env, ctx: ExecutionContext, slug: string, host: 
   );
 }
 
-async function renderViewPage(env: Env, slug: string, origin: string): Promise<Response> {
+// noCard（?i=1）は画像付きで投稿するとき用の URL（public/share-x.js）。リンクカードの
+// メタタグを出さないので、X 等がカードを作らず添付画像の邪魔をしない。
+async function renderViewPage(env: Env, slug: string, origin: string, noCard = false): Promise<Response> {
   const data = await getListData(env, slug);
   // ブラウザで開かれるページなので JSON の 404 ではなくトップへ戻し、そこでモーダルを出す。
   if (!data) {
@@ -652,7 +654,7 @@ async function renderViewPage(env: Env, slug: string, origin: string): Promise<R
   const templateRes = await env.ASSETS.fetch(new Request(`${origin}/view.html`));
   let html = await templateRes.text();
 
-  const meta = buildOgp(data, `${origin}/l/${slug}`, `${origin}/share/${slug}/og.jpg?v=${await shareImageHash(data)}`);
+  const meta = buildOgp(data, `${origin}/l/${slug}`, `${origin}/share/${slug}/og.jpg?v=${await shareImageHash(data)}`, noCard);
   const aff = affIds(env);
   const injected =
     `<script>window.__LIST__=${safeJson(data)};` +
@@ -670,7 +672,7 @@ async function renderViewPage(env: Env, slug: string, origin: string): Promise<R
   });
 }
 
-function buildOgp(data: MangaList, pageUrl: string, image: string): string {
+function buildOgp(data: MangaList, pageUrl: string, image: string, noCard = false): string {
   const owner = data.owner_name ? `${data.owner_name}さん` : "誰か";
   const title = `${owner}を構成する100の漫画`;
   const titles = data.items
@@ -680,6 +682,13 @@ function buildOgp(data: MangaList, pageUrl: string, image: string): string {
     .join("、");
   const desc = titles ? `${titles} など${data.items.length}作品` : `${data.items.length}作品のおすすめ漫画リスト`;
 
+  if (noCard) {
+    return [
+      `<meta name="description" content="${escapeHtml(desc)}">`,
+      `<link rel="canonical" href="${escapeHtml(pageUrl)}">`,
+      `<title>${escapeHtml(title)} | My 100 Manga</title>`,
+    ].join("\n  ");
+  }
   const tags = [
     `<meta property="og:type" content="website">`,
     `<meta property="og:site_name" content="My 100 Manga">`,

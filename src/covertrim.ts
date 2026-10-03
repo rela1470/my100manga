@@ -57,10 +57,54 @@ function contentBox(d: Uint8ClampedArray, W: number, H: number) {
   return { left, top, right, bot };
 }
 
+// デコード前の寸法上限。RGBA に展開すると幅×高さ×4 バイト食うので（3000×3000 で 36MB、
+// isolate は 128MB）、表紙として普通の大きさ（Yahoo /i/l/ 600px、もったいない本舗 700px）を
+// 十分超えるものはデコードせず、呼び出し側に原画のまま使わせる。
+const MAX_DECODE_SIDE = 1500;
+
+/** JPEG の幅・高さをヘッダ（SOF マーカー）から読む。デコードはしない。JPEG でない・
+ *  途中で切れている・SOF が見つからないときは null。 */
+export function jpegSize(buf: ArrayBuffer): { width: number; height: number } | null {
+  const b = new Uint8Array(buf);
+  if (b.length < 4 || b[0] !== 0xff || b[1] !== 0xd8) return null; // SOI
+  let i = 2;
+  while (i + 4 <= b.length) {
+    if (b[i] !== 0xff) return null; // マーカー境界がずれている＝壊れている
+    const m = b[i + 1];
+    if (m === 0xff) {
+      i++; // fill byte
+      continue;
+    }
+    if (m === 0xd8 || m === 0x01 || (m >= 0xd0 && m <= 0xd7)) {
+      i += 2; // 長さを持たないマーカー
+      continue;
+    }
+    if (m === 0xd9 || m === 0xda) return null; // EOI / SOS より前に SOF が無い
+    const len = (b[i + 2] << 8) | b[i + 3];
+    if (len < 2) return null;
+    // SOF0〜SOF15（DHT=C4, JPG=C8, DAC=CC を除く）
+    if (m >= 0xc0 && m <= 0xcf && m !== 0xc4 && m !== 0xc8 && m !== 0xcc) {
+      if (i + 9 > b.length) return null;
+      const height = (b[i + 5] << 8) | b[i + 6];
+      const width = (b[i + 7] << 8) | b[i + 8];
+      return width && height ? { width, height } : null;
+    }
+    i += 2 + len;
+  }
+  return null;
+}
+
+/** デコードしてよい大きさの JPEG か（寸法が読めて、どちらの辺も MAX_DECODE_SIDE 以下）。 */
+function decodable(buf: ArrayBuffer): boolean {
+  const size = jpegSize(buf);
+  return !!size && size.width <= MAX_DECODE_SIDE && size.height <= MAX_DECODE_SIDE;
+}
+
 // Returns a trimmed JPEG, or null when there's nothing worth trimming (not square,
 // no detectable content, or content already fills the frame) — callers then keep
 // the original image.
 export async function trimWhitespace(jpeg: ArrayBuffer): Promise<ArrayBuffer | null> {
+  if (!decodable(jpeg)) return null; // too large / not a readable JPEG — keep the original
   if (!decReady) decReady = (initDecode as (m: WebAssembly.Module) => Promise<void>)(DEC_WASM);
   await decReady;
   const img = (await decodeJpeg(jpeg)) as unknown as RgbaImage;
@@ -141,6 +185,7 @@ function frameBox(d: Uint8ClampedArray, W: number, H: number) {
 /** Crop a もったいない本舗 listing image down to the cover scan, or null when the
  *  frame can't be confidently separated (callers then keep the original). */
 export async function trimShopFrame(jpeg: ArrayBuffer): Promise<ArrayBuffer | null> {
+  if (!decodable(jpeg)) return null; // too large / not a readable JPEG — keep the original
   if (!decReady) decReady = (initDecode as (m: WebAssembly.Module) => Promise<void>)(DEC_WASM);
   await decReady;
   const img = (await decodeJpeg(jpeg)) as unknown as RgbaImage;

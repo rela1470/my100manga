@@ -7,6 +7,8 @@ import { Env } from "./types";
 // （同じ isolate 内で Promise を共有する手もあるが、Workers では別リクエストの I/O を待つと
 //   取り消されることがあるので使わない。）
 // 結果がまだ一度も無いとき（初回）は待つしかないので、全員が計算する（その 1 回だけ）。
+// ctx を渡すと、取り合いに勝った要求も古い結果をすぐ返し、再計算は waitUntil で裏で行う
+// （重い集計の間ユーザを待たせない）。
 
 interface Keys {
   json: string; // 結果 JSON を入れる meta.key
@@ -26,7 +28,8 @@ export async function readMaterialized<T>(
   env: Env,
   keys: Keys,
   ttlMs: number,
-  compute: () => Promise<T>
+  compute: () => Promise<T>,
+  ctx?: { waitUntil(p: Promise<unknown>): void }
 ): Promise<T> {
   const rows = await env.DB.prepare(`SELECT key, value FROM meta WHERE key IN (?, ?)`)
     .bind(keys.json, keys.at)
@@ -51,6 +54,15 @@ export async function readMaterialized<T>(
       .bind(String(now), keys.at, atRaw)
       .run();
     if (!claim.meta?.changes) return cached;
+    if (ctx) {
+      const stale = cached;
+      ctx.waitUntil(
+        compute()
+          .then((value) => store(env, keys, JSON.stringify(value), Date.now()))
+          .catch((err) => console.error("materialized recompute failed", keys.json, err))
+      );
+      return stale;
+    }
   }
 
   try {

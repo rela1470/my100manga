@@ -1,7 +1,8 @@
 import { excludeAdult } from "./site";
 import { Env } from "./types";
 import { headers, rakutenReady } from "./rakuten";
-import { awaitSlot, type Priority } from "./ratelimiter";
+import { pacedFetchJson, PROBE_TIMEOUT_MS, type Priority } from "./ratelimiter";
+import { isValidIsbn } from "./util";
 
 // 楽天市場 商品検索API — Tier 3 cover source behind 楽天ブックス and Yahoo!ショッピング.
 // Mainly rescues ムック / 絶版 volumes no new-book store lists anymore, via used-book
@@ -45,7 +46,11 @@ const NO_IMAGE_RE = /no[_-]?im(?:age|g)/i;
 async function isRealCover(url: string): Promise<boolean> {
   if (!url || NO_IMAGE_RE.test(url)) return false;
   try {
-    const res = await fetch(url, { method: "HEAD", cf: { cacheEverything: true, cacheTtl: 86400 } });
+    const res = await fetch(url, {
+      method: "HEAD",
+      cf: { cacheEverything: true, cacheTtl: 86400 },
+      signal: AbortSignal.timeout(PROBE_TIMEOUT_MS),
+    });
     if (!res.ok) return false;
     const len = Number(res.headers.get("content-length") ?? "0");
     return len <= 0 || len >= COVER_MIN_BYTES;
@@ -84,7 +89,7 @@ export async function ichibaCovers(
   maxWaitMs?: number,
   limit = 6,
 ): Promise<IchibaCover[] | null> {
-  if (!rakutenReady(env) || !/^97[89]\d{10}$/.test(isbn)) return [];
+  if (!rakutenReady(env) || !/^97[89]\d{10}$/.test(isbn) || !isValidIsbn(isbn)) return [];
   const qs = new URLSearchParams({
     format: "json",
     formatVersion: "2",
@@ -95,18 +100,10 @@ export async function ichibaCovers(
     imageFlag: "1",
     availability: "0", // include sold-out listings — we only want the image
   });
-  if (!(await awaitSlot(env, "global", priority, maxWaitMs))) return null;
-  let data: any = null;
-  for (let attempt = 0; attempt < 2; attempt++) {
-    const res = await fetch(`${ICHIBA_SEARCH}?${qs.toString()}`, { headers: headers(env) });
-    if (res.status === 429) {
-      await new Promise((r) => setTimeout(r, 1200));
-      continue;
-    }
-    if (!res.ok) return null;
-    data = await res.json().catch(() => null);
-    break;
-  }
+  // Slot, timeout and the 429 retry (re-paced on the shared Rakuten lane) live in pacedFetchJson.
+  const data: any = await pacedFetchJson(
+    env, "global", priority, `${ICHIBA_SEARCH}?${qs.toString()}`, { headers: headers(env) }, maxWaitMs,
+  );
   if (!data) return null;
 
   // keyword matches anywhere in the item text, so an item that merely mentions the

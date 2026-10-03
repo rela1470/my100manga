@@ -4,7 +4,16 @@ import { describe, expect, it } from "vitest";
 import { adminDeleteList, adminRedactReport } from "../src/admin";
 import { deleteAccount } from "../src/account";
 import { coverSource, creditLine, isLinkPreviewBot, shareCoverUrl } from "../src/shareImage";
-import { bumpViewEpoch, getListSnapshot, ogpWorkTitles, SNAPSHOT_MAX_AGE_MS, snapshotKey } from "../src/viewSnapshot";
+import {
+  bumpsViewEpoch,
+  bumpViewEpoch,
+  getListSnapshot,
+  ogpWorkTitles,
+  REBUILD_MIN_INTERVAL_MS,
+  SNAPSHOT_MAX_AGE_MS,
+  snapshotKey,
+  viewCacheKeys,
+} from "../src/viewSnapshot";
 import type { ListItem, MangaList } from "../src/types";
 import { BROWSER_UA, createList, updateList, view } from "./helpers";
 
@@ -17,6 +26,16 @@ async function readSnapshot(slug: string): Promise<{ v: number; built_at: number
 
 async function getJson(slug: string) {
   return SELF.fetch(`https://example.com/api/lists/${slug}`, { headers: { "user-agent": BROWSER_UA } });
+}
+
+/** waitUntil で書かれるもの（colo キャッシュ等）を少しだけ待つ。 */
+async function poll<T>(read: () => Promise<T | null>, tries = 50): Promise<T | null> {
+  for (let i = 0; i < tries; i++) {
+    const v = await read();
+    if (v) return v;
+    await new Promise((r) => setTimeout(r, 10));
+  }
+  return null;
 }
 
 function fakeCtx() {
@@ -75,17 +94,34 @@ describe("閲覧スナップショット（R2 view/<slug>.json）", () => {
     expect(fresh!.built_at).toBeGreaterThan(snap.built_at);
   });
 
-  it("管理者の変更で世代が上がると、新しいスナップショットでもすぐ作り直す", async () => {
+  it("管理者の変更で世代が上がると、古い版を返しつつ裏で作り直す", async () => {
     const { slug } = await createList({ owner_name: "最新" });
     const snap = (await readSnapshot(slug))!;
     snap.list.owner_name = "管理者変更前";
+    snap.built_at = Date.now() - REBUILD_MIN_INTERVAL_MS - 1000;
     await bucket().put(snapshotKey(slug), JSON.stringify(snap));
-    const { ctx } = fakeCtx();
-    expect((await getListSnapshot(env, ctx, slug))?.owner_name).toBe("管理者変更前");
 
     await bumpViewEpoch(env);
-    expect((await getListSnapshot(env, ctx, slug))?.owner_name).toBe("最新");
+    // 同期で作り直すと、管理者が 1 操作するたびに人気リストの閲覧が一斉に D1 解決で待たされる。
+    const { ctx, settle } = fakeCtx();
+    expect((await getListSnapshot(env, ctx, slug))?.owner_name).toBe("管理者変更前");
+    await settle();
     expect((await readSnapshot(slug))?.list.owner_name).toBe("最新");
+  });
+
+  it("世代が上がっても、作り直したばかりのスナップショットはそのまま使う", async () => {
+    const { slug } = await createList({ owner_name: "最新" });
+    const snap = (await readSnapshot(slug))!;
+    snap.list.owner_name = "さっき作った版";
+    snap.built_at = Date.now();
+    await bucket().put(snapshotKey(slug), JSON.stringify(snap));
+
+    // 管理者の連続操作で、同じリストを何度も作り直さない（次の閲覧で作り直す）。
+    await bumpViewEpoch(env);
+    const { ctx, settle } = fakeCtx();
+    expect((await getListSnapshot(env, ctx, slug))?.owner_name).toBe("さっき作った版");
+    await settle();
+    expect((await readSnapshot(slug))?.list.owner_name).toBe("さっき作った版");
   });
 
   it("管理者削除でスナップショットと共有画像を消し、閲覧ページは 404 のページになる", async () => {
@@ -102,6 +138,48 @@ describe("閲覧スナップショット（R2 view/<slug>.json）", () => {
     expect(res.headers.get("content-type")).toContain("text/html");
     expect(await res.text()).toContain(`href="/"`);
     expect((await getJson(slug)).status).toBe(404);
+  });
+
+  // /l/<ランダム> の総当たりで毎回 R2・D1 を叩かせないよう、存在しない slug の 404 も
+  // colo キャッシュに短く置く（ブラウザには no-store で返す）。
+  it("存在しない slug の 404 は colo に置くが、その slug で公開したら見える", async () => {
+    const slug = "ghost-slug";
+    const res = await view(slug);
+    expect(res.status).toBe(404);
+    expect(res.headers.get("cache-control")).toBe("no-store");
+
+    const keys = await viewCacheKeys(env, "https://example.com", slug);
+    const cached = await poll(async () => (await caches.default.match(keys.page)) ?? null);
+    expect(cached?.status).toBe(404);
+    // 2 回目も 404（ここは colo キャッシュから。ブラウザ向けは no-store のまま）。
+    const again = await view(slug);
+    expect(again.status).toBe(404);
+    expect(again.headers.get("cache-control")).toBe("no-store");
+
+    // 公開すると、その colo のキャッシュは消される（出来たてが 404 のまま見えない）。
+    await createList({ slug, owner_name: "あとから公開" });
+    const published = await view(slug);
+    expect(published.status).toBe(200);
+    expect(await published.text()).toContain("あとから公開");
+  });
+
+  it("存在しない slug の JSON 404 も colo に置き、ブラウザには no-store で返す", async () => {
+    const slug = "ghost-json";
+    const first = await getJson(slug);
+    expect(first.status).toBe(404);
+    expect(first.headers.get("cache-control")).toBe("no-store");
+
+    const keys = await viewCacheKeys(env, "https://example.com", slug);
+    const cached = await poll(async () => (await caches.default.match(keys.json)) ?? null);
+    expect(cached?.status).toBe(404);
+    const again = await getJson(slug);
+    expect(again.status).toBe(404);
+    expect(again.headers.get("cache-control")).toBe("no-store");
+
+    await createList({ slug, owner_name: "あとから公開" });
+    const published = await getJson(slug);
+    expect(published.status).toBe(200);
+    expect(((await published.json()) as MangaList).owner_name).toBe("あとから公開");
   });
 
   it("存在しない slug の削除では他のリストの R2 を触らない", async () => {
@@ -231,5 +309,40 @@ describe("共有画像の出典クレジット", () => {
     expect(isLinkPreviewBot("Mozilla/5.0 (compatible; Bluesky Cardyb/1.1)")).toBe(true);
     expect(isLinkPreviewBot(BROWSER_UA)).toBe(false);
     expect(isLinkPreviewBot(null)).toBe(false);
+  });
+});
+
+// 世代を上げると全リストの閲覧キャッシュが外れて作り直しになるので、表示に効かない admin 操作
+// （通報の却下・売上の手動取得など）では上げない。迷うものは上げる側（既定）。
+describe("bumpsViewEpoch（admin の操作で表示データの世代を上げるか）", () => {
+  const req = (method: string, path: string) => new Request(`https://example.com${path}`, { method });
+
+  it("表示に効く admin の更新は上げる", () => {
+    expect(bumpsViewEpoch(req("POST", "/api/admin/series-merges"))).toBe(true);
+    expect(bumpsViewEpoch(req("POST", "/api/admin/series-reports/C123"))).toBe(true);
+    expect(bumpsViewEpoch(req("POST", "/api/admin/cover-suggestions/abc/approve"))).toBe(true);
+    expect(bumpsViewEpoch(req("POST", "/api/admin/reports/12/redact"))).toBe(true);
+    expect(bumpsViewEpoch(req("DELETE", "/api/admin/volume-reports/C123/1?confirm=1"))).toBe(true);
+  });
+
+  it("却下・取得だけの admin 操作では上げない", () => {
+    for (const [m, p] of [
+      ["POST", "/api/admin/sales-ranking/snapshot"],
+      ["POST", "/api/admin/merge-candidates/dismiss"],
+      ["POST", "/api/admin/cover-suggestions/abc/dismiss"],
+      ["DELETE", "/api/admin/merge-requests/C1/C2"],
+      ["DELETE", "/api/admin/split-requests/C1"],
+      ["DELETE", "/api/admin/series-reports/C123"],
+      ["DELETE", "/api/admin/volume-title-reports/9784000000002"],
+      ["DELETE", "/api/admin/reports/12"],
+      ["DELETE", "/api/admin/volume-reports/C123/1"], // 確定（confirm=1）でなければ却下
+    ] as const) {
+      expect([m, p, bumpsViewEpoch(req(m, p))]).toEqual([m, p, false]);
+    }
+  });
+
+  it("読み取りと admin 以外は上げない", () => {
+    expect(bumpsViewEpoch(req("GET", "/api/admin/stats"))).toBe(false);
+    expect(bumpsViewEpoch(req("POST", "/api/lists"))).toBe(false);
   });
 });

@@ -1,9 +1,10 @@
 import { Env } from "./types";
-import { googleCover } from "./util";
+import { googleCover, isValidIsbn } from "./util";
 import { rakutenResolveFull, rakutenReady } from "./rakuten";
 import { yahooResolveCover, yahooReady } from "./yahoo";
 import { ichibaCovers } from "./ichiba";
 import { bookMetaInsertFromRakuten } from "./book";
+import { PROBE_TIMEOUT_MS } from "./ratelimiter";
 
 // Google Books returns a ~10.8KB gray "image not available" placeholder when an
 // ISBN has no cover. Real covers we've seen are ≥12.6KB, so anything smaller than
@@ -18,8 +19,11 @@ export function googleEnabled(env: Env): boolean {
 }
 // Rakuten's ~1 req/s cap is now enforced globally by the RakutenRateLimiter DO
 // (each call reserves a slot). This only bounds how many probes wait in flight
-// at once; the pacing itself comes from the limiter.
-const RAKUTEN_CONCURRENCY = 4;
+// at once; the pacing itself comes from the limiter. Kept at 2 because the limiter
+// hands a lane at most 2 slots in a row (src/ratelimiter.ts MAX_RUN / MAX_BOOK_AHEAD):
+// asking for more just gets refused and wastes the round trip — the covers resolved
+// per call is the same either way (measured: 0.92/s at any concurrency).
+const RAKUTEN_CONCURRENCY = 2;
 
 // Hard wall-clock budget for one resolveCovers call. Rakuten's global 1 req/s
 // limiter serializes cache misses at ~1.1s each, so a POST /api/covers carrying
@@ -73,7 +77,10 @@ export async function resolveCovers(env: Env, isbns: string[]): Promise<Map<stri
   const out = await readCachedCovers(env, isbns);
   const uniq = [...new Set(isbns.filter(Boolean))];
 
-  const toResolve = uniq.filter((i) => !out.has(i));
+  // Only well-formed ISBNs (check digit included) go to the network. Anything else is
+  // silently dropped: not resolved and NOT cached, so junk ids in a POST /api/covers
+  // can neither spend API slots nor leave "" rows in `covers`.
+  const toResolve = uniq.filter((i) => !out.has(i) && isValidIsbn(i));
   if (toResolve.length === 0) return out;
 
   const now = Date.now();
@@ -278,16 +285,25 @@ export function firstCover(isbns: string[], covers: Map<string, string>): string
 /** Google cover URL for an ISBN if a real cover exists there, else "" (used by
  *  the correction page to offer Google as a candidate). */
 export async function probeGoogleCover(env: Env, isbn: string): Promise<string> {
-  if (!isbn || !googleEnabled(env)) return "";
+  if (!isbn || !googleEnabled(env) || !isValidIsbn(isbn)) return "";
   return (await probeGoogle(isbn)) ? googleCover(isbn) : "";
 }
 
 async function probeGoogle(isbn: string): Promise<boolean> {
   try {
-    const res = await fetch(googleCover(isbn), { cf: { cacheEverything: true, cacheTtl: 86400 } });
-    if (!res.ok) return false;
+    const res = await fetch(googleCover(isbn), {
+      cf: { cacheEverything: true, cacheTtl: 86400 },
+      signal: AbortSignal.timeout(PROBE_TIMEOUT_MS),
+    });
+    if (!res.ok) {
+      await res.body?.cancel().catch(() => {});
+      return false;
+    }
     const len = Number(res.headers.get("content-length") ?? "0");
-    if (len > 0) return len >= COVER_MIN_BYTES;
+    if (len > 0) {
+      await res.body?.cancel().catch(() => {});
+      return len >= COVER_MIN_BYTES;
+    }
     const buf = await res.arrayBuffer();
     return buf.byteLength >= COVER_MIN_BYTES;
   } catch {

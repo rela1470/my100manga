@@ -400,3 +400,22 @@ export function errorPageHtml(siteName = "My 100 Manga"): Response {
     headers: { "content-type": "text/html; charset=utf-8", "cache-control": "no-store" },
   });
 }
+
+/** チェックディジットまで正しい ISBN か。ISBN-13（978/979 始まり、EAN のチェックディジット）か
+ *  ISBN-10（mod 11、末尾 X 可）。ハイフン等は許さない（呼び出し側は保存済みの値をそのまま渡す）。
+ *  外部 API（楽天・Yahoo）へ渡す前の入口チェック用: でたらめな値で優先レーンを埋められたり、
+ *  空の結果を covers / book_meta に溜められたりしないように。 */
+export function isValidIsbn(raw: string): boolean {
+  const s = String(raw ?? "");
+  if (/^97[89]\d{10}$/.test(s)) {
+    let sum = 0;
+    for (let i = 0; i < 12; i++) sum += (i % 2 === 0 ? 1 : 3) * Number(s[i]);
+    return (10 - (sum % 10)) % 10 === Number(s[12]);
+  }
+  if (/^\d{9}[\dX]$/.test(s)) {
+    let sum = 0;
+    for (let i = 0; i < 10; i++) sum += (10 - i) * (s[i] === "X" ? 10 : Number(s[i]));
+    return sum % 11 === 0;
+  }
+  return false;
+}

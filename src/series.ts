@@ -11,6 +11,8 @@ import {
   unifyVolumeLabel,
 } from "./util";
 import { readCachedCovers, firstCover } from "./covers";
+import { edgeCacheKey, purgeEdgeCache, withEdgeCache } from "./edgeCache";
+import { getViewEpoch } from "./viewSnapshot";
 import {
   getSupplementVolumes,
   readCachedSupplement,
@@ -48,6 +50,32 @@ interface OutVolume {
   pubdate: string;
   cover_url: string;
   correction: boolean; // true = user-submitted correction (gets the "間違っています" flag)
+}
+
+// 巻一覧（GET /api/series/:id/volumes、まとまりの G<ISBN> も同じ）のエッジキャッシュ。1 回で
+// D1 を 10 本ほど引く一番重い閲覧系で、検索結果から巻一覧を開くたびに走る。元になるマスタは
+// 月次の取り込みでしか変わらず、管理者の変更（結合・名前修正・巻の非表示）は表示データの世代
+// （src/viewSnapshot.ts view_epoch）でキーが変わるので、短く持つだけでよく当たる。応答に閲覧者
+// 依存の値は含まれない（通報の有無などは入らない）のでデータセンタ単位で共有してよい。
+// 利用者の手動追加・補完取得は書いた本人がすぐ見に来るので、その colo のキーをその場で消す。
+const VOLUMES_EDGE_TTL_SEC = 60;
+
+async function volumesCacheKey(env: Env, id: string): Promise<Request> {
+  return edgeCacheKey(env, "/api/series/volumes", { id, e: await getViewEpoch(env) });
+}
+
+/** build() の結果を巻一覧のエッジキャッシュ越しに返す（200 のときだけ入れる）。 */
+export async function cachedSeriesVolumes(
+  env: Env,
+  id: string,
+  build: () => Promise<Response>
+): Promise<Response> {
+  return withEdgeCache(await volumesCacheKey(env, id), VOLUMES_EDGE_TTL_SEC, build);
+}
+
+/** この colo の巻一覧キャッシュを消す（手動追加・補完取得の直後）。他の colo は TTL 待ち。 */
+export async function purgeSeriesVolumesCache(env: Env, id: string): Promise<void> {
+  await purgeEdgeCache([await volumesCacheKey(env, id)]);
 }
 
 // All volumes of a series, in reading order. Powers the "add all volumes" button.

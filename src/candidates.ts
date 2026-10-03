@@ -1,10 +1,10 @@
 import { Env } from "./types";
-import { badRequest, json } from "./util";
+import { badRequest, isValidIsbn, json } from "./util";
 import { coverSuggestionsEnabled } from "./corrections";
 import { probeGoogleCover } from "./covers";
 import { probeYahooCover } from "./yahoo";
 import { ichibaCovers } from "./ichiba";
-import { rakutenResolveFull, rakutenSearchTitle, RakutenBook } from "./rakuten";
+import { rakutenResolveFull, rakutenSearchTitle, rakutenSearchTitleOrSkip, RakutenBook } from "./rakuten";
 import { bookMetaInsertFromRakuten, cacheBookMetaBatch } from "./book";
 import { findAdultIsbns } from "./adult";
 
@@ -29,11 +29,14 @@ const STAGES: Stage[] = ["isbn", "title", "ichiba"];
 
 export async function coverCandidates(request: Request, env: Env): Promise<Response> {
   const url = new URL(request.url);
-  const isbn = (url.searchParams.get("isbn") ?? "").trim().slice(0, 20);
+  const rawIsbn = (url.searchParams.get("isbn") ?? "").trim().slice(0, 20);
+  // チェックディジットまで正しい ISBN だけ外部 API（高優先レーン）に回す。不正な値は「ISBN 無し」
+  // と同じ扱い（isbn / ichiba 段は空の候補を返す）。
+  const isbn = isValidIsbn(rawIsbn) ? rawIsbn : "";
   const title = (url.searchParams.get("title") ?? "").trim().slice(0, 200);
   const q = (url.searchParams.get("q") ?? "").trim().slice(0, 200);
   const stage = url.searchParams.get("stage") as Stage | null;
-  if (!isbn && !title && !q) return badRequest("isbn か title を指定してください");
+  if (!rawIsbn && !title && !q) return badRequest("isbn か title を指定してください");
   if (!q && !(stage && STAGES.includes(stage))) return badRequest("stage を指定してください");
 
   const candidates: Candidate[] = [];
@@ -142,7 +145,8 @@ export async function volumeCandidates(request: Request, env: Env): Promise<Resp
  *  (deduped by ISBN). Rakuten titles carry a trailing レーベル so the volume can't
  *  always be parsed — unmatched hits are still offered, just ranked lower. */
 async function searchVolume(env: Env, title: string, vnum: string) {
-  let hits = await rakutenSearchTitle(env, `${title} ${vnum}`, 30, { genre: false, priority: "high" });
+  let hits = await rakutenSearchTitleOrSkip(env, `${title} ${vnum}`, 30, { genre: false, priority: "high" });
+  if (hits === null) return []; // limiter refused — don't queue the broadening queries too
   if (!hits.length) hits = await searchTitleBroadening(env, title);
   const ordered = [...hits.filter((b) => b.volume === vnum), ...hits.filter((b) => b.volume !== vnum)];
   const seen = new Set<string>();
@@ -164,7 +168,8 @@ async function searchVolume(env: Env, title: string, vnum: string) {
  *  exact book — without broadening to unrelated titles. */
 async function searchOwnerQuery(env: Env, q: string): Promise<RakutenBook[]> {
   for (const v of ownerQueryVariants(q)) {
-    const hits = await rakutenSearchTitle(env, v, 30, { genre: false, priority: "high" });
+    const hits = await rakutenSearchTitleOrSkip(env, v, 30, { genre: false, priority: "high" });
+    if (hits === null) break; // limiter refused — stop rather than queue the next variant
     if (hits.length) return hits;
   }
   return [];
@@ -186,14 +191,20 @@ function volumePhrase(title: string): string {
   return m ? `${m[1].trim()}（${m[2]}）` : "";
 }
 
+// 1 回の候補検索で楽天に投げるタイトル検索の上限。タイトルは 200 字まで来るので、空白で
+// 区切るたびに 1 回ずつ縮めていくと数十回の直列呼び出し（各回に最大 30 件の HEAD）になりうる。
+const MAX_TITLE_QUERIES = 3;
+
 /** Rakuten's `title` search is a strict phrase match, so a compound MADB title
  *  ("冴えない彼女の育てかた 恋するメトロノーム 1") can return nothing even when the
  *  base series is stocked. Try the volume-stripped title first, then progressively
- *  broader prefixes, stopping at the first query that yields hits. */
-async function searchTitleBroadening(env: Env, rawTitle: string) {
-  const queries = titleQueries(rawTitle);
+ *  broader prefixes, stopping at the first query that yields hits — at most
+ *  MAX_TITLE_QUERIES calls, and none after the limiter refuses one. */
+async function searchTitleBroadening(env: Env, rawTitle: string): Promise<RakutenBook[]> {
+  const queries = titleQueries(rawTitle).slice(0, MAX_TITLE_QUERIES);
   for (const q of queries) {
-    const hits = await rakutenSearchTitle(env, q, 12, { genre: false, priority: "high" });
+    const hits = await rakutenSearchTitleOrSkip(env, q, 12, { genre: false, priority: "high" });
+    if (hits === null) break; // no slot / failed — don't queue more calls behind it
     if (hits.length) return hits;
   }
   return [];

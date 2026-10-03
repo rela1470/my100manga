@@ -226,8 +226,8 @@
     // の Cron を止めるために空で上書きする。
     // 事前に作るもの: D1・R2 バケット・Queue 2 本（`wrangler queues create`）・R18 ドメイン用の
     // Cloudflare Access アプリ・Google OAuth クライアント・Turnstile のホスト名登録。
-    // 注意: 閲覧ビーコンの consumer 振り分けは src/index.ts の VIEW_QUEUE_PREFIX
-    // （"my100manga-views" 直書き）で見ているので、下の queue 名にするなら先にそこを直す。
+    // 閲覧ビーコンの consumer 振り分けは src/index.ts の VIEW_QUEUE_MARK（"-views"）で見ている
+    // ので、閲覧ビーコン側のキュー名には "-views" を含めること。
     "r18": {
       "name": "my100shunga",
       "vars": {

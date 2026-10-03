@@ -1,5 +1,6 @@
 import { excludeAdult } from "./site";
 import { Env } from "./types";
+import { isValidIsbn } from "./util";
 
 // The 2026 Rakuten OpenAPI gateway rejects server-side calls unless they look
 // like a browser XHR from the app's registered site: a matching Referer/Origin
@@ -66,7 +67,11 @@ async function isRealCover(url: string): Promise<boolean> {
   if (!url) return false;
   if (/noimage/i.test(url)) return false; // Rakuten's placeholder filename
   try {
-    const res = await fetch(url, { method: "HEAD", cf: { cacheEverything: true, cacheTtl: 86400 } });
+    const res = await fetch(url, {
+      method: "HEAD",
+      cf: { cacheEverything: true, cacheTtl: 86400 },
+      signal: AbortSignal.timeout(PROBE_TIMEOUT_MS),
+    });
     if (!res.ok) return true;
     const len = Number(res.headers.get("content-length") ?? "0");
     if (len <= 0) return true; // unknown size — don't drop
@@ -82,7 +87,7 @@ function parseVolume(title: string): string {
   return m ? m[1] : "";
 }
 
-import { awaitSlot, type Priority } from "./ratelimiter";
+import { pacedFetchJson, PROBE_TIMEOUT_MS, type Priority } from "./ratelimiter";
 
 async function call(
   env: Env,
@@ -100,18 +105,8 @@ async function call(
     ...params,
   });
   const url = `${BOOKS_SEARCH}?${qs.toString()}`;
-  if (!(await awaitSlot(env, "global", priority, maxWaitMs))) return null;
-  for (let attempt = 0; attempt < 2; attempt++) {
-    const res = await fetch(url, { headers: headers(env) });
-    if (res.status === 429) {
-      // Rate limited: wait a beat and retry once, then give up (cover is optional).
-      await new Promise((r) => setTimeout(r, 1200));
-      continue;
-    }
-    if (!res.ok) return null;
-    return await res.json().catch(() => null);
-  }
-  return null;
+  // Slot, timeout and the 429 retry (re-paced on the same lane) live in pacedFetchJson.
+  return pacedFetchJson(env, "global", priority, url, { headers: headers(env) }, maxWaitMs);
 }
 
 function toBook(item: any): RakutenBook {
@@ -153,6 +148,9 @@ export async function rakutenResolveFull(
   maxWaitMs?: number,
 ): Promise<{ cover: string | null; meta: RakutenBookFull | null }> {
   if (!rakutenReady(env) || !isbn) return { cover: "", meta: null };
+  // A malformed ISBN can't match anything: skip the call (and the empty "determinate"
+  // record a caller would cache). Callers validate at their entry too; this is the net.
+  if (!isValidIsbn(isbn)) return { cover: "", meta: null };
   const data = await call(env, { isbn }, priority, maxWaitMs);
   if (data === null) return { cover: null, meta: null }; // undetermined
   const item = data?.Items?.[0]?.Item;
@@ -172,7 +170,9 @@ const ADULT = /アダルト|成人|成年|18禁|R-?18|官能/i; // R18版では�
  *  under a manga genre and nothing in its names looks adult; otherwise null. Rakuten
  *  Books only (never 楽天市場 / Yahoo: their marketplace listings include adult items). */
 export async function rakutenComicByIsbn(env: Env, isbn: string): Promise<RakutenBook | null> {
-  if (!rakutenReady(env) || !isbn) return null;
+  // ISBN search (src/search.ts) passes user input here on the high-priority lane, so
+  // anything that isn't a real ISBN (check digit included) never reaches Rakuten.
+  if (!rakutenReady(env) || !isValidIsbn(isbn)) return null;
   const item = (await call(env, { isbn }, "high"))?.Items?.[0]?.Item;
   if (!item?.title) return null;
   const genres = String(item.booksGenreId ?? "").split("/");
@@ -195,10 +195,23 @@ export async function rakutenSearchTitle(
   limit = 30,
   opts: { genre?: boolean; priority?: Priority } = {},
 ): Promise<RakutenBook[]> {
+  return (await rakutenSearchTitleOrSkip(env, title, limit, opts)) ?? [];
+}
+
+/** rakutenSearchTitle, but null when the call was NOT made (no rate-limit slot,
+ *  timeout, HTTP error) instead of []. Lets a caller trying several queries in a row
+ *  (src/candidates.ts) stop as soon as the limiter refuses, rather than queueing more. */
+export async function rakutenSearchTitleOrSkip(
+  env: Env,
+  title: string,
+  limit = 30,
+  opts: { genre?: boolean; priority?: Priority } = {},
+): Promise<RakutenBook[] | null> {
   if (!rakutenReady(env) || !title) return [];
   const params: Record<string, string> = { title, hits: String(Math.min(limit, 30)) };
   if (opts.genre !== false) params.booksGenreId = COMICS_GENRE;
   const data = await call(env, params, opts.priority ?? "low");
+  if (data === null) return null;
   const items: any[] = data?.Items ?? [];
   const books = items.map((x) => toBook(x?.Item)).filter((b) => b.cover_url);
   const real = await Promise.all(books.map((b) => isRealCover(b.cover_url)));

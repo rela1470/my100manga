@@ -7,6 +7,7 @@ import { excludeAdult } from "./site";
 import { mergeTargetsFor } from "./merge";
 import { attributeTitles, buildGroup, groupKey, resolveGroup, GroupRow, GroupVolume, UnlinkedGroup } from "./groups";
 import { edgeCacheKey, withEdgeCache } from "./edgeCache";
+import { getViewEpoch } from "./viewSnapshot";
 import { ADULT_BLOCK_MESSAGE, adultBlockMessage, findAdultIsbns, hasAdultTitleMatch } from "./adult";
 
 interface SeriesResult {
@@ -50,6 +51,15 @@ interface SeriesRow {
 // Volume-derived columns span the merge group (MEMBERS: the series plus any series an admin
 // merged into it, see src/merge.ts) so a merged card shows the combined count/cover.
 const MEMBERS = `(SELECT s.id UNION ALL SELECT m.absorbed_id FROM series_merge m WHERE m.target_id = s.id)`;
+// 巻数（カードの「全N巻」で、キーワード検索の並び順のキーでもある）。キーワード検索の 1 段目は
+// これだけを計算して並べるので、SERIES_COLS と同じ式を共有する（s.id だけを参照する）。
+const VOL_COUNT = `((SELECT COUNT(DISTINCT CASE WHEN v.volume_number IS NULL OR v.volume_number = ''
+                   THEN v.isbn ELSE v.volume_number END)
+           FROM volumes v WHERE v.series_id IN ${MEMBERS})
+         + COALESCE((SELECT json_array_length(sp.volumes_json)
+                      FROM series_supplement sp WHERE sp.series_id = s.id), 0)
+         + COALESCE((SELECT COUNT(*) FROM series_correction sc
+                      WHERE sc.series_id IN ${MEMBERS}), 0))`;
 const SERIES_COLS = `s.id, COALESCE(o.name, s.name) AS name, s.publisher, s.label,
         COALESCE((SELECT v.creator FROM volumes v WHERE v.series_id IN ${MEMBERS} AND v.creator != ''
            ORDER BY v.vol_sort, v.pubdate LIMIT 1), s.creator) AS creator,
@@ -57,13 +67,7 @@ const SERIES_COLS = `s.id, COALESCE(o.name, s.name) AS name, s.publisher, s.labe
            ORDER BY v.vol_sort, v.pubdate LIMIT 1), s.creators) AS creators,
         (SELECT v.isbn FROM volumes v WHERE v.series_id IN ${MEMBERS}
            ORDER BY v.vol_sort, v.pubdate LIMIT 1) AS first_isbn,
-        ((SELECT COUNT(DISTINCT CASE WHEN v.volume_number IS NULL OR v.volume_number = ''
-                   THEN v.isbn ELSE v.volume_number END)
-           FROM volumes v WHERE v.series_id IN ${MEMBERS})
-         + COALESCE((SELECT json_array_length(sp.volumes_json)
-                      FROM series_supplement sp WHERE sp.series_id = s.id), 0)
-         + COALESCE((SELECT COUNT(*) FROM series_correction sc
-                      WHERE sc.series_id IN ${MEMBERS}), 0)) AS vol_count,
+        ${VOL_COUNT} AS vol_count,
         EXISTS(SELECT 1 FROM series_supplement sp WHERE sp.series_id = s.id) AS probed,
         EXISTS(SELECT 1 FROM volumes v WHERE v.series_id IN ${MEMBERS}
                  AND ((v.volume_number GLOB '[0-9]*' AND NOT v.volume_number GLOB '*[^0-9]*')
@@ -99,9 +103,9 @@ const PAGE = 30;
 const SEARCH_MAX_OFFSET = 300;
 // キーワード検索の結果をエッジ（Cache API）で持つ秒数。検索は series / volumes を '%q%' の LIKE で
 // 全行なめる一番重い読み取りで、マスタは月次取り込みと管理者の結合・修正でしか変わらないので
-// 10 分遅れてよい。表紙はキャッシュ済みのものだけ返し、空欄はクライアントが POST /api/covers で
+// 1 時間遅れてよい。表紙はキャッシュ済みのものだけ返し、空欄はクライアントが POST /api/covers で
 // 埋めるので、古い結果でも表示は崩れない。
-const SEARCH_CACHE_SEC = 600;
+const SEARCH_CACHE_SEC = 3600;
 
 // Search the MADB master (series table). Results are series-level; the client
 // then pulls volumes via /api/series/:id/volumes to add a single volume or the
@@ -123,10 +127,14 @@ export async function handleSearch(request: Request, env: Env): Promise<Response
   const isbn = isbnQuery(q);
   if (isbn) return searchByIsbn(env, isbn);
 
-  // キーは正規化した検索語（normTitle: 空白除去・小文字化）と offset。検索の照合は全部 normTitle /
-  // searchKey 後の文字列で行うので、空白や大文字小文字だけ違う検索語は同じ結果になる。
-  return withEdgeCache(edgeCacheKey(env, "/api/search", { q: normTitle(q), offset }), SEARCH_CACHE_SEC, () =>
-    searchByKeyword(env, q, offset)
+  // キーは正規化した検索語（normTitle: 空白除去・小文字化）と offset、それに表示データの世代
+  // （src/viewSnapshot.ts）。検索の照合は全部 normTitle / searchKey 後の文字列で行うので、空白や
+  // 大文字小文字だけ違う検索語は同じ結果になる。世代を混ぜてあるので、管理者が結合・名前修正を
+  // したら SEARCH_CACHE_SEC を待たずに鍵が変わる（長く持たせても反映は遅れない）。
+  return withEdgeCache(
+    edgeCacheKey(env, "/api/search", { q: normTitle(q), offset, e: await getViewEpoch(env) }),
+    SEARCH_CACHE_SEC,
+    () => searchByKeyword(env, q, offset)
   );
 }
 
@@ -179,21 +187,41 @@ async function searchByKeyword(env: Env, q: string, offset: number): Promise<Res
   const hiraganaQuery = /^[\p{Script=Hiragana}ー]+$/u.test(nq);
   const titleSub = `WHEN s.name_norm LIKE ? ESCAPE '\\' OR ${nameSearch} LIKE ? ESCAPE '\\' THEN 4`;
   const kanaEdge = `WHEN ('|' || s.name_kana_norm || '|') LIKE ? ESCAPE '\\' OR ('|' || s.name_kana_norm || '|') LIKE ? ESCAPE '\\' THEN ${hiraganaQuery ? 5 : 3}`;
+  // 並び順は mt DESC, vol_count DESC, num_items DESC, id。SERIES_COLS は相関サブクエリが多く、
+  // 1 文で ORDER BY すると当たった全行（「の」で 3 万件超）について計算してから LIMIT するので、
+  // 段階に分けて重い列はページの行だけで計算する（並び・結果は 1 文のときと同じ）:
+  //   hit  … 当たった行の id / num_items / mt だけ（LIKE の全行走査はここ 1 回）
+  //   tier … mt ごとの件数と、その段より前の件数（before）
+  //   win  … このページ（offset から PAGE+1 行）にかかる段だけ。ほかの段の行は前後どちらかに
+  //          まるごと並ぶので巻数を見なくてよい
+  //   page … win の段の行だけ巻数（VOL_COUNT）を出して並べ、段の先頭からの位置で切り出す
+  // 最後に page の ≤PAGE+1 行だけ SERIES_COLS を計算し、同じキーで並べ直す。
   const res = await env.DB.prepare(
-    `SELECT ${SERIES_COLS},
-            CASE WHEN s.name_norm = ? OR ${nameSearch} = ? OR ('|' || s.name_kana_norm || '|') LIKE ? ESCAPE '\\' THEN 6
-                 WHEN s.name_norm LIKE ? ESCAPE '\\' OR ${nameSearch} LIKE ? ESCAPE '\\' THEN 5
-                 ${hiraganaQuery ? kanaEdge : titleSub}
-                 ${hiraganaQuery ? titleSub : kanaEdge}
-                 WHEN s.name_kana_norm LIKE ? ESCAPE '\\' THEN 2
-                 ELSE 1 END AS mt
-     FROM series s
+    `WITH hit AS MATERIALIZED (
+       SELECT s.id, s.num_items,
+              CASE WHEN s.name_norm = ? OR ${nameSearch} = ? OR ('|' || s.name_kana_norm || '|') LIKE ? ESCAPE '\\' THEN 6
+                   WHEN s.name_norm LIKE ? ESCAPE '\\' OR ${nameSearch} LIKE ? ESCAPE '\\' THEN 5
+                   ${hiraganaQuery ? kanaEdge : titleSub}
+                   ${hiraganaQuery ? titleSub : kanaEdge}
+                   WHEN s.name_kana_norm LIKE ? ESCAPE '\\' THEN 2
+                   ELSE 1 END AS mt
+       FROM series s
+       WHERE (s.name_norm LIKE ? ESCAPE '\\' OR ${nameSearch} LIKE ? ESCAPE '\\' OR s.name_kana_norm LIKE ? ESCAPE '\\'
+              OR ${creatorNorm} LIKE ? ESCAPE '\\')
+         AND EXISTS (SELECT 1 FROM volumes v WHERE v.series_id = s.id)),
+     tier AS (
+       SELECT mt, COUNT(*) AS n, SUM(COUNT(*)) OVER (ORDER BY mt DESC) - COUNT(*) AS before
+       FROM hit GROUP BY mt),
+     win AS (SELECT mt, before FROM tier WHERE before < ${offset + PAGE + 1} AND before + n > ${offset}),
+     page AS (
+       SELECT s.id, s.mt, s.num_items, ${VOL_COUNT} AS vol_count
+       FROM hit s JOIN win w ON w.mt = s.mt
+       ORDER BY s.mt DESC, vol_count DESC, s.num_items DESC, s.id
+       LIMIT ${PAGE + 1} OFFSET ${offset} - (SELECT COALESCE(MIN(before), 0) FROM win))
+     SELECT ${SERIES_COLS}, p.mt
+     FROM page p JOIN series s ON s.id = p.id
      LEFT JOIN series_name_override o ON o.series_id = s.id
-     WHERE (s.name_norm LIKE ? ESCAPE '\\' OR ${nameSearch} LIKE ? ESCAPE '\\' OR s.name_kana_norm LIKE ? ESCAPE '\\'
-            OR ${creatorNorm} LIKE ? ESCAPE '\\')
-       AND EXISTS (SELECT 1 FROM volumes v WHERE v.series_id = s.id)
-     ORDER BY mt DESC, vol_count DESC, s.num_items DESC, s.id
-     LIMIT ${PAGE + 1} OFFSET ${offset}`
+     ORDER BY p.mt DESC, p.vol_count DESC, p.num_items DESC, p.id`
   )
     .bind(nq, sq, kanaExact, prefix, prefixS,
           ...(hiraganaQuery ? [kanaPrefix, kanaSuffix, like, likeS] : [like, likeS, kanaPrefix, kanaSuffix]),

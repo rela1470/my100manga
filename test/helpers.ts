@@ -1,4 +1,6 @@
 import { SELF } from "cloudflare:test";
+import { env } from "cloudflare:workers";
+import { consumeViewBatch } from "../src/publicLists";
 
 export const BROWSER_UA = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 Chrome/130 Safari/537.36";
 
@@ -38,10 +40,27 @@ export function view(slug: string, ua = BROWSER_UA): Promise<Response> {
   return SELF.fetch(`https://example.com/l/${slug}`, { headers: { "user-agent": ua }, redirect: "manual" });
 }
 
-/** 閲覧ページのアクセス数ビーコン。ip / ua で訪問者を変えられる。 */
-export function beacon(slug: string, opts: { ip?: string; ua?: string } = {}): Promise<Response> {
-  return SELF.fetch(`https://example.com/api/lists/${slug}/view`, {
+// 閲覧ビーコンのキュー（VIEW_QUEUE）。本物の consumer はテストでは走らない（max_batch_timeout
+// が 10 秒）ので、積まれたメッセージを控えておいて beacon() が同じ consumer に渡す。
+const queuedViews: unknown[] = [];
+(env as { VIEW_QUEUE?: unknown }).VIEW_QUEUE = {
+  send: async (body: unknown) => void queuedViews.push(body),
+};
+
+/** 積まれた閲覧ビーコンを consumer（src/publicLists.ts consumeViewBatch）に流す。 */
+export async function flushViewQueue(): Promise<void> {
+  const messages = queuedViews.splice(0).map((body) => ({ body }));
+  if (!messages.length) return;
+  await consumeViewBatch({ queue: "my100manga-views", messages } as unknown as MessageBatch<unknown>, env);
+}
+
+/** 閲覧ページのアクセス数ビーコン。ip / ua で訪問者を変えられる。キューに積まれた分は
+ *  そのまま consumer に流すので、呼んだ時点で数え終わっている。 */
+export async function beacon(slug: string, opts: { ip?: string; ua?: string } = {}): Promise<Response> {
+  const res = await SELF.fetch(`https://example.com/api/lists/${slug}/view`, {
     method: "POST",
     headers: { "user-agent": opts.ua ?? BROWSER_UA, "cf-connecting-ip": opts.ip ?? "203.0.113.1" },
   });
+  await flushViewQueue();
+  return res;
 }

@@ -1,4 +1,4 @@
-import { Env } from "./types";
+import { Env, ViewJob } from "./types";
 import { clientIp, json, toIsbn13 } from "./util";
 import { currentUser } from "./auth";
 import { parseStoredItems, resolveBooks } from "./listItems";
@@ -48,35 +48,87 @@ async function visitorKey(request: Request, day: string): Promise<string> {
 }
 
 /** POST /api/lists/:slug/view — 閲覧ページのビーコン。数えたかどうかに関係なく 204 を返す
- *  （重複・本人・存在しないリストを外から見分けられないように）。 */
-export async function handleListView(request: Request, env: Env, slug: string): Promise<Response> {
+ *  （重複・本人・存在しないリストを外から見分けられないように）。
+ *  閲覧ページ本体はキャッシュから返るので、ここで毎回 D1 に書くとバズったリストの閲覧が
+ *  そのまま D1 への書き込みの山になる。キューに積んで consumer が 100 件ずつまとめて書く
+ *  （recordListViews）。キュー未設定（ローカル・テスト等）ならその場で 1 件だけ書く。 */
+export async function handleListView(request: Request, env: Env, ctx: ExecutionContext, slug: string): Promise<Response> {
   const done = new Response(null, { status: 204 });
   if (isCrawler(request.headers.get("user-agent") ?? "")) return done;
-  const list = await env.DB.prepare(`SELECT user_id FROM lists WHERE slug = ?`).bind(slug).first<{ user_id: string | null }>();
-  if (!list) return done;
-  if (list.user_id) {
-    const user = await currentUser(request, env);
-    if (user?.id === list.user_id) return done;
-  }
   const day = jstDay(Date.now());
-  const seen = await env.DB.prepare(`INSERT OR IGNORE INTO list_view_seen (slug, day, visitor) VALUES (?, ?, ?)`)
-    .bind(slug, day, await visitorKey(request, day))
-    .run();
-  if (!seen.meta?.changes) return done; // 今日はもう数えた
-  await env.DB.prepare(
-    `INSERT INTO list_views (slug, day, views) VALUES (?, ?, 1)
-     ON CONFLICT (slug, day) DO UPDATE SET views = views + 1`
-  )
-    .bind(slug, day)
-    .run();
+  // セッション Cookie があるときだけ D1 を引く（匿名の閲覧は D1 に触らない）。
+  const user = await currentUser(request, env);
+  const job: ViewJob = { slug, day, visitor: await visitorKey(request, day), userId: user?.id ?? null };
+  if (env.VIEW_QUEUE) {
+    ctx.waitUntil(env.VIEW_QUEUE.send(job).catch((err) => console.error("view queue send failed", err)));
+  } else {
+    await recordListViews(env, [job]);
+  }
   return done;
 }
 
-/** 重複判定の記録は当日分しか要らないので、前日より古いものを消す（日次 cron）。 */
+/** VIEW_QUEUE の consumer 本体（src/index.ts queue）。形の壊れたメッセージは捨て、残りを
+ *  1 回でまとめて数える。失敗したら batch ごと再試行する（重複判定は INSERT OR IGNORE なので
+ *  数え直しにはならない）。 */
+export async function consumeViewBatch(batch: MessageBatch<unknown>, env: Env): Promise<void> {
+  const jobs = batch.messages
+    .map((m) => m.body as Partial<ViewJob> | null)
+    .filter(
+      (j): j is ViewJob =>
+        !!j && typeof j.slug === "string" && typeof j.day === "string" && typeof j.visitor === "string" &&
+        /^[A-Za-z0-9_-]+$/.test(j.slug)
+    );
+  await recordListViews(env, jobs);
+}
+
+/** ビーコンをまとめて数える。D1 への往復は「リストの存在・所有者の照会」「重複判定の
+ *  INSERT OR IGNORE（batch）」「日別カウンタの加算（batch）」の 3 回で、件数に依らない。 */
+export async function recordListViews(env: Env, jobs: ViewJob[]): Promise<void> {
+  if (!jobs.length) return;
+  const slugs = [...new Set(jobs.map((j) => j.slug))];
+  const owners = await env.DB.prepare(`SELECT slug, user_id FROM lists WHERE slug IN (SELECT value FROM json_each(?))`)
+    .bind(JSON.stringify(slugs))
+    .all<{ slug: string; user_id: string | null }>();
+  const ownerOf = new Map((owners.results ?? []).map((r) => [r.slug, r.user_id]));
+  // 存在しないリストと所有者本人の閲覧は数えない。
+  const valid = jobs.filter((j) => ownerOf.has(j.slug) && !(j.userId && ownerOf.get(j.slug) === j.userId));
+  if (!valid.length) return;
+  const seen = await env.DB.batch(
+    valid.map((j) =>
+      env.DB.prepare(`INSERT OR IGNORE INTO list_view_seen (slug, day, visitor) VALUES (?, ?, ?)`).bind(j.slug, j.day, j.visitor)
+    )
+  );
+  const counts = new Map<string, { slug: string; day: string; n: number }>();
+  valid.forEach((j, i) => {
+    if (!seen[i]?.meta?.changes) return; // その日はもう数えた
+    const key = `${j.slug}|${j.day}`;
+    const c = counts.get(key) ?? { slug: j.slug, day: j.day, n: 0 };
+    c.n++;
+    counts.set(key, c);
+  });
+  if (!counts.size) return;
+  await env.DB.batch(
+    [...counts.values()].map((c) =>
+      env.DB.prepare(
+        `INSERT INTO list_views (slug, day, views) VALUES (?, ?, ?)
+         ON CONFLICT (slug, day) DO UPDATE SET views = views + excluded.views`
+      ).bind(c.slug, c.day, c.n)
+    )
+  );
+}
+
+/** 重複判定の記録は当日分しか要らないので、前日より古いものを消す（日次 cron）。1 文で
+ *  全部消すと行が多い日に D1 を長く塞ぐので、5000 行ずつ小分けにする。 */
 export async function purgeListViewSeen(env: Env): Promise<void> {
-  await env.DB.prepare(`DELETE FROM list_view_seen WHERE day < ?`)
-    .bind(jstDay(Date.now() - DAY_MS))
-    .run();
+  const before = jstDay(Date.now() - DAY_MS);
+  for (let i = 0; i < 200; i++) {
+    const res = await env.DB.prepare(
+      `DELETE FROM list_view_seen WHERE rowid IN (SELECT rowid FROM list_view_seen WHERE day < ? LIMIT 5000)`
+    )
+      .bind(before)
+      .run();
+    if ((res.meta?.changes ?? 0) < 5000) break;
+  }
 }
 
 interface Row {
@@ -89,16 +141,22 @@ interface Row {
 }
 
 // エッジ（Cache API）で持つ秒数。ブラウザ向けの max-age と同じ 60 秒。新しく公開したリストが
-// 一覧に出るまで最大でこれだけ遅れる。
+// 一覧に出るまで最大でこれだけ遅れる。アクセス数順は list_views の集計が重く、並びが数分
+// 遅れても困らないので長めに持つ。
 const EDGE_TTL_SEC = 60;
+const EDGE_TTL_VIEWS_SEC = 300;
+// ページ番号の上限。上限なしだと page=1..N を順に叩くだけでキャッシュを外し、毎回の集計を
+// 走らせられる。24 件 × 50 ページ = 1200 件より先は一覧からはたどれない。
+const MAX_PAGE = 50;
 
 export async function handlePublicLists(url: URL, env: Env): Promise<Response> {
   const sortParam = url.searchParams.get("sort") as PublicListSort | null;
   const sort: PublicListSort = sortParam && SORTS.includes(sortParam) ? sortParam : "new";
   let page = Math.floor(Number(url.searchParams.get("page")));
   if (!Number.isFinite(page) || page < 1) page = 1;
+  page = Math.min(page, MAX_PAGE);
   // キーは正規化した sort / page だけ（他のクエリ文字列でキャッシュを散らされないように）。
-  return withEdgeCache(edgeCacheKey(env, "/api/public-lists", { sort, page }), EDGE_TTL_SEC, () =>
+  return withEdgeCache(edgeCacheKey(env, "/api/public-lists", { sort, page }), sort === "new" ? EDGE_TTL_SEC : EDGE_TTL_VIEWS_SEC, () =>
     buildPublicLists(env, sort, page)
   );
 }

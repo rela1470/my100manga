@@ -22,6 +22,9 @@ const SESSION_COOKIE = "m100_sid";
 const OAUTH_COOKIE = "m100_oauth";
 const SESSION_TTL_MS = 60 * 24 * 60 * 60 * 1000; // 60 日（期限で再ログイン）
 const OAUTH_TTL_SEC = 600;
+// Google のトークンエンドポイント 1 回の上限。未ログインでも叩ける経路なので、外部待ちで
+// リクエストを抱え込まないよう頭を打つ。
+const GOOGLE_TIMEOUT_MS = 10_000;
 
 export interface User {
   id: string;
@@ -153,18 +156,27 @@ export async function loginCallback(request: Request, env: Env): Promise<Respons
   const code = url.searchParams.get("code");
   if (!code || !state || !verifier || url.searchParams.get("state") !== state) return fail("failed");
 
-  const tokenRes = await fetch("https://oauth2.googleapis.com/token", {
-    method: "POST",
-    headers: { "content-type": "application/x-www-form-urlencoded" },
-    body: new URLSearchParams({
-      code,
-      client_id: env.GOOGLE_CLIENT_ID!,
-      client_secret: env.GOOGLE_CLIENT_SECRET!,
-      redirect_uri: `${url.origin}/auth/google/callback`,
-      grant_type: "authorization_code",
-      code_verifier: verifier,
-    }),
-  });
+  // Google が詰まったときにリクエストを抱えたままにしない（上限を超えたらログイン失敗として
+  // 元の画面に戻す）。ここは未ログインでも叩けるので、外部待ちは必ず頭を打つこと。
+  let tokenRes: Response;
+  try {
+    tokenRes = await fetch("https://oauth2.googleapis.com/token", {
+      method: "POST",
+      headers: { "content-type": "application/x-www-form-urlencoded" },
+      signal: AbortSignal.timeout(GOOGLE_TIMEOUT_MS),
+      body: new URLSearchParams({
+        code,
+        client_id: env.GOOGLE_CLIENT_ID!,
+        client_secret: env.GOOGLE_CLIENT_SECRET!,
+        redirect_uri: `${url.origin}/auth/google/callback`,
+        grant_type: "authorization_code",
+        code_verifier: verifier,
+      }),
+    });
+  } catch (err) {
+    console.error("google token exchange failed", err);
+    return fail("failed");
+  }
   if (!tokenRes.ok) {
     console.error("google token exchange failed", tokenRes.status, await tokenRes.text().catch(() => ""));
     return fail("failed");

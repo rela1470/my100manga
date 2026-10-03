@@ -1,6 +1,6 @@
 import { env } from "cloudflare:workers";
 import { beforeEach, describe, expect, it } from "vitest";
-import { isCrawler, jstDay, purgeListViewSeen, purgePublicListsCache } from "../src/publicLists";
+import { isCrawler, jstDay, purgeListViewSeen, purgePublicListsCache, recordListViews } from "../src/publicLists";
 import { BROWSER_UA, beacon, createList, view } from "./helpers";
 import { SELF } from "cloudflare:test";
 
@@ -87,6 +87,38 @@ describe("GET /api/public-lists", () => {
     await createList();
     const res = await SELF.fetch("https://example.com/api/public-lists?sort=bogus");
     expect(((await res.json()) as { sort: string }).sort).toBe("new");
+  });
+});
+
+// キュー（VIEW_QUEUE）の consumer が 100 件ずつまとめて書く本体。D1 への往復は件数に依らず
+// 3 回（所有者の照会・重複判定・カウンタ加算）で、1 件ずつ書いていた頃と同じ数え方になる。
+describe("recordListViews（ビーコンのまとめ書き）", () => {
+  const job = (slug: string, visitor: string, userId: string | null = null) => ({
+    slug,
+    day: jstDay(Date.now()),
+    visitor,
+    userId,
+  });
+
+  it("同じ batch 内の重複は 1 回、別の訪問者は別に数える", async () => {
+    const { slug } = await createList();
+    await recordListViews(env, [job(slug, "v1"), job(slug, "v1"), job(slug, "v2"), job(slug, "v3")]);
+    expect(await viewsOf(slug)).toBe(3);
+    // 次の batch で同じ訪問者が来ても増えない（重複判定は list_view_seen に残っている）。
+    await recordListViews(env, [job(slug, "v1"), job(slug, "v4")]);
+    expect(await viewsOf(slug)).toBe(4);
+  });
+
+  it("存在しないリストと所有者本人の閲覧は数えない", async () => {
+    const { slug } = await createList();
+    await env.DB.prepare(`UPDATE lists SET user_id = ? WHERE slug = ?`).bind("u1", slug).run();
+    await recordListViews(env, [job(slug, "owner", "u1"), job("nonexistent", "v1"), job(slug, "other", "u2")]);
+    expect(await viewsOf(slug)).toBe(1);
+    expect(await viewsOf("nonexistent")).toBe(0);
+  });
+
+  it("空の batch では D1 を触らない", async () => {
+    await expect(recordListViews(env, [])).resolves.toBeUndefined();
   });
 });
 

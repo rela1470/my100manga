@@ -31,6 +31,7 @@ interface AccessClaims {
 
 // JWKS はチームドメインごとにモジュールスコープでキャッシュ（cold start 間は保持）。
 const JWKS_TTL_MS = 60 * 60 * 1000; // 1h
+const JWKS_TIMEOUT_MS = 5000; // 取得 1 回の上限（Access が詰まっても admin 要求を抱え込まない）
 const jwksCache = new Map<string, { keys: Map<string, CryptoKey>; fetchedAt: number }>();
 
 function b64urlToBytes(s: string): Uint8Array {
@@ -50,7 +51,9 @@ async function getJwks(teamDomain: string): Promise<Map<string, CryptoKey>> {
   const cached = jwksCache.get(teamDomain);
   if (cached && Date.now() - cached.fetchedAt < JWKS_TTL_MS) return cached.keys;
 
-  const res = await fetch(`https://${teamDomain}/cdn-cgi/access/certs`);
+  const res = await fetch(`https://${teamDomain}/cdn-cgi/access/certs`, {
+    signal: AbortSignal.timeout(JWKS_TIMEOUT_MS),
+  });
   if (!res.ok) throw new Error(`JWKS fetch failed: ${res.status}`);
   const body = (await res.json()) as { keys: Array<JsonWebKey & { kid: string }> };
 

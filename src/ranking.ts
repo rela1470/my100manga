@@ -102,15 +102,16 @@ async function computeRanking(env: Env): Promise<RankingPayload> {
 
 /** meta にキャッシュした結果を返す。TTL 切れなら再計算して保存する。covers の TTL パターンと
  *  同じ発想で、書き込みパスには触らず読み取り時に materialize する。TTL 切れの瞬間に要求が
- *  重なっても再計算するのは 1 件だけ（src/metaCache.ts）。 */
-export async function getBookRanking(env: Env): Promise<RankingPayload> {
-  return readMaterialized(env, { json: META_JSON_KEY, at: META_AT_KEY }, TTL_MS, () => computeRanking(env));
+ *  重なっても再計算するのは 1 件だけ（src/metaCache.ts）。ctx を渡すと再計算は裏で行い、
+ *  その間は古い結果を返す。 */
+export async function getBookRanking(env: Env, ctx?: ExecutionContext): Promise<RankingPayload> {
+  return readMaterialized(env, { json: META_JSON_KEY, at: META_AT_KEY }, TTL_MS, () => computeRanking(env), ctx);
 }
 
-export async function handleRanking(env: Env): Promise<Response> {
+export async function handleRanking(env: Env, ctx: ExecutionContext): Promise<Response> {
   // 集計は最大 10 分古い。閲覧側でも数分キャッシュして再計算の発火を間引く。エッジでも 60 秒
   // 持って、meta の大きな JSON を要求ごとに D1 から読まないようにする。
   return withEdgeCache(edgeCacheKey(env, "/api/ranking"), 60, async () =>
-    json(await getBookRanking(env), 200, { "cache-control": "public, max-age=300" })
+    json(await getBookRanking(env, ctx), 200, { "cache-control": "public, max-age=300" })
   );
 }

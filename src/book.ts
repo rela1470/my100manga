@@ -3,7 +3,7 @@ import { badRequest, json } from "./util";
 import { rakutenResolveFull, RakutenBookFull } from "./rakuten";
 import { redactedCoverUrls } from "./covers";
 import { resolveBooks } from "./listItems";
-import { toIsbn13 } from "./util";
+import { isValidIsbn, toIsbn13 } from "./util";
 import { attributeTitles } from "./groups";
 import { resolveMergeTarget } from "./merge";
 
@@ -43,6 +43,9 @@ export async function handleBook(request: Request, env: Env): Promise<Response> 
   const url = new URL(request.url);
   const isbn = (url.searchParams.get("isbn") ?? "").trim().slice(0, 20);
   if (!isbn) return badRequest("isbn を指定してください");
+  // チェックディジットまで正しい ISBN-13 / ISBN-10 だけ受ける。でたらめな値で楽天の高優先
+  // レーンを埋められたり、空の book_meta 行を溜められたりしないように。
+  if (!isValidIsbn(isbn)) return badRequest("isbn が不正です");
 
   // refresh=1 … ユーザが編集ポップアップの「本データを再取得」で明示的に押したとき。
   // キャッシュ（空あらすじで固まった行など）を無視して Rakuten を叩き直し、結果で上書きする。
@@ -94,7 +97,10 @@ export async function handleBook(request: Request, env: Env): Promise<Response> 
   // Cache only when the Rakuten side was determinate (rk !== null). A
   // rate-limit-skipped lookup returns null and is left uncached so the あらすじ
   // can still be filled on a later open (same not-poisoning rule as covers).
-  if (rk !== null) await writeBookMeta(env, result);
+  // Also skip when neither the master nor Rakuten knows the ISBN at all: that row would
+  // be all-empty, and a well-formed but nonexistent ISBN (1 in 10 random 13-digit
+  // strings passes the check digit) mustn't be able to grow book_meta.
+  if (rk !== null && (row || rk.title)) await writeBookMeta(env, result);
 
   // The same Rakuten response also carried the cover (already HEAD-checked). When
   // it's a real cover, fill the covers cache if absent so a later list render skips

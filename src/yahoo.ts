@@ -1,6 +1,7 @@
 import { excludeAdult } from "./site";
 import { Env } from "./types";
-import { awaitSlot, type Priority } from "./ratelimiter";
+import { pacedFetchJson, PROBE_TIMEOUT_MS, type Priority } from "./ratelimiter";
+import { isValidIsbn } from "./util";
 
 // Yahoo!ショッピング 商品検索API V3. A book's ISBN-13 is a JAN code (Bookland EAN,
 // 978/979 prefix), so `jan_code` is an exact-ISBN lookup — the direct-match that
@@ -38,17 +39,8 @@ export function yahooReady(env: Env): boolean {
 async function call(env: Env, isbn: string, priority: Priority, maxWaitMs?: number): Promise<any | null> {
   const qs = new URLSearchParams({ appid: env.YAHOO_APP_ID!, jan_code: isbn, results: "5" });
   const url = `${V3}?${qs.toString()}`;
-  if (!(await awaitSlot(env, "yahoo", priority, maxWaitMs))) return null;
-  for (let attempt = 0; attempt < 2; attempt++) {
-    const res = await fetch(url);
-    if (res.status === 429) {
-      await new Promise((r) => setTimeout(r, 1500));
-      continue;
-    }
-    if (!res.ok) return null;
-    return await res.json().catch(() => null);
-  }
-  return null;
+  // Slot, timeout and the 429 retry (re-paced on the "yahoo" lane) live in pacedFetchJson.
+  return pacedFetchJson(env, "yahoo", priority, url, {}, maxWaitMs, 1500);
 }
 
 /** Byte-check the (possibly placeholder) image. False only when definitively tiny;
@@ -56,10 +48,21 @@ async function call(env: Env, isbn: string, priority: Priority, maxWaitMs?: numb
 async function isRealCover(url: string): Promise<boolean> {
   if (!url) return false;
   try {
-    const res = await fetch(url, { cf: { cacheEverything: true, cacheTtl: 86400 } });
-    if (!res.ok) return false;
+    // GET, not HEAD: when the CDN omits Content-Length we measure the body instead.
+    // When the header is there, cancel the body so the connection isn't left draining.
+    const res = await fetch(url, {
+      cf: { cacheEverything: true, cacheTtl: 86400 },
+      signal: AbortSignal.timeout(PROBE_TIMEOUT_MS),
+    });
+    if (!res.ok) {
+      await res.body?.cancel().catch(() => {});
+      return false;
+    }
     const len = Number(res.headers.get("content-length") ?? "0");
-    if (len > 0) return len >= COVER_MIN_BYTES;
+    if (len > 0) {
+      await res.body?.cancel().catch(() => {});
+      return len >= COVER_MIN_BYTES;
+    }
     const buf = await res.arrayBuffer();
     return buf.byteLength >= COVER_MIN_BYTES;
   } catch {
@@ -80,6 +83,7 @@ export async function yahooResolveCover(
   maxWaitMs?: number,
 ): Promise<string | null> {
   if (!yahooReady(env) || !isbn) return "";
+  if (!isValidIsbn(isbn)) return ""; // can't be a JAN — skip the call
   const data = await call(env, isbn, priority, maxWaitMs);
   if (data === null) return null; // undetermined
   const hits: any[] = data?.hits ?? [];

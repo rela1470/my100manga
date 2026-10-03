@@ -8,10 +8,12 @@
 // 更新の反映:
 //   - 作成/更新（POST/PUT /api/lists）: 応答前に作り直す（編集者はすぐ /l/:slug を開く）。
 //   - 管理者の伏字・削除、退会時の削除: スナップショットを消す（次の閲覧で D1 から作る）。
-//   - 管理者の結合・表紙承認などリスト自体を触らない変更: admin の更新系 API が成功するたびに
-//     「表示データの世代」（meta.view_epoch）を上げる。スナップショットと colo キャッシュの
-//     キーは世代を含むので、世代が変われば全リストが次の閲覧で D1 から作り直される。各 isolate
-//     は世代を EPOCH_MEMO_MS だけ覚えるので、反映はおおむね 30 秒以内。
+//   - 管理者の結合・表紙承認などリスト自体を触らない変更: 表示に効く admin の更新系 API が
+//     成功するたびに「表示データの世代」（meta.view_epoch）を上げる（bumpsViewEpoch が
+//     どの API で上げるかを決める）。スナップショットと colo キャッシュのキーは世代を含むので、
+//     世代が変わると次の閲覧で古いスナップショットを返しつつ裏で D1 から作り直す。反映は
+//     世代のメモ（EPOCH_MEMO_MS）・作り直しの間隔（REBUILD_MIN_INTERVAL_MS）・colo キャッシュ
+//     （VIEW_CACHE_TTL）を足して、おおむね数分以内。
 //   - それ以外（利用者の表紙取得で covers が埋まった等）: 24 時間を過ぎたスナップショットは
 //     返しつつ裏で作り直す（stale-while-revalidate）。
 //
@@ -26,6 +28,8 @@ import { Env, MangaList } from "./types";
 // 中身の形を変えたら上げる（古い版のスナップショットはミス扱いで作り直す）。
 const SNAPSHOT_VERSION = 1;
 export const SNAPSHOT_MAX_AGE_MS = 24 * 60 * 60 * 1000;
+/** 世代が古いスナップショットを作り直す最短の間隔。 */
+export const REBUILD_MIN_INTERVAL_MS = 60_000;
 /** 閲覧レスポンスを colo キャッシュに置く秒数。 */
 export const VIEW_CACHE_TTL = 300;
 
@@ -57,6 +61,33 @@ export async function getViewEpoch(env: Env): Promise<string> {
   return value;
 }
 
+// 表示に影響しない admin の更新系 API（却下・売上の手動取得など）。世代を上げると全リストの
+// 閲覧キャッシュが外れて作り直しになるので、これらでは上げない。迷うものは上げる側に倒す。
+const NO_EPOCH_ADMIN: [string, RegExp][] = [
+  ["POST", /^\/api\/admin\/sales-ranking\/snapshot$/],
+  ["POST", /^\/api\/admin\/merge-candidates\/dismiss$/],
+  ["DELETE", /^\/api\/admin\/merge-requests\/[^/]+\/[^/]+$/],
+  ["DELETE", /^\/api\/admin\/split-requests\/[^/]+$/],
+  ["DELETE", /^\/api\/admin\/series-reports\/[^/]+$/],
+  ["DELETE", /^\/api\/admin\/volume-title-reports\/[^/]+$/],
+  ["POST", /^\/api\/admin\/cover-suggestions\/[^/]+\/dismiss$/],
+  ["DELETE", /^\/api\/admin\/reports\/[0-9]+$/],
+];
+
+export function bumpsViewEpoch(request: Request): boolean {
+  const { method } = request;
+  if (method === "GET" || method === "HEAD") return false;
+  const url = new URL(request.url);
+  const path = url.pathname;
+  if (!path.startsWith("/api/admin/")) return false;
+  if (NO_EPOCH_ADMIN.some(([m, re]) => m === method && re.test(path))) return false;
+  // 巻の通報は「確定」（巻を非表示にする）だけが表示に効き、却下は効かない。
+  if (method === "DELETE" && /^\/api\/admin\/volume-reports\//.test(path) && url.searchParams.get("confirm") !== "1") {
+    return false;
+  }
+  return true;
+}
+
 /** 世代を上げる。admin の更新系 API が成功したあとに呼ぶ（src/index.ts）。 */
 export async function bumpViewEpoch(env: Env): Promise<void> {
   const value = String(Date.now());
@@ -74,7 +105,7 @@ export function snapshotKey(slug: string): string {
 
 /** D1 から解決し直して R2 に置く。リストが無ければスナップショットも消して null。
  *  解決に失敗したら（縮退表示を 24 時間残さないよう）保存せずに縮退版を返す。 */
-export async function buildListSnapshot(env: Env, slug: string): Promise<MangaList | null> {
+export async function buildListSnapshot(env: Env, slug: string, knownAbsent = false): Promise<MangaList | null> {
   // 世代は解決より先に読む（解決中に世代が上がったら、古い世代の印が付いて次で作り直される）。
   const epoch = await getViewEpoch(env);
   let list: MangaList | null;
@@ -86,7 +117,9 @@ export async function buildListSnapshot(env: Env, slug: string): Promise<MangaLi
   }
   if (!env.COVERS) return list;
   if (!list) {
-    await env.COVERS.delete(snapshotKey(slug));
+    // 元からスナップショットが無いと分かっていれば消さない（存在しない slug の閲覧で
+    // R2 の書き込み系操作を積ませない）。
+    if (!knownAbsent) await env.COVERS.delete(snapshotKey(slug));
     return null;
   }
   const body: StoredSnapshot = { v: SNAPSHOT_VERSION, built_at: Date.now(), epoch, list };
@@ -112,10 +145,10 @@ async function readSnapshot(env: Env, slug: string): Promise<StoredSnapshot | nu
 // 集中したとき D1 を何本も叩かない）。
 const rebuilding = new Map<string, Promise<MangaList | null>>();
 
-function rebuildOnce(env: Env, slug: string): Promise<MangaList | null> {
+function rebuildOnce(env: Env, slug: string, knownAbsent = false): Promise<MangaList | null> {
   let p = rebuilding.get(slug);
   if (!p) {
-    p = buildListSnapshot(env, slug).finally(() => rebuilding.delete(slug));
+    p = buildListSnapshot(env, slug, knownAbsent).finally(() => rebuilding.delete(slug));
     rebuilding.set(slug, p);
   }
   return p;
@@ -129,14 +162,19 @@ export async function getListSnapshot(
   slug: string
 ): Promise<MangaList | null> {
   const [snap, epoch] = await Promise.all([readSnapshot(env, slug).catch(() => null), getViewEpoch(env)]);
-  // 世代が違う（管理者の変更後）ものは使わずに作り直す。
-  if (snap && (snap.epoch ?? "0") === epoch) {
-    if (Date.now() - snap.built_at > SNAPSHOT_MAX_AGE_MS) {
-      ctx.waitUntil(rebuildOnce(env, slug).catch((err) => console.error("snapshot refresh failed", err)));
-    }
-    return snap.list;
+  if (!snap) return await rebuildOnce(env, slug, true);
+  const age = Date.now() - snap.built_at;
+  // 世代は時刻なので大小で比べる（古い世代を覚えた isolate が、新しい世代で作られたものを
+  // 不一致とみなして作り直す「ピンポン」を起こさないように）。
+  const stale = Number(snap.epoch ?? "0") < Number(epoch);
+  // 世代が古い（管理者の変更後）ものも、24 時間を過ぎたものも、いったん返して裏で作り直す。
+  // 同期で作り直すと、管理者が 1 操作するたびに人気リストの閲覧が一斉に D1 解決で待たされる。
+  // 連続操作で同じリストを何度も作り直さないよう、作ってから REBUILD_MIN_INTERVAL_MS 以内なら
+  // 世代が古くても作り直さない（次の閲覧で作り直す）。
+  if ((stale && age > REBUILD_MIN_INTERVAL_MS) || age > SNAPSHOT_MAX_AGE_MS) {
+    ctx.waitUntil(rebuildOnce(env, slug).catch((err) => console.error("snapshot refresh failed", err)));
   }
-  return await rebuildOnce(env, slug);
+  return snap.list;
 }
 
 // --- colo キャッシュ（Cache API）---

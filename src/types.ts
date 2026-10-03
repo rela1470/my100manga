@@ -83,22 +83,38 @@ export interface Env {
   TURNSTILE_SITE_KEY?: string;
   TURNSTILE_SECRET?: string;
   // 公開書き込み系の濫用よけ（src/ratelimit.ts）。RL_WRITE は POST/PUT の書き込み全般、
-  // RL_COVERS は表紙解決（外部 API を叩く /api/covers）用。binding 未設定なら fail-open。
+  // RL_COVERS は外部 API や重いクエリを叩くもの用、RL_HEAVY はさらに重いもの（/api/live-search）用。
+  // binding 未設定なら fail-open。
   RL_WRITE?: RateLimit;
   RL_COVERS?: RateLimit;
+  RL_HEAVY?: RateLimit;
+  // 閲覧ビーコン（src/publicLists.ts）のキュー。consumer が 100 件ずつまとめて D1 に書く。
+  // 未設定（ローカル・キュー未作成）ならビーコンのたびにその場で書く。
+  VIEW_QUEUE?: Queue<ViewJob>;
   // 共有画像（src/shareImage.ts）の事前生成キュー。リストの作成/更新で {slug, host} を積み、
-  // consumer（src/index.ts queue）が og/full/q1–q4 を 1 枚ずつ R2 に描いておく。未設定
-  // （ローカル・キュー未作成）なら従来どおり waitUntil で og だけ先に描く。
+  // consumer（src/index.ts queue）が full/q1–q4 を 1 枚ずつ R2 に描いておく（og は公開時に
+  // waitUntil で描く）。未設定（ローカル・キュー未作成）なら og だけ。
   SHARE_QUEUE?: Queue<ShareJob>;
   // サイトの種別（src/site.ts）。"general"（本家・既定）か "adult"（R18版）。公開値なので vars。
   // 未設定・不明な値は本家扱い（成年向けを除外する側に倒す）。
   SITE_VARIANT?: string;
 }
 
+/** VIEW_QUEUE のメッセージ（閲覧ビーコン 1 件）。visitor は IP + 日付のハッシュ、userId は
+ *  ログイン中の閲覧者（所有者本人を数えないための照合用）。 */
+export interface ViewJob {
+  slug: string;
+  day: string;
+  visitor: string;
+  userId: string | null;
+}
+
 /** SHARE_QUEUE のメッセージ。host は画像のヘッダーに印字するリスト URL のホスト。 */
 export interface ShareJob {
   slug: string;
   host: string;
+  /** 積んだ時点のリストの updated_at。consumer はこれより新しい版があれば捨てる（後続のメッセージが描く）。 */
+  updated_at?: number;
 }
 
 export interface Book {

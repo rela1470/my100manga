@@ -3,6 +3,7 @@ import { badRequest, json, normTitle, searchKey, hiraToKata, vuFold, escapeLikeC
 import { readCachedCovers } from "./covers";
 import { liveSearchByKeyword, SupplementVolume } from "./madbLive";
 import { rakutenComicByIsbn } from "./rakuten";
+import { excludeAdult } from "./site";
 import { mergeTargetsFor } from "./merge";
 import { attributeTitles, buildGroup, groupKey, resolveGroup, GroupRow, GroupVolume, UnlinkedGroup } from "./groups";
 import { edgeCacheKey, withEdgeCache } from "./edgeCache";
@@ -124,7 +125,7 @@ export async function handleSearch(request: Request, env: Env): Promise<Response
 
   // キーは正規化した検索語（normTitle: 空白除去・小文字化）と offset。検索の照合は全部 normTitle /
   // searchKey 後の文字列で行うので、空白や大文字小文字だけ違う検索語は同じ結果になる。
-  return withEdgeCache(edgeCacheKey("/api/search", { q: normTitle(q), offset }), SEARCH_CACHE_SEC, () =>
+  return withEdgeCache(edgeCacheKey(env, "/api/search", { q: normTitle(q), offset }), SEARCH_CACHE_SEC, () =>
     searchByKeyword(env, q, offset)
   );
 }
@@ -484,7 +485,7 @@ export async function handleLiveSearch(request: Request, env: Env): Promise<Resp
 
   let series;
   try {
-    series = await liveSearchByKeyword(q);
+    series = await liveSearchByKeyword(q, excludeAdult(env));
   } catch {
     return json({ error: "最新データベースに接続できませんでした。時間をおいて再試行してください。" }, 502);
   }

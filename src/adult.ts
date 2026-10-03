@@ -1,3 +1,4 @@
+import { excludeAdult } from "./site";
 import { Env } from "./types";
 
 // 成年向け（アダルト）作品の除外。このサイトは全年齢向けなので、MADB 由来の巻（月次取り込み
@@ -15,12 +16,17 @@ import { Env } from "./types";
 // 高いレーベルを丸ごと外す）も、増えるのは 58 巻だけで一般向けと共用のレーベル名（Heart comics
 // 等）を巻き込むので採らない。
 // scripts/ingest.mjs の ADULT_RATING / ADULT_DESCRIPTION と揃えること（node から TS を読めないので複製）。
+//
+// R18版（SITE_VARIANT="adult", src/site.ts）では除外しない。下の関数はどれも excludeAdult(env) が
+// false なら素通り（拒否なし）を返すので、呼び出し側は種別を気にしなくてよい。
 
 /** schema:contentRating の値が成年向けか。「未成年」は成年向けではない。 */
 export const ADULT_RATING = /(?<!未)成年|成人/;
 
-/** SPARQL の WHERE 内に置く、`book` 変数の巻が成年向けなら落とすフィルタ（ADULT_RATING と同じ判定）。 */
-export function sparqlNotAdult(book: string): string {
+/** SPARQL の WHERE 内に置く、`book` 変数の巻が成年向けなら落とすフィルタ（ADULT_RATING と同じ判定）。
+ *  exclude が false（R18版）なら空文字（フィルタなし）。 */
+export function sparqlNotAdult(book: string, exclude = true): string {
+  if (!exclude) return "";
   return `FILTER NOT EXISTS {
     ${book} schema:contentRating ?adultRating .
     FILTER((CONTAINS(STR(?adultRating), "成年") && !CONTAINS(STR(?adultRating), "未成年"))
@@ -49,6 +55,7 @@ export function adultBlockMessage(title?: string): string {
  *  未適用）ときは空を返し、検索・公開そのものは止めない。 */
 export async function findAdultIsbns(env: Env, isbns: string[]): Promise<Map<string, string>> {
   const out = new Map<string, string>();
+  if (!excludeAdult(env)) return out;
   const uniq = [...new Set(isbns.filter(Boolean))];
   if (!uniq.length) return out;
   try {
@@ -67,6 +74,7 @@ export async function findAdultIsbns(env: Env, isbns: string[]): Promise<Map<str
 /** 正規化済みの検索語（searchKey）を書名に含む成年向けの巻があるか。'%q%' の LIKE で索引は
  *  効かないが、表は約 8 千行で 1 件見つかれば止まる。検索結果の下に注記を出すかの判定用。 */
 export async function hasAdultTitleMatch(env: Env, likePattern: string): Promise<boolean> {
+  if (!excludeAdult(env)) return false;
   try {
     const row = await env.DB.prepare(
       `SELECT 1 AS hit FROM adult_volumes WHERE title_norm LIKE ? ESCAPE '\\' LIMIT 1`

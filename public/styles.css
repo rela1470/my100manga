@@ -10,6 +10,7 @@
 
   /* pop multi-color accents */
   --accent: #3b82f6;      /* hero blue */
+  --accent-rgb: 59,130,246; /* --accent の RGB（半透明の影・フォーカス枠用） */
   --accent-2: #0e7490;    /* cyan (links / secondary)。白背景で 4.5:1 以上 */
   --accent-3: #8b5cf6;    /* violet */
   --accent-4: #f59e0b;    /* amber */
@@ -41,12 +42,31 @@
   /* shadows (soft, slightly pink-tinted) */
   --shadow-sm: 0 1px 2px rgba(22,32,46,.06), 0 1px 1px rgba(22,32,46,.04);
   --shadow-md: 0 6px 16px rgba(22,32,46,.10);
-  --shadow-pop: 0 10px 24px rgba(59,130,246,.22), 0 2px 6px rgba(22,32,46,.08);
+  --shadow-pop: 0 10px 24px rgba(var(--accent-rgb),.22), 0 2px 6px rgba(22,32,46,.08);
 
   /* motion */
   --dur: .18s;
   --ease: cubic-bezier(.22,.61,.36,1);
   --ease-bounce: cubic-bezier(.34,1.56,.64,1);
+}
+
+/* R18版（SITE_VARIANT="adult", src/site.ts）の配色。<html data-site="adult"> は配信時に
+   src/analytics.ts の applySiteIdentity が付ける。ピンクは R18 版用に温存している色なので、
+   本家（上の :root）では使わない。色の差し替えはここだけで済むよう、本文側は変数だけを使う。
+   TODO(R18): 仮の配色。デザインが決まったら詰める（白文字を載せる *-strong は 4.5:1 以上を保つ）。 */
+:root[data-site="adult"] {
+  --bg: #fff5f9;
+  --bg-tint: radial-gradient(1200px 600px at 50% -200px, #ffe0ef 0%, rgba(255,224,239,0) 60%), var(--bg);
+  --panel-2: #fdeef5;
+  --border: #f5dbe7;
+  --text: #2a1620;
+  --muted: #6e5562;
+
+  --accent: #ec4899;      /* hero pink */
+  --accent-rgb: 236,72,153;
+  --accent-2: #a21caf;    /* fuchsia (links)。白背景で 4.5:1 以上 */
+  --accent-strong: #be185d;
+  --accent-strong-2: #9d174d;
 }
 
 * { box-sizing: border-box; }
@@ -179,7 +199,7 @@ input[type="text"]:focus,
 textarea:focus {
   outline: none;
   border-color: var(--accent);
-  box-shadow: 0 0 0 3px rgba(59,130,246,.22);
+  box-shadow: 0 0 0 3px rgba(var(--accent-rgb),.22);
 }
 
 .action-bar {
@@ -205,7 +225,7 @@ button {
 }
 button:hover { filter: brightness(1.04); transform: translateY(-1px); box-shadow: var(--shadow-sm); }
 button:active { transform: translateY(1px) scale(.97); box-shadow: none; }
-button:focus-visible { outline: 3px solid rgba(59,130,246,.45); outline-offset: 2px; }
+button:focus-visible { outline: 3px solid rgba(var(--accent-rgb),.45); outline-offset: 2px; }
 button.primary, a.button.primary {
   background: linear-gradient(135deg, var(--accent-strong), var(--accent-strong-2));
   border: 1.5px solid transparent;
@@ -227,7 +247,7 @@ a.button {
 }
 a.button:hover { filter: brightness(1.04); transform: translateY(-1px); box-shadow: var(--shadow-sm); }
 a.button:active { transform: translateY(1px) scale(.97); box-shadow: none; }
-a.button:focus-visible { outline: 3px solid rgba(59,130,246,.45); outline-offset: 2px; }
+a.button:focus-visible { outline: 3px solid rgba(var(--accent-rgb),.45); outline-offset: 2px; }
 a.button.primary { border-color: transparent; color: #fff; font-weight: 800; box-shadow: var(--shadow-sm); }
 .publish-bar a.button.primary { padding: 12px 48px; font-size: 16px; }
 button.ok {
@@ -458,7 +478,7 @@ a.stat-card.stat-link .k::after { content: " ›"; }
   text-transform: none;
 }
 .admin-table tbody tr:nth-child(even) td { background: rgba(238,244,255,.6); }
-.admin-table tbody tr:hover td { background: rgba(59,130,246,.07); }
+.admin-table tbody tr:hover td { background: rgba(var(--accent-rgb),.07); }
 .admin-table tr:last-child td { border-bottom: none; }
 .admin-table td.owner { white-space: normal; word-break: break-word; }
 .admin-table td.num { text-align: right; font-variant-numeric: tabular-nums; }
@@ -1187,7 +1207,7 @@ h3.mylists-title { margin-top: 24px; font-size: 14px; }
   z-index: 5;
   cursor: copy;
   border-left: 4px solid var(--accent);
-  background: linear-gradient(to right, rgba(59,130,246,.28), rgba(59,130,246,0));
+  background: linear-gradient(to right, rgba(var(--accent-rgb),.28), rgba(var(--accent-rgb),0));
 }
 .ins-caret::after {
   content: "▸";

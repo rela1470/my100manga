@@ -90,6 +90,9 @@ export interface Env {
   // consumer（src/index.ts queue）が og/full/q1–q4 を 1 枚ずつ R2 に描いておく。未設定
   // （ローカル・キュー未作成）なら従来どおり waitUntil で og だけ先に描く。
   SHARE_QUEUE?: Queue<ShareJob>;
+  // サイトの種別（src/site.ts）。"general"（本家・既定）か "adult"（R18版）。公開値なので vars。
+  // 未設定・不明な値は本家扱い（成年向けを除外する側に倒す）。
+  SITE_VARIANT?: string;
 }
 
 /** SHARE_QUEUE のメッセージ。host は画像のヘッダーに印字するリスト URL のホスト。 */

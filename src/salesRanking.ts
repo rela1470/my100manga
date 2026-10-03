@@ -505,7 +505,7 @@ export async function handleSalesRanking(env: Env): Promise<Response> {
   // エッジで 60 秒持って、要求ごとに meta の大きな JSON を D1 から読まないようにする。空の集計
   // （no-store）はエッジにも入れない。
   return withEdgeCache(
-    edgeCacheKey("/api/sales-ranking"),
+    edgeCacheKey(env, "/api/sales-ranking"),
     60,
     async () => {
       let payload = await readPayload(env); // 壊れていたら null → 作り直す

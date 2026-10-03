@@ -110,7 +110,7 @@ export async function getBookRanking(env: Env): Promise<RankingPayload> {
 export async function handleRanking(env: Env): Promise<Response> {
   // 集計は最大 10 分古い。閲覧側でも数分キャッシュして再計算の発火を間引く。エッジでも 60 秒
   // 持って、meta の大きな JSON を要求ごとに D1 から読まないようにする。
-  return withEdgeCache(edgeCacheKey("/api/ranking"), 60, async () =>
+  return withEdgeCache(edgeCacheKey(env, "/api/ranking"), 60, async () =>
     json(await getBookRanking(env), 200, { "cache-control": "public, max-age=300" })
   );
 }

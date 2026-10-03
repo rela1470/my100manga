@@ -1,3 +1,4 @@
+import { excludeAdult } from "./site";
 import { Env } from "./types";
 import { awaitSlot, type Priority } from "./ratelimiter";
 
@@ -24,7 +25,7 @@ const COVER_MIN_BYTES = 12000;
 
 // Marketplace listings can include adult floors; a manga ISBN won't collide with
 // an adult JAN, but guard the name/genre anyway so nothing NSFW slips into covers.
-const ADULT = /アダルト|成人|18禁|FANZA|官能|ボーイズラブ用品/;
+const ADULT = /アダルト|成人|18禁|FANZA|官能|ボーイズラブ用品/; // R18版では判定しない（excludeAdult, src/site.ts）
 
 /** True when the Yahoo Client ID is configured; callers skip Yahoo otherwise. */
 export function yahooReady(env: Env): boolean {
@@ -82,8 +83,9 @@ export async function yahooResolveCover(
   const data = await call(env, isbn, priority, maxWaitMs);
   if (data === null) return null; // undetermined
   const hits: any[] = data?.hits ?? [];
+  const exclude = excludeAdult(env);
   for (const h of hits) {
-    if (ADULT.test(`${h?.genreCategory?.name ?? ""} ${h?.name ?? ""}`)) continue;
+    if (exclude && ADULT.test(`${h?.genreCategory?.name ?? ""} ${h?.name ?? ""}`)) continue;
     const img = bestImage(h);
     if (img && (await isRealCover(img))) return img;
   }

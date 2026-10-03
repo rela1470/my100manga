@@ -1,6 +1,7 @@
 import { Env } from "./types";
 import { footerHtml } from "./footer";
 import { headerLinksHtml } from "./header";
+import { GENERAL_NAME, GENERAL_ORIGIN, site } from "./site";
 import { escapeHtml } from "./util";
 
 // 全 HTML ページの <head> の <!--ANALYTICS--> に差し込む Google タグを組み立てる。
@@ -8,8 +9,10 @@ import { escapeHtml } from "./util";
 // どちらも公開値なので secret ではなく wrangler.jsonc の vars に集約。空/未設定なら
 // そのタグは出力しない。admin.html にはプレースホルダを置いていないので自動で素通り。
 // あわせて Turnstile のサイトキー（公開値）を <meta> で渡す（public/turnstile.js が読む）。
+// サイト種別（src/site.ts）も window.__SITE__ で渡す（public/share-x.js 等が読む）。
 export function analyticsTags(env: Env): string {
-  let out = "";
+  const s = site(env);
+  let out = `<script>window.__SITE__=${JSON.stringify({ variant: s.variant, name: s.name, hashtag: s.hashtag }).replace(/</g, "\\u003c")};</script>`;
   const sitekey = (env.TURNSTILE_SITE_KEY ?? "").trim();
   if (sitekey) {
     out += `<meta name="turnstile-sitekey" content="${escapeHtml(sitekey)}">`;
@@ -84,20 +87,33 @@ export function injectVersion(html: string, v: string): string {
   return out;
 }
 
+// 静的 HTML（本家の表記で書いてある）をサイト種別（src/site.ts）に合わせる。<html> に
+// data-site を付け（public/styles.css が配色を切り替える）、本家以外ならサイト名と canonical /
+// og:url の本家ドメインを差し替える。ユーザ入力を差し込む前のテンプレートにだけ使うこと
+// （表示名などに「My 100 Manga」と書かれていても書き換えないように）。
+export function applySiteIdentity(html: string, env: Env, origin: string): string {
+  const s = site(env);
+  let out = html.replace(/<html\b(?![^>]*\bdata-site=)/, `<html data-site="${s.variant}"`);
+  if (s.variant !== "general") {
+    out = out.replaceAll(GENERAL_NAME, s.name).replaceAll(GENERAL_ORIGIN, origin);
+  }
+  return out;
+}
+
 // 静的配信（ASSETS.fetch）の HTML レスポンスを加工する。全 HTML にバージョン印（script の
 // ?v= と <meta app-version>）を付け、プレースホルダがあれば Google タグ／affiliate id も差す。
 // HTML 以外（css/js/画像）は素通り。
-export async function injectAnalytics(res: Response, env: Env): Promise<Response> {
+export async function injectAnalytics(res: Response, env: Env, origin: string): Promise<Response> {
   const ct = res.headers.get("content-type") ?? "";
   if (!ct.includes("text/html")) return res;
-  const html = await res.text();
+  const html = applySiteIdentity(await res.text(), env, origin);
   const replaced = injectVersion(html, appVersion(env))
     .replace("<!--ANALYTICS-->", analyticsTags(env))
     .replace("<!--GTM_BODY-->", gtmBody(env))
     .replace("<!--AFF_DATA-->", affData(env))
     .replace("<!--HEADER_LINKS-->", headerLinksHtml())
-    .replace("<!--FOOTER_AFF-->", footerHtml(true))
-    .replace("<!--FOOTER-->", footerHtml());
+    .replace("<!--FOOTER_AFF-->", footerHtml(env, true))
+    .replace("<!--FOOTER-->", footerHtml(env));
   const headers = new Headers(res.headers);
   headers.delete("content-length");
   // 本文を書き換えたので、資産の強い ETag は本文と一致しなくなる。残すと再検証で

@@ -1,3 +1,4 @@
+import { excludeAdult } from "./site";
 import { Env } from "./types";
 import { headers, rakutenReady } from "./rakuten";
 import { awaitSlot, type Priority } from "./ratelimiter";
@@ -26,7 +27,7 @@ const SHOP_RANK: Record<string, number> = {
 
 // Set listings photograph a stack of volumes, not the one cover we want.
 const SET_ITEM = /全巻|セット|まとめ売り|\d+\s*[〜~～\-－]\s*\d+\s*巻/;
-const ADULT = /アダルト|成人|18禁|官能/;
+const ADULT = /アダルト|成人|18禁|官能/; // R18版では判定しない（excludeAdult, src/site.ts）
 
 // The thumbnail service caps at the source size, so asking for 600px is safe for
 // both the 700px もったいない images and the 150px ブックオフ ones.
@@ -114,11 +115,12 @@ export async function ichibaCovers(
   const items: any[] = data?.Items ?? [];
   const picked: (IchibaCover & { rank: number })[] = [];
   const seenFile = new Set<string>();
+  const exclude = excludeAdult(env);
   for (const it of items) {
     const name = String(it?.itemName ?? "");
     const text = `${name} ${it?.itemCaption ?? ""}`;
     if (!text.includes(isbn) && !(i10 && text.includes(i10))) continue;
-    if (SET_ITEM.test(name) || ADULT.test(name)) continue;
+    if (SET_ITEM.test(name) || (exclude && ADULT.test(name))) continue;
     const raw = String(it?.mediumImageUrls?.[0] ?? "");
     if (!raw) continue;
     const file = raw.replace(/\?.*$/, "").split("/").pop() ?? raw;

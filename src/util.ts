@@ -375,18 +375,19 @@ export function withSecurityHeaders(res: Response): Response {
 }
 
 /** HTML ページ向けの 500 エラー画面（素の HTML、外部リソース無し）。 */
-export function errorPageHtml(): Response {
+export function errorPageHtml(siteName = "My 100 Manga"): Response {
+  const name = escapeHtml(siteName);
   const html = `<!doctype html>
 <html lang="ja">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <meta name="robots" content="noindex">
-<title>エラーが発生しました | My 100 Manga</title>
+<title>エラーが発生しました | ${name}</title>
 <style>body{font-family:system-ui,-apple-system,"Hiragino Sans",sans-serif;margin:0;color:#222;background:#f7f8fb}header{padding:12px 16px;background:#fff;border-bottom:1px solid #e3e6ee}header a{color:#2a5bd7;font-weight:bold;text-decoration:none}main{max-width:560px;margin:48px auto;padding:0 16px;line-height:1.7}a.btn{display:inline-block;margin-top:16px;padding:8px 16px;border-radius:6px;background:#2a5bd7;color:#fff;text-decoration:none}</style>
 </head>
 <body>
-<header><a href="/">My 100 Manga</a></header>
+<header><a href="/">${name}</a></header>
 <main>
 <h1>エラーが発生しました</h1>
 <p>ページを表示できませんでした。時間をおいて再読み込みしてください。</p>

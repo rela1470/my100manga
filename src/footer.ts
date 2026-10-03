@@ -1,3 +1,7 @@
+import { site } from "./site";
+import { Env } from "./types";
+import { escapeHtml } from "./util";
+
 // 全公開ページ共通のサイトフッター。各 HTML の <!--FOOTER--> に差し込む。
 // injectAnalytics（静的配信ページ）と renderViewPage（view.html）の両方から呼ぶ。
 // admin.html は内部ツールでリンク構成が別なので、このプレースホルダを持たず素通りする。
@@ -25,10 +29,10 @@ const YAHOO_CREDIT =
 // フラグに加え、編集リンク復帰用の MyLists レジストリ（edit_token）も消えるので、
 // 確認文でその点をはっきり伝える。ui-dialog.js を読まないページ（about 等）もあるため
 // uiConfirm が無ければ素の confirm にフォールバックする。
-const RESET_SCRIPT =
+const resetScript = (name: string) =>
   `<script>(function(){var b=document.getElementById("reset-local-data");if(!b)return;` +
   `b.addEventListener("click",async function(){` +
-  `var msg="この端末（ブラウザ）に保存されている My 100 Manga のデータを削除します。\\n\\n` +
+  `var msg="この端末（ブラウザ）に保存されている ${name} のデータを削除します。\\n\\n` +
   `・作成中の下書き\\n・「作ったリスト」の一覧と編集権限\\n・通報済みの記録\\n\\n` +
   `編集用リンクを控えていないリストは、二度と編集できなくなります。公開済みのリスト自体は消えません。\\nGoogle でログイン中なら、アカウントに保存されたリストと作成中のリストは残ります。\\n\\n本当に初期化しますか？";` +
   `var ok=window.uiConfirm?await window.uiConfirm(msg,{okLabel:"初期化する",danger:true}):confirm(msg);if(!ok)return;` +
@@ -56,7 +60,8 @@ const TO_TOP =
   `b.addEventListener("click",function(){var r=matchMedia("(prefers-reduced-motion: reduce)").matches;` +
   `window.scrollTo({top:0,behavior:r?"auto":"smooth"});});})();</script>`;
 
-export function footerHtml(withAff = false): string {
+export function footerHtml(env: Env, withAff = false): string {
+  const name = escapeHtml(site(env).name);
   const aff = withAff
     ? `<p class="aff-disclosure">当サイトはアフィリエイト広告（PR）を利用しています（<a href="/about">詳細</a>）。</p>`
     : "";
@@ -69,9 +74,9 @@ export function footerHtml(withAff = false): string {
     `<p class="foot-source"><a href="/about">データ: メディア芸術データベース（国立アートリサーチセンター）／ 書影: 楽天ブックス・楽天市場・Yahoo!ショッピング</a></p>` +
     `<p class="foot-credits">${RAKUTEN_CREDIT}\n${YAHOO_CREDIT}` +
     `<button type="button" id="reset-local-data">この端末のデータを初期化</button></p>` +
-    `<p class="foot-copy">© 2026 My 100 Manga @rela1470</p>` +
+    `<p class="foot-copy">© 2026 ${name} @rela1470</p>` +
     `</footer>` +
     TO_TOP +
-    RESET_SCRIPT
+    resetScript(name)
   );
 }

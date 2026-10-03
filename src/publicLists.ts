@@ -98,15 +98,15 @@ export async function handlePublicLists(url: URL, env: Env): Promise<Response> {
   let page = Math.floor(Number(url.searchParams.get("page")));
   if (!Number.isFinite(page) || page < 1) page = 1;
   // キーは正規化した sort / page だけ（他のクエリ文字列でキャッシュを散らされないように）。
-  return withEdgeCache(edgeCacheKey("/api/public-lists", { sort, page }), EDGE_TTL_SEC, () =>
+  return withEdgeCache(edgeCacheKey(env, "/api/public-lists", { sort, page }), EDGE_TTL_SEC, () =>
     buildPublicLists(env, sort, page)
   );
 }
 
 /** 公開リスト一覧の 1 ページ目のエッジキャッシュを（このデータセンタで）消す。公開・更新・削除の
  *  直後に呼べば、その人の見ている一覧にはすぐ出る（他のデータセンタは最大 EDGE_TTL_SEC 遅れる）。 */
-export async function purgePublicListsCache(): Promise<void> {
-  await purgeEdgeCache(SORTS.map((sort) => edgeCacheKey("/api/public-lists", { sort, page: 1 })));
+export async function purgePublicListsCache(env: Pick<Env, "SITE_VARIANT">): Promise<void> {
+  await purgeEdgeCache(SORTS.map((sort) => edgeCacheKey(env, "/api/public-lists", { sort, page: 1 })));
 }
 
 async function buildPublicLists(env: Env, sort: PublicListSort, page: number): Promise<Response> {

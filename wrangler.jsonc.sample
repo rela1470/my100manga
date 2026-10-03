@@ -65,7 +65,10 @@
     // 開発ツール（admin 画面の「DB初期化」= マスターデータ以外を全削除）を有効化。"true" で
     // 表示・実行可能。認証は requireAdmin（Cloudflare Access）が担保するので管理者だけが使える
     // （ADMIN_DEV_BYPASS と違い認証はバイパスしない）。正式リリース時は外す/"false" にする。
-    "DEV_TOOLS": "false"
+    "DEV_TOOLS": "false",
+    // サイトの種別（src/site.ts）。"general"＝本家（全年齢）、"adult"＝R18版。R18版は別の Worker
+    // （別ドメイン・別 D1/R2/キュー）として env を足し、そちらで "adult" にする（docs/r18.md）。
+    "SITE_VARIANT": "general"
   },
   "d1_databases": [
     {
@@ -141,7 +144,8 @@
         "ADSENSE_CLIENT": "",
         "GTM_CONTAINER_ID": "",
         "TURNSTILE_SITE_KEY": "",
-        "DEV_TOOLS": "false"
+        "DEV_TOOLS": "false",
+        "SITE_VARIANT": "general"
       },
       "version_metadata": { "binding": "CF_VERSION" },
       // dev では売上ランキングの Cron を止める（毎日楽天を叩くだけで無駄なので）。

@@ -1,6 +1,7 @@
 import { Env } from "./types";
 import { toIsbn13, volSort } from "./util";
 import { sparqlNotAdult } from "./adult";
+import { excludeAdult } from "./site";
 
 // The MADB monthly dump (see scripts/ingest.mjs) links volumes to series via
 // schema:isPartOf, but the newest tankobon frequently lack that edge upstream, so
@@ -102,14 +103,14 @@ async function runSparql(query: string): Promise<Binding[]> {
 /** Query live MADB for every tankobon whose title exactly equals `name`, returning
  *  one entry per ISBN with its volume label, all creator literals, publisher and
  *  date. Throws on network / non-OK so the caller can degrade to dump-only. */
-async function queryTankobonByName(name: string): Promise<Binding[]> {
+async function queryTankobonByName(name: string, exclude: boolean): Promise<Binding[]> {
   return runSparql(`PREFIX schema: <https://schema.org/>
 SELECT ?isbn ?vol ?creator ?publisher ?date WHERE {
   ?book schema:name ${sparqlString(name)} ;
         schema:isbn ?isbn ;
         schema:volumeNumber ?vol ;
         schema:creator ?creator .
-  ${sparqlNotAdult("?book")}
+  ${sparqlNotAdult("?book", exclude)}
   OPTIONAL { ?book schema:publisher ?publisher }
   OPTIONAL { ?book schema:datePublished ?date }
 } LIMIT 2000`);
@@ -129,7 +130,7 @@ export interface LiveSeries {
  *  取得" button for works absent from the monthly dump entirely. Unlike the
  *  per-series supplement this is a broad substring scan, so it's user-triggered
  *  only and never cached in D1. Throws on fetch failure. */
-export async function liveSearchByKeyword(keyword: string): Promise<LiveSeries[]> {
+export async function liveSearchByKeyword(keyword: string, exclude = true): Promise<LiveSeries[]> {
   const rows = await runSparql(`PREFIX schema: <https://schema.org/>
 SELECT ?name ?isbn ?vol ?creator ?publisher ?date WHERE {
   ?book schema:name ?name ;
@@ -137,7 +138,7 @@ SELECT ?name ?isbn ?vol ?creator ?publisher ?date WHERE {
         schema:volumeNumber ?vol ;
         schema:creator ?creator .
   FILTER(CONTAINS(?name, ${sparqlString(keyword)}))
-  ${sparqlNotAdult("?book")}
+  ${sparqlNotAdult("?book", exclude)}
   OPTIONAL { ?book schema:publisher ?publisher }
   OPTIONAL { ?book schema:datePublished ?date }
 } LIMIT 2000`);
@@ -222,9 +223,10 @@ async function probeNewerVolumes(
   creator: string,
   existingNumbers: Set<string>,
   maxSort: number,
-  fmt: NumFmt
+  fmt: NumFmt,
+  exclude: boolean
 ): Promise<SupplementVolume[]> {
-  const rows = await queryTankobonByName(name);
+  const rows = await queryTankobonByName(name, exclude);
 
   // Group by volume_number: collect creator literals (a book carries several) and
   // every ISBN (通常版/重版) so we can later pick whichever has a cover.
@@ -303,7 +305,7 @@ export async function getSupplementVolumes(
 
   let vols: SupplementVolume[];
   try {
-    vols = await probeNewerVolumes(name, creator, existingNumbers, maxSort, fmt);
+    vols = await probeNewerVolumes(name, creator, existingNumbers, maxSort, fmt, excludeAdult(env));
   } catch {
     return cached ? (safeParse(cached.volumes_json) ?? []) : [];
   }

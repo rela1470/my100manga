@@ -78,9 +78,10 @@ import { handleRanking } from "./ranking";
 import { handleListView, handlePublicLists, purgeListViewSeen } from "./publicLists";
 import { adminSalesSnapshot, adminSalesStatus, handleSalesRanking, runSalesSnapshot } from "./salesRanking";
 import { handleSiteStats } from "./siteStats";
-import { analyticsTags, gtmBody, injectAnalytics, injectVersion, appVersion, affIds } from "./analytics";
+import { analyticsTags, applySiteIdentity, gtmBody, injectAnalytics, injectVersion, appVersion, affIds } from "./analytics";
 import { footerHtml } from "./footer";
 import { headerLinksHtml } from "./header";
+import { site } from "./site";
 import { bumpPopularity } from "./popularity";
 import { Env, MangaList, ShareJob } from "./types";
 import { rateLimit } from "./ratelimit";
@@ -625,13 +626,13 @@ const worker = {
       console.error("request failed", err);
       if (path.startsWith("/api/")) return json({ error: "サーバエラーが発生しました" }, 500);
       // ブラウザで開かれるページには素のテキストではなく簡単なエラー画面を返す。
-      if ((request.headers.get("accept") ?? "").includes("text/html")) return errorPageHtml();
+      if ((request.headers.get("accept") ?? "").includes("text/html")) return errorPageHtml(site(env).name);
       return new Response("Internal Server Error", { status: 500 });
     }
 
     // --- Static assets (editor, css, js, view.html template, etc.) ---
     // HTML ページには <!--ANALYTICS--> に Google タグを差し込む（admin は素通り）。
-    return injectAnalytics(await env.ASSETS.fetch(request), env);
+    return injectAnalytics(await env.ASSETS.fetch(request), env, url.origin);
   },
 
   // Cron（wrangler.jsonc triggers）: 売上ランキングの日次スナップショット。
@@ -798,22 +799,23 @@ async function listNotFoundPage(env: Env, origin: string): Promise<Response> {
   try {
     const res = await env.ASSETS.fetch(new Request(`${origin}/404`));
     if (res.ok && (res.headers.get("content-type") ?? "").includes("text/html")) {
-      return await injectAnalytics(new Response(await res.text(), { status: 404, headers }), env);
+      return await injectAnalytics(new Response(await res.text(), { status: 404, headers }), env, origin);
     }
   } catch {
     // フォールバックへ
   }
+  const name = escapeHtml(site(env).name);
   const html = `<!doctype html>
 <html lang="ja">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <meta name="robots" content="noindex">
-<title>リストが見つかりません | My 100 Manga</title>
+<title>リストが見つかりません | ${name}</title>
 <style>body{font-family:system-ui,-apple-system,"Hiragino Sans",sans-serif;margin:0;color:#222;background:#f7f8fb}header{padding:12px 16px;background:#fff;border-bottom:1px solid #e3e6ee}header a{color:#2a5bd7;font-weight:bold;text-decoration:none}main{max-width:560px;margin:48px auto;padding:0 16px;line-height:1.7}a.btn{display:inline-block;margin-top:16px;padding:8px 16px;border-radius:6px;background:#2a5bd7;color:#fff;text-decoration:none}</style>
 </head>
 <body>
-<header><a href="/">My 100 Manga</a></header>
+<header><a href="/">${name}</a></header>
 <main>
 <h1>リストが見つかりませんでした</h1>
 <p>削除されたか、URL が間違っている可能性があります。</p>
@@ -843,11 +845,12 @@ async function renderViewPage(env: Env, ctx: ExecutionContext, slug: string, ori
   bumpPopularity(env, "list", slug, data.owner_name ?? "");
 
   const templateRes = await env.ASSETS.fetch(new Request(`${origin}/view.html`));
-  // script/stylesheet の ?v= と <meta app-version> は、ユーザ入力を差し込む前のテンプレートに付ける。
-  let html = injectVersion(await templateRes.text(), appVersion(env));
+  // script/stylesheet の ?v= と <meta app-version>、サイト種別の表記は、ユーザ入力を差し込む前の
+  // テンプレートに付ける。
+  let html = injectVersion(applySiteIdentity(await templateRes.text(), env, origin), appVersion(env));
 
   const pageUrl = `${origin}/l/${slug}`;
-  const meta = buildOgp(data, pageUrl, `${origin}/share/${slug}/og.jpg?v=${await shareImageHash(data)}`, noCard);
+  const meta = buildOgp(site(env).name, data, pageUrl, `${origin}/share/${slug}/og.jpg?v=${await shareImageHash(data)}`, noCard);
   const aff = affIds(env);
   const injected =
     `<script>window.__LIST__=${safeJson(data)};` +
@@ -861,7 +864,7 @@ async function renderViewPage(env: Env, ctx: ExecutionContext, slug: string, ori
     ["<!--GTM_BODY-->", gtmBody(env)],
     ["<!--LIST_DATA-->", injected],
     ["<!--HEADER_LINKS-->", headerLinksHtml()],
-    ["<!--FOOTER_AFF-->", footerHtml(true)],
+    ["<!--FOOTER_AFF-->", footerHtml(env, true)],
   ];
   for (const [ph, value] of fill) html = replaceLiteral(html, ph, value);
 
@@ -877,7 +880,7 @@ async function renderViewPage(env: Env, ctx: ExecutionContext, slug: string, ori
   return res;
 }
 
-function buildOgp(data: MangaList, pageUrl: string, image: string, noCard = false): string {
+function buildOgp(siteName: string, data: MangaList, pageUrl: string, image: string, noCard = false): string {
   const owner = data.owner_name ? `${data.owner_name}さん` : "誰か";
   const title = `${owner}を構成する100の漫画`;
   const titles = ogpWorkTitles(data).join("、");
@@ -890,14 +893,14 @@ function buildOgp(data: MangaList, pageUrl: string, image: string, noCard = fals
       ...robots,
       `<meta name="description" content="${escapeHtml(desc)}">`,
       canonical,
-      `<title>${escapeHtml(title)} | My 100 Manga</title>`,
+      `<title>${escapeHtml(title)} | ${escapeHtml(siteName)}</title>`,
     ].join("\n  ");
   }
   const tags = [
     ...robots,
     canonical,
     `<meta property="og:type" content="website">`,
-    `<meta property="og:site_name" content="My 100 Manga">`,
+    `<meta property="og:site_name" content="${escapeHtml(siteName)}">`,
     `<meta property="og:title" content="${escapeHtml(title)}">`,
     `<meta property="og:description" content="${escapeHtml(desc)}">`,
     `<meta property="og:url" content="${escapeHtml(pageUrl)}">`,
@@ -910,7 +913,7 @@ function buildOgp(data: MangaList, pageUrl: string, image: string, noCard = fals
     `<meta property="og:image:height" content="${SHARE_IMAGE_SIZE.og.height}">`,
     `<meta name="twitter:image" content="${escapeHtml(image)}">`,
   ];
-  tags.push(`<title>${escapeHtml(title)} | My 100 Manga</title>`);
+  tags.push(`<title>${escapeHtml(title)} | ${escapeHtml(siteName)}</title>`);
   return tags.join("\n  ");
 }
 

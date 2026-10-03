@@ -11,12 +11,16 @@
 //   投稿画面へのリンクを出し、コピー／保存した画像を貼ってもらう（intent では画像を
 //   添付できない）。
 (function () {
-  const HASHTAG = "my100manga";
+  // サイト名・ハッシュタグはサイト種別（本家 / R18版）で変わるので、サーバが差し込む
+  // window.__SITE__（src/analytics.ts analyticsTags）から読む。無ければ本家の値。
+  const SITE = window.__SITE__ || {};
+  const SITE_NAME = SITE.name || "My 100 Manga";
+  const HASHTAG = SITE.hashtag || "my100manga";
 
   // 表示名が無いときは「私のMy 100 Manga」ではなくサイトの題名どおりの言い回しにする。
   // ハッシュタグ #my100manga は X は hashtags パラメータ、Threads/Bluesky/LINE は本文末尾に付ける。
   function shareText(owner) {
-    return owner ? `${owner}のMy 100 Manga` : "自分を構成する100の漫画";
+    return owner ? `${owner}の${SITE_NAME}` : "自分を構成する100の漫画";
   }
 
   // noCard: 画像を添付して投稿するとき用。?i=1 のページはリンクカードのメタタグを

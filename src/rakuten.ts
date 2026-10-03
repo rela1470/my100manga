@@ -1,3 +1,4 @@
+import { excludeAdult } from "./site";
 import { Env } from "./types";
 
 // The 2026 Rakuten OpenAPI gateway rejects server-side calls unless they look
@@ -165,7 +166,7 @@ export async function rakutenResolveFull(
 // children, plus 文庫 > 漫画. Rakuten Books has no adult genre under these; the regex below
 // is a second net over title / series / publisher in case something slips in anyway.
 const COMIC_GENRES = /^(001001|001019011)/;
-const ADULT = /アダルト|成人|成年|18禁|R-?18|官能/i;
+const ADULT = /アダルト|成人|成年|18禁|R-?18|官能/i; // R18版では判定しない（excludeAdult, src/site.ts）
 
 /** The book for an ISBN the master lacks, for ISBN search — only when Rakuten files it
  *  under a manga genre and nothing in its names looks adult; otherwise null. Rakuten
@@ -176,7 +177,7 @@ export async function rakutenComicByIsbn(env: Env, isbn: string): Promise<Rakute
   if (!item?.title) return null;
   const genres = String(item.booksGenreId ?? "").split("/");
   if (!genres.some((g) => COMIC_GENRES.test(g))) return null;
-  if (ADULT.test(`${item.title} ${item.seriesName ?? ""} ${item.publisherName ?? ""}`)) return null;
+  if (excludeAdult(env) && ADULT.test(`${item.title} ${item.seriesName ?? ""} ${item.publisherName ?? ""}`)) return null;
   const book = toBook(item);
   if (/noimage/i.test(book.cover_url)) book.cover_url = "";
   return book;

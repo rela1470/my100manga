@@ -202,7 +202,7 @@ export async function refreshListView(env: Env, slug: string, origin: string | u
     const [list] = await Promise.all([
       buildListSnapshot(env, slug),
       purgeViewCache(env, origin, slug),
-      purgePublicListsCache(),
+      purgePublicListsCache(env),
     ]);
     return list;
   } catch (err) {
@@ -228,7 +228,7 @@ export async function invalidateListView(env: Env, slug: string, origin: string 
  *  DB 側の削除が成功した slug にだけ呼ぶ。R2 の掃除の失敗で削除 API を失敗させない。 */
 export async function purgeListArtifacts(env: Env, slug: string, origin: string | undefined): Promise<void> {
   try {
-    const tasks: Promise<unknown>[] = [purgeViewCache(env, origin, slug), purgePublicListsCache()];
+    const tasks: Promise<unknown>[] = [purgeViewCache(env, origin, slug), purgePublicListsCache(env)];
     if (env.COVERS) {
       const bucket = env.COVERS;
       tasks.push(bucket.delete(snapshotKey(slug)));

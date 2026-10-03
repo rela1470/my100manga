@@ -37,7 +37,7 @@ async function getSiteStats(env: Env): Promise<SiteStats> {
 /** GET /api/site-stats — トップページの収録数表示用。 */
 export async function handleSiteStats(env: Env): Promise<Response> {
   // トップページのたびに呼ばれるので、エッジでも 60 秒持って meta の読み取りも省く。
-  return withEdgeCache(edgeCacheKey("/api/site-stats"), 60, async () =>
+  return withEdgeCache(edgeCacheKey(env, "/api/site-stats"), 60, async () =>
     json(await getSiteStats(env), 200, { "cache-control": "public, max-age=300" })
   );
 }

@@ -36,7 +36,7 @@ describe("isCrawler", () => {
 
 describe("GET /api/public-lists", () => {
   // 一覧はエッジ（Cache API）に 60 秒持つので、テストごとに 1 ページ目のキャッシュを消す。
-  beforeEach(purgePublicListsCache);
+  beforeEach(() => purgePublicListsCache(env));
 
   it("限定公開は一覧にも件数にも出さない", async () => {
     const a = await createList({ owner_name: "A" });
@@ -142,18 +142,18 @@ describe("POST /api/lists/:slug/view（アクセス数）", () => {
 
 describe("GET /api/public-lists のエッジキャッシュ", () => {
   it("60 秒の間は同じ結果を返し、purgePublicListsCache で作り直す", async () => {
-    await purgePublicListsCache();
+    await purgePublicListsCache(env);
     const a = await createList({ owner_name: "A" });
     expect((await publicLists()).lists.map((l) => l.slug)).toEqual([a.slug]);
     // API を通さない変更（管理者の直接操作など）はキャッシュが効いている間は出ない
     await env.DB.prepare(`UPDATE lists SET unlisted = 1 WHERE slug = ?`).bind(a.slug).run();
     expect((await publicLists()).lists.map((l) => l.slug)).toEqual([a.slug]);
-    await purgePublicListsCache();
+    await purgePublicListsCache(env);
     expect((await publicLists()).lists.map((l) => l.slug)).toEqual([]);
   });
 
   it("公開・更新の直後は（この colo では）すぐ一覧に出る", async () => {
-    await purgePublicListsCache();
+    await purgePublicListsCache(env);
     const a = await createList({ owner_name: "A" });
     expect((await publicLists()).lists.map((l) => l.slug)).toEqual([a.slug]);
     const b = await createList({ owner_name: "B" });
@@ -161,7 +161,7 @@ describe("GET /api/public-lists のエッジキャッシュ", () => {
   });
 
   it("ブラウザ向けの cache-control はキャッシュから返すときも元のまま", async () => {
-    await purgePublicListsCache();
+    await purgePublicListsCache(env);
     await createList();
     const first = await SELF.fetch("https://example.com/api/public-lists");
     const second = await SELF.fetch("https://example.com/api/public-lists");

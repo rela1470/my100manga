@@ -73,6 +73,10 @@ export interface Env {
   // 空/未設定ならそのタグは出力しない（admin はプレースホルダ無しで常に素通り）。
   ADSENSE_CLIENT?: string;
   GTM_CONTAINER_ID?: string;
+  // ボット確認（Cloudflare Turnstile, src/turnstile.ts）。SITE_KEY は公開値なので vars、
+  // SECRET は secret で注入する。両方未設定なら無効（ローカル dev 等）、片方だけなら fail-closed。
+  TURNSTILE_SITE_KEY?: string;
+  TURNSTILE_SECRET?: string;
   // 公開書き込み系の濫用よけ（src/ratelimit.ts）。RL_WRITE は POST/PUT の書き込み全般、
   // RL_COVERS は表紙解決（外部 API を叩く /api/covers）用。binding 未設定なら fail-open。
   RL_WRITE?: RateLimit;

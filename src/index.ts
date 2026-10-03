@@ -79,6 +79,7 @@ import { footerHtml } from "./footer";
 import { bumpPopularity } from "./popularity";
 import { Env, MangaList } from "./types";
 import { rateLimit } from "./ratelimit";
+import { turnstileAction, verifyTurnstile } from "./turnstile";
 import { COVER_CACHE, getTrimmedCover, trimKind } from "./coverBytes";
 import { getShareImage, shareImageHash, SHARE_IMAGE_SIZE, type ShareVariant } from "./shareImage";
 import { badRequest, escapeHtml, json, notFound, readJsonObject } from "./util";
@@ -130,6 +131,12 @@ export default {
           const limited = await rateLimit(request, env.RL_WRITE, "write");
           if (limited) return limited;
         }
+      }
+      // リスト公開・通報・データ修正系はボット確認（Turnstile, src/turnstile.ts）も通す。
+      const botAction = turnstileAction(request.method, path);
+      if (botAction) {
+        const denied = await verifyTurnstile(request, env, botAction);
+        if (denied) return denied;
       }
       // ユーザが明示的に押す「本データを再取得」(/api/book?refresh=1) は Rakuten を叩き直す
       // ので、GET でも外部 API 枠（RL_COVERS）で濫用よけする。通常の /api/book はキャッシュ

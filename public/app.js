@@ -1141,7 +1141,7 @@ async function submitCover(isbn, url) {
   try {
     const res = await fetch("/api/cover-suggestions", {
       method: "POST",
-      headers: { "content-type": "application/json" },
+      headers: { "content-type": "application/json", ...(await botHeaders("feedback")) },
       body: JSON.stringify({ isbn, cover_url: url }),
     });
     if (!res.ok) return null;
@@ -2248,7 +2248,7 @@ async function pickManualVolume(series, gap, c, volumes) {
   try {
     const res = await fetch(`/api/series/${encodeURIComponent(series.series_id)}/corrections`, {
       method: "POST",
-      headers: { "content-type": "application/json" },
+      headers: { "content-type": "application/json", ...(await botHeaders("feedback")) },
       body: JSON.stringify({ isbn: c.isbn, volume_number: gap.vol }),
     });
     const data = await res.json();
@@ -2285,7 +2285,7 @@ async function reportWrongVolume(series, v, volumes, btn, opts) {
       `/api/series/${encodeURIComponent(series.series_id)}/corrections/report`,
       {
         method: "POST",
-        headers: { "content-type": "application/json" },
+        headers: { "content-type": "application/json", ...(await botHeaders("feedback")) },
         body: JSON.stringify({ isbn: v.isbn }),
       }
     );
@@ -2358,7 +2358,7 @@ async function reportWrongSeriesName(series, btn, textEl) {
   try {
     const res = await fetch(`/api/series/${encodeURIComponent(series.series_id)}/report`, {
       method: "POST",
-      headers: { "content-type": "application/json" },
+      headers: { "content-type": "application/json", ...(await botHeaders("feedback")) },
       body: JSON.stringify({ suggested_name: suggested.slice(0, 100) }),
     });
     const data = await res.json().catch(() => ({}));
@@ -2760,7 +2760,7 @@ async function sendMergeRequest(series, otherIds, btn) {
   try {
     const res = await fetch(`/api/series/${encodeURIComponent(series.series_id)}/merge-request`, {
       method: "POST",
-      headers: { "content-type": "application/json" },
+      headers: { "content-type": "application/json", ...(await botHeaders("feedback")) },
       body: JSON.stringify({ other_ids: otherIds }),
     });
     const data = await res.json().catch(() => ({}));
@@ -2871,7 +2871,7 @@ function openSplitRequest(series, volumes, opts) {
     try {
       const res = await fetch(`/api/series/${encodeURIComponent(series.series_id)}/split-request`, {
         method: "POST",
-        headers: { "content-type": "application/json" },
+        headers: { "content-type": "application/json", ...(await botHeaders("feedback")) },
         body: JSON.stringify({ isbns }),
       });
       const data = await res.json().catch(() => ({}));
@@ -3412,7 +3412,7 @@ async function doPublish() {
       if (state.customSlug) payload.slug = state.customSlug;
       res = await fetch(`/api/lists`, {
         method: "POST",
-        headers: { "content-type": "application/json" },
+        headers: { "content-type": "application/json", ...(await botHeaders("publish")) },
         body: JSON.stringify(payload),
       });
       const data = await res.json();

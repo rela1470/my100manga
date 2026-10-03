@@ -33,7 +33,7 @@ async function sendReport(slug, target, position, btn) {
   try {
     const res = await fetch(`/api/lists/${encodeURIComponent(slug)}/reports`, {
       method: "POST",
-      headers: { "content-type": "application/json" },
+      headers: { "content-type": "application/json", ...(await botHeaders("report")) },
       body: JSON.stringify(position ? { target, position } : { target }),
     });
     if (!res.ok) {
@@ -73,7 +73,7 @@ async function sendTitleReport(isbn, btn) {
   try {
     const res = await fetch(`/api/volume-title-reports`, {
       method: "POST",
-      headers: { "content-type": "application/json" },
+      headers: { "content-type": "application/json", ...(await botHeaders("feedback")) },
       body: JSON.stringify({ isbn }),
     });
     if (!res.ok) {

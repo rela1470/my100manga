@@ -1,12 +1,18 @@
 import { Env } from "./types";
 import { footerHtml } from "./footer";
+import { escapeHtml } from "./util";
 
 // 全 HTML ページの <head> の <!--ANALYTICS--> に差し込む Google タグを組み立てる。
 // AdSense ローダ（ADSENSE_CLIENT）と GTM のヘッダスニペット（GTM_CONTAINER_ID）。
 // どちらも公開値なので secret ではなく wrangler.jsonc の vars に集約。空/未設定なら
 // そのタグは出力しない。admin.html にはプレースホルダを置いていないので自動で素通り。
+// あわせて Turnstile のサイトキー（公開値）を <meta> で渡す（public/turnstile.js が読む）。
 export function analyticsTags(env: Env): string {
   let out = "";
+  const sitekey = (env.TURNSTILE_SITE_KEY ?? "").trim();
+  if (sitekey) {
+    out += `<meta name="turnstile-sitekey" content="${escapeHtml(sitekey)}">`;
+  }
   const ads = (env.ADSENSE_CLIENT ?? "").trim();
   if (ads) {
     out +=

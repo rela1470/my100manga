@@ -51,6 +51,10 @@
     // パブリッシャ ID（"ca-pub-..."）、GTM_CONTAINER_ID は GTM コンテナ ID（"GTM-..."）。
     "ADSENSE_CLIENT": "",
     "GTM_CONTAINER_ID": "",
+    // ボット確認（Cloudflare Turnstile, src/turnstile.ts）のサイトキー。公開値なので vars。
+    // 対になる TURNSTILE_SECRET は `wrangler secret put TURNSTILE_SECRET` で注入する。
+    // 両方空なら無効（リスト公開・通報・データ修正をボット確認なしで受け付ける）。
+    "TURNSTILE_SITE_KEY": "",
     // 開発ツール（admin 画面の「DB初期化」= マスターデータ以外を全削除）を有効化。"true" で
     // 表示・実行可能。認証は requireAdmin（Cloudflare Access）が担保するので管理者だけが使える
     // （ADMIN_DEV_BYPASS と違い認証はバイパスしない）。正式リリース時は外す/"false" にする。
@@ -105,6 +109,7 @@
         "COVER_SUGGESTIONS_ENABLED": "false",
         "ADSENSE_CLIENT": "",
         "GTM_CONTAINER_ID": "",
+        "TURNSTILE_SITE_KEY": "",
         "DEV_TOOLS": "false"
       },
       "version_metadata": { "binding": "CF_VERSION" },

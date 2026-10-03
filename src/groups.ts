@@ -1,5 +1,15 @@
 import { Env } from "./types";
-import { json, notFound, normTitle, baseTitle, escapeLikeClamped, LIKE_MAX_BYTES } from "./util";
+import {
+  json,
+  notFound,
+  normTitle,
+  baseTitle,
+  escapeLikeClamped,
+  LIKE_MAX_BYTES,
+  plainVolumeNumber,
+  unifyVolumeLabel,
+  volumeLabelTemplate,
+} from "./util";
 import { readCachedCovers } from "./covers";
 
 // シリーズに属さない巻のまとまり（グループ）と、独自シリーズ。
@@ -291,6 +301,7 @@ export async function getGroupVolumes(
   if (!r) return notFound("シリーズが見つかりません");
   if ("seriesId" in r) return openSeries(r.seriesId);
   const g = r.group;
+  const volumes = await withGroupCorrections(env, g);
   return json(
     {
       series_id: g.id,
@@ -302,11 +313,89 @@ export async function getGroupVolumes(
       supplement_probed: true,
       supplement_checked_at: 0,
       master_updated_at: await masterUpdatedAt(),
-      volumes: g.volumes,
+      volumes,
     },
     200,
     { "cache-control": "no-store" }
   );
+}
+
+/** グループの手動追加（series_correction）・非表示（volume_hidden）の行が使う ID。
+ *  正規 ID（G + 最小 ISBN）で書くが、後からマスタに小さい ISBN の巻が入ると正規 ID が
+ *  変わるので、読むときはグループのどの巻の ISBN の G-id でも拾う。 */
+export const groupMemberIds = (g: Pick<UnlinkedGroup, "isbns">): string[] => g.isbns.map((i) => "G" + i);
+
+/** グループの巻に手動追加の巻（マスタに 1・2巻が無い、など）を足し、管理者が確定で非表示に
+ *  した巻を除く。getSeriesVolumes の訂正のマージと同じく、ISBN か巻番号が既にある巻は足さない。 */
+async function withGroupCorrections(env: Env, g: UnlinkedGroup): Promise<GroupVolume[]> {
+  const ids = groupMemberIds(g);
+  const corrections: { isbn: string; volume_number: string; vol_sort: number; cover_url: string }[] = [];
+  const hidden = new Set<string>();
+  for (let i = 0; i < ids.length; i += CHUNK) {
+    const chunk = ids.slice(i, i + CHUNK);
+    const inIds = chunk.map(() => "?").join(",");
+    const [c, h] = await env.DB.batch([
+      env.DB.prepare(
+        `SELECT isbn, volume_number, vol_sort, cover_url FROM series_correction
+          WHERE series_id IN (${inIds}) ORDER BY vol_sort, isbn`
+      ).bind(...chunk),
+      env.DB.prepare(`SELECT isbn FROM volume_hidden WHERE series_id IN (${inIds})`).bind(...chunk),
+    ]);
+    corrections.push(...((c.results ?? []) as typeof corrections));
+    for (const r of (h.results ?? []) as { isbn: string }[]) hidden.add(r.isbn);
+  }
+  if (!corrections.length && !hidden.size) return g.volumes;
+
+  const volumes = [...g.volumes];
+  const knownIsbns = new Set(volumes.flatMap((v) => v.isbns));
+  const knownPlain = new Set<number>();
+  for (const v of volumes) {
+    const p = plainVolumeNumber(v.volume_number);
+    if (p !== null) knownPlain.add(p);
+  }
+  const template = volumeLabelTemplate(volumes.map((v) => v.volume_number).filter(Boolean));
+  for (const c of corrections) {
+    const plain = plainVolumeNumber(c.volume_number);
+    if (knownIsbns.has(c.isbn) || (plain !== null && knownPlain.has(plain))) continue;
+    knownIsbns.add(c.isbn);
+    if (plain !== null) knownPlain.add(plain);
+    volumes.push({
+      isbn: c.isbn,
+      isbns: [c.isbn],
+      volume_number: unifyVolumeLabel(template, c.volume_number),
+      vol_sort: c.vol_sort,
+      title: g.title,
+      author: g.creator,
+      creators: g.creators,
+      publisher: "",
+      label: "",
+      pubdate: "",
+      cover_url: c.cover_url,
+      correction: true,
+    });
+  }
+  return volumes
+    .filter((v) => !v.isbns.some((i) => hidden.has(i)))
+    .sort((a, b) => a.vol_sort - b.vol_sort || a.pubdate.localeCompare(b.pubdate) || a.isbn.localeCompare(b.isbn));
+}
+
+/** グループを結合したとき、グループに付いていた手動追加・非表示・通報を結合先へ移す文。 */
+export function moveGroupRowsStmts(env: Env, g: Pick<UnlinkedGroup, "isbns">, seriesId: string): D1PreparedStatement[] {
+  const ids = groupMemberIds(g);
+  const stmts: D1PreparedStatement[] = [];
+  for (let i = 0; i < ids.length; i += CHUNK) {
+    const chunk = ids.slice(i, i + CHUNK);
+    const inIds = chunk.map(() => "?").join(",");
+    for (const table of ["series_correction", "volume_hidden", "volume_report"]) {
+      stmts.push(
+        env.DB.prepare(`UPDATE OR REPLACE ${table} SET series_id = ? WHERE series_id IN (${inIds})`).bind(
+          seriesId,
+          ...chunk
+        )
+      );
+    }
+  }
+  return stmts;
 }
 
 /** 次の独自シリーズ ID（U + 6 桁の連番）。 */

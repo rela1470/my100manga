@@ -1,6 +1,6 @@
 import { handleSearch, handleLiveSearch } from "./search";
 import { getSeriesVolumes, getMasterUpdatedAt, handleMasterInfo } from "./series";
-import { getGroupVolumes } from "./groups";
+import { getGroupVolumes, resolveGroup } from "./groups";
 import { addCorrection, reportVolume, reportSeriesName, reportVolumeTitle, suggestCover } from "./corrections";
 import { coverCandidates, volumeCandidates } from "./candidates";
 import {
@@ -79,13 +79,12 @@ import { footerHtml } from "./footer";
 import { bumpPopularity } from "./popularity";
 import { Env, MangaList } from "./types";
 import { rateLimit } from "./ratelimit";
-import { trimShopFrame, trimWhitespace } from "./covertrim";
-import { badRequest, escapeHtml, json, readJsonObject } from "./util";
+import { COVER_CACHE, getTrimmedCover, trimKind } from "./coverBytes";
+import { getShareImage, shareImageHash, SHARE_IMAGE_SIZE, type ShareVariant } from "./shareImage";
+import { badRequest, escapeHtml, json, notFound, readJsonObject } from "./util";
 
 export { RakutenRateLimiter } from "./ratelimiter";
 import type { CoverQueue } from "./ratelimiter";
-
-const COVER_CACHE = "public, max-age=31536000, immutable";
 
 function coverHeaders(etag?: string): Headers {
   const h = new Headers();
@@ -95,22 +94,9 @@ function coverHeaders(etag?: string): Headers {
   return h;
 }
 
-async function sha256Hex(s: string): Promise<string> {
-  const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(s));
-  return [...new Uint8Array(digest)].map((b) => b.toString(16).padStart(2, "0")).join("");
-}
-
-// もったいない本舗's 楽天 storefronts — their listing images frame the cover with a
-// logo band and mascot (src/covertrim.ts trimShopFrame). Kept in sync with
-// MOTTAINAI_RE in public/cover-fit.js.
-const MOTTAINAI_PATH = /^\/@0_mall\/(comicset|mottainaihonpo|mottainaihonpo-omatome)\/cabinet\//;
-
-// Serve a store cover with its baked-in framing trimmed: Yahoo's white bars
-// (trimWhitespace) or もったいない本舗's logo frame (trimShopFrame). First hit decodes
-// + trims (src/covertrim.ts) and persists the result to R2 keyed by a hash of the
-// source URL; every later hit streams straight from R2. Whitelisted to *.yimg.jp and
-// those shops' 楽天 cabinets so it can't be used as an open proxy. If trimming yields
-// nothing, the original image is stored and served unchanged.
+// Serve a store cover with its baked-in framing trimmed (src/coverBytes.ts
+// getTrimmedCover). Whitelisted to *.yimg.jp and もったいない本舗's 楽天 cabinets so it
+// can't be used as an open proxy.
 async function handleCover(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
   const u = new URL(request.url).searchParams.get("u") || "";
   let target: URL;
@@ -119,42 +105,12 @@ async function handleCover(request: Request, env: Env, ctx: ExecutionContext): P
   } catch {
     return new Response("bad url", { status: 400 });
   }
-  const yahoo = /(^|\.)yimg\.jp$/.test(target.hostname);
-  const mottainai =
-    target.hostname === "thumbnail.image.rakuten.co.jp" && MOTTAINAI_PATH.test(target.pathname);
-  if (target.protocol !== "https:" || !(yahoo || mottainai)) {
-    return new Response("forbidden host", { status: 403 });
-  }
+  const kind = trimKind(target);
+  if (!kind) return new Response("forbidden host", { status: 403 });
 
-  const key = (yahoo ? "yahoo/" : "mottainai/") + (await sha256Hex(target.toString())) + ".jpg";
-
-  if (env.COVERS) {
-    const hit = await env.COVERS.get(key);
-    if (hit) return new Response(hit.body, { status: 200, headers: coverHeaders(hit.httpEtag) });
-  }
-
-  const upstream = await fetch(target.toString(), {
-    cf: { cacheEverything: true, cacheTtl: 86400 },
-  });
-  if (!upstream.ok) return new Response("upstream error", { status: 502 });
-  const original = await upstream.arrayBuffer();
-
-  let out: ArrayBuffer = original;
-  try {
-    const trimmed = yahoo ? await trimWhitespace(original) : await trimShopFrame(original);
-    if (trimmed) out = trimmed;
-  } catch {
-    // decode/encode failure: fall back to the original bytes.
-  }
-
-  if (env.COVERS) {
-    ctx.waitUntil(
-      env.COVERS.put(key, out, {
-        httpMetadata: { contentType: "image/jpeg", cacheControl: COVER_CACHE },
-      }),
-    );
-  }
-  return new Response(out, { status: 200, headers: coverHeaders() });
+  const cover = await getTrimmedCover(env, ctx, target, kind);
+  if (!cover) return new Response("upstream error", { status: 502 });
+  return new Response(cover.body, { status: 200, headers: coverHeaders(cover.etag) });
 }
 
 export default {
@@ -221,12 +177,22 @@ export default {
         return await handleCover(request, env, ctx);
       }
       // シリーズに属さない巻のまとまり（G<ISBN>, see src/groups.ts）。巻一覧・取得ボタンは
-      // グループの巻を返し、訂正/通報は C-id 前提なので受け付けない（結合依頼は merge.ts 側で対応）。
+      // グループの巻を返す。手動追加（抜け巻・新刊）と巻の通報はグループの正規 ID に記録し、
+      // 既存シリーズに寄せられる・紐付け済みのグループならそのシリーズに記録する。
+      // シリーズ名の通報は C-id 前提なので受け付けない（結合依頼は merge.ts 側で対応）。
       const groupMatch = path.match(/^\/api\/series\/(G\d{13})\/(volumes|supplement|corrections|corrections\/report|report)$/);
       if (groupMatch) {
         if ((groupMatch[2] === "volumes" && request.method === "GET") ||
             (groupMatch[2] === "supplement" && request.method === "POST")) {
           return await getGroupVolumes(env, groupMatch[1], (id) => getSeriesVolumes(env, id), () => getMasterUpdatedAt(env));
+        }
+        if ((groupMatch[2] === "corrections" || groupMatch[2] === "corrections/report") && request.method === "POST") {
+          const r = await resolveGroup(env, groupMatch[1]);
+          if (!r) return notFound("シリーズが見つかりません");
+          const [id, group] = "seriesId" in r ? [r.seriesId, null] : [r.group.id, r.group];
+          return groupMatch[2] === "corrections"
+            ? await addCorrection(request, env, id, group)
+            : await reportVolume(request, env, id, group);
         }
         return badRequest("このまとまりはシリーズに属していないため、この操作はできません");
       }
@@ -292,7 +258,12 @@ export default {
         return await resolveCoversApi(request, env);
       }
       if (path === "/api/lists" && request.method === "POST") {
-        return await createList(request, env);
+        const res = await createList(request, env);
+        if (res.ok) {
+          const { slug } = (await res.clone().json()) as { slug: string };
+          prewarmShareImage(env, ctx, slug);
+        }
+        return res;
       }
       const reportMatch = path.match(/^\/api\/lists\/([A-Za-z0-9_-]+)\/reports$/);
       if (reportMatch && request.method === "POST") {
@@ -302,7 +273,11 @@ export default {
       if (listMatch) {
         const slug = listMatch[1];
         if (request.method === "GET") return await getList(env, slug);
-        if (request.method === "PUT") return await updateList(request, env, slug);
+        if (request.method === "PUT") {
+          const res = await updateList(request, env, slug);
+          if (res.ok) prewarmShareImage(env, ctx, slug);
+          return res;
+        }
         return new Response("Method Not Allowed", { status: 405 });
       }
 
@@ -556,6 +531,12 @@ export default {
       if (viewMatch && request.method === "GET") {
         return await renderViewPage(env, viewMatch[1], url.origin);
       }
+
+      // --- Share image (all 100 covers in one picture; og:image + X attachment) ---
+      const shareMatch = path.match(/^\/share\/([A-Za-z0-9_-]+)\/(og|full)\.jpg$/);
+      if (shareMatch && request.method === "GET") {
+        return await handleShareImage(request, env, ctx, shareMatch[1], shareMatch[2] as ShareVariant);
+      }
     } catch (err) {
       console.error("request failed", err);
       if (path.startsWith("/api/")) return json({ error: "サーバエラーが発生しました" }, 500);
@@ -614,6 +595,42 @@ async function reportCoverQueue(env: Env, client: unknown, pending: unknown): Pr
   }
 }
 
+// ?v=<hash> on the URL is only a cache buster; the response is whatever the list
+// looks like now. Rendering is CPU-heavy, so only a cache miss counts against the
+// per-IP limit (a miss happens once per list edit per variant).
+async function handleShareImage(
+  request: Request,
+  env: Env,
+  ctx: ExecutionContext,
+  slug: string,
+  variant: ShareVariant
+): Promise<Response> {
+  const data = await getListData(env, slug);
+  if (!data) return new Response("not found", { status: 404 });
+  let limited: Response | null = null;
+  const body = await getShareImage(env, ctx, data, variant, {
+    onMiss: async () => !(limited = await rateLimit(request, env.RL_COVERS, "share")),
+  });
+  if (!body) return limited ?? new Response("rate limited", { status: 429 });
+  return new Response(body, {
+    headers: {
+      "content-type": "image/jpeg",
+      "cache-control": new URL(request.url).searchParams.has("v") ? COVER_CACHE : "public, max-age=300",
+    },
+  });
+}
+
+// Render the og variant right after a publish so X's crawler, which fetches it
+// when the link is first posted, doesn't wait on (or time out during) the render.
+function prewarmShareImage(env: Env, ctx: ExecutionContext, slug: string): void {
+  ctx.waitUntil(
+    (async () => {
+      const data = await getListData(env, slug);
+      if (data) await getShareImage(env, ctx, data, "og");
+    })().catch((err) => console.error("share image prewarm failed", err))
+  );
+}
+
 async function renderViewPage(env: Env, slug: string, origin: string): Promise<Response> {
   const data = await getListData(env, slug);
   // ブラウザで開かれるページなので JSON の 404 ではなくトップへ戻し、そこでモーダルを出す。
@@ -628,7 +645,7 @@ async function renderViewPage(env: Env, slug: string, origin: string): Promise<R
   const templateRes = await env.ASSETS.fetch(new Request(`${origin}/view.html`));
   let html = await templateRes.text();
 
-  const meta = buildOgp(data, `${origin}/l/${slug}`);
+  const meta = buildOgp(data, `${origin}/l/${slug}`, `${origin}/share/${slug}/og.jpg?v=${await shareImageHash(data)}`);
   const aff = affIds(env);
   const injected =
     `<script>window.__LIST__=${safeJson(data)};` +
@@ -646,7 +663,7 @@ async function renderViewPage(env: Env, slug: string, origin: string): Promise<R
   });
 }
 
-function buildOgp(data: MangaList, pageUrl: string): string {
+function buildOgp(data: MangaList, pageUrl: string, image: string): string {
   const owner = data.owner_name ? `${data.owner_name}さん` : "誰か";
   const title = `${owner}を構成する100の漫画`;
   const titles = data.items
@@ -655,7 +672,6 @@ function buildOgp(data: MangaList, pageUrl: string): string {
     .filter(Boolean)
     .join("、");
   const desc = titles ? `${titles} など${data.items.length}作品` : `${data.items.length}作品のおすすめ漫画リスト`;
-  const image = data.items.find((i) => i.cover_url)?.cover_url ?? "";
 
   const tags = [
     `<meta property="og:type" content="website">`,
@@ -663,15 +679,15 @@ function buildOgp(data: MangaList, pageUrl: string): string {
     `<meta property="og:title" content="${escapeHtml(title)}">`,
     `<meta property="og:description" content="${escapeHtml(desc)}">`,
     `<meta property="og:url" content="${escapeHtml(pageUrl)}">`,
-    `<meta name="twitter:card" content="${image ? "summary_large_image" : "summary"}">`,
+    `<meta name="twitter:card" content="summary_large_image">`,
     `<meta name="twitter:title" content="${escapeHtml(title)}">`,
     `<meta name="twitter:description" content="${escapeHtml(desc)}">`,
     `<meta name="description" content="${escapeHtml(desc)}">`,
+    `<meta property="og:image" content="${escapeHtml(image)}">`,
+    `<meta property="og:image:width" content="${SHARE_IMAGE_SIZE.og.width}">`,
+    `<meta property="og:image:height" content="${SHARE_IMAGE_SIZE.og.height}">`,
+    `<meta name="twitter:image" content="${escapeHtml(image)}">`,
   ];
-  if (image) {
-    tags.push(`<meta property="og:image" content="${escapeHtml(image)}">`);
-    tags.push(`<meta name="twitter:image" content="${escapeHtml(image)}">`);
-  }
   tags.push(`<title>${escapeHtml(title)} | My 100 Manga</title>`);
   return tags.join("\n  ");
 }

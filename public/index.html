@@ -69,6 +69,7 @@
     <div class="modal">
       <h2 id="searchTitle">作品を追加</h2>
       <div class="search-subtitle" id="searchSubtitle" hidden></div>
+      <div class="vol-bar search-bar" id="searchBar" hidden></div>
       <div class="spinner" id="searchSpinner" style="display:none">検索中...</div>
       <div class="results" id="results"></div>
       <div class="modal-actions">
@@ -87,9 +88,12 @@
         <div class="dinfo">
           <div class="dauthor" id="vAuthor"></div>
           <dl class="dmeta">
+            <div class="dmeta-row" id="vVolRow" style="display:none"><dt>巻</dt><dd id="vVol"></dd></div>
             <div class="dmeta-row" id="vPublisherRow" style="display:none"><dt>出版社</dt><dd id="vPublisher"></dd></div>
+            <div class="dmeta-row" id="vLabelRow" style="display:none"><dt>レーベル</dt><dd id="vLabel"></dd></div>
             <div class="dmeta-row" id="vPubdateRow" style="display:none"><dt>発行日</dt><dd id="vPubdate"></dd></div>
             <div class="dmeta-row" id="vIsbnRow" style="display:none"><dt>ISBN</dt><dd id="vIsbn"></dd></div>
+            <div class="dmeta-row" id="vEditionsRow" style="display:none"><dt>他の版</dt><dd id="vEditions"></dd></div>
           </dl>
         </div>
       </div>
@@ -122,7 +126,9 @@
           <div class="dauthor" id="eAuthor"></div>
           <dl class="dmeta" id="eMeta">
             <div class="dmeta-row" id="eSeriesRow" style="display:none"><dt>シリーズ</dt><dd><a id="eSeries" class="series-link"></a></dd></div>
+            <div class="dmeta-row" id="eVolRow" style="display:none"><dt>巻</dt><dd id="eVol"></dd></div>
             <div class="dmeta-row" id="ePublisherRow" style="display:none"><dt>出版社</dt><dd id="ePublisher"></dd></div>
+            <div class="dmeta-row" id="eLabelRow" style="display:none"><dt>レーベル</dt><dd id="eLabel"></dd></div>
             <div class="dmeta-row" id="ePubdateRow" style="display:none"><dt>発行日</dt><dd id="ePubdate"></dd></div>
             <div class="dmeta-row" id="eIsbnRow" style="display:none"><dt>ISBN</dt><dd id="eIsbn"></dd></div>
             <div class="dmeta-row" id="eSourceRow" style="display:none"><dt>画像参考元</dt><dd id="eSource"></dd></div>
@@ -193,6 +199,11 @@
         <input type="text" id="editUrl" readonly>
         <button id="copyEdit">コピー</button>
       </div>
+      <p class="hint">Xでシェア（100冊を1枚にした画像付き）</p>
+      <div class="share-x">
+        <button class="x-post" id="shareXPost">𝕏 でポスト</button>
+        <button id="shareXImage">画像でポスト</button>
+      </div>
       <div class="modal-actions">
         <div style="flex:1"></div>
         <a id="openShare" href="#" target="_blank"><button class="primary">開いて確認</button></a>
@@ -231,6 +242,7 @@
   <script src="/cover-fit.js"></script>
   <script src="/affiliate.js"></script>
   <script src="/mylists.js"></script>
+  <script src="/share-x.js"></script>
   <script src="/app.js"></script>
 </body>
 </html>

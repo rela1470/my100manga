@@ -24,8 +24,9 @@ src AS (
          NULL AS sibs, 1 AS pri
     FROM want w JOIN volumes v ON v.isbn = w.isbn
   UNION ALL
-  SELECT w.isbn, c.series_id, c.volume_number, c.vol_sort, '', NULL, NULL, 2
+  SELECT w.isbn, c.series_id, c.volume_number, c.vol_sort, COALESCE(g.title, ''), g.creator, NULL, 2
     FROM want w JOIN series_correction c ON c.isbn = w.isbn
+    LEFT JOIN volumes g ON c.series_id GLOB 'G*' AND g.isbn = substr(c.series_id, 2)
   UNION ALL
   SELECT w.isbn, sp.series_id, json_extract(j.value, '$.volume_number'),
          json_extract(j.value, '$.vol_sort'), json_extract(j.value, '$.title'),

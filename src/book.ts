@@ -53,13 +53,15 @@ export async function handleBook(request: Request, env: Env): Promise<Response> 
   // detail popups can link to its volume list. Not cached in book_meta — it follows
   // series merges / renames live.
   const seriesP = bookSeries(env, isbn);
+  // レーベル・巻番号・版違い ISBN（マスタ由来）。book_meta にはキャッシュせず毎回マスタから引く。
+  const masterP = bookMaster(env, isbn);
 
   // あらすじが空のキャッシュは、最後に楽天を引いてから 1 日経っていれば取り直す。予約中の
   // 新刊（売上ランキングに多い）は楽天の商品説明がまだ空で、そのまま固まると発売後も
   // あらすじが出ないため。取り直しても空なら checked_at が進み、また 1 日後に試す。
   const cached = refresh ? null : await readBookMeta(env, isbn);
   if (cached && (cached.meta.caption || Date.now() - cached.checkedAt < EMPTY_CAPTION_RETRY_MS)) {
-    return json({ ...cached.meta, series: await seriesP, status: "ok" }, 200, {
+    return json({ ...cached.meta, ...(await masterP), series: await seriesP, status: "ok" }, 200, {
       "cache-control": "no-store",
     });
   }
@@ -76,7 +78,7 @@ export async function handleBook(request: Request, env: Env): Promise<Response> 
   // 取り直し（あらすじ空の再試行）で楽天を引けなかった（レート制限）ときは、キャッシュの
   // 楽天由来の値（マスタに無い新刊の作者・出版社など）を落とさないようキャッシュを返す。
   if (rk === null && cached) {
-    return json({ ...cached.meta, series: await seriesP, status: "ok" }, 200, {
+    return json({ ...cached.meta, ...(await masterP), series: await seriesP, status: "ok" }, 200, {
       "cache-control": "no-store",
     });
   }
@@ -111,7 +113,36 @@ export async function handleBook(request: Request, env: Env): Promise<Response> 
   // "Rakuten was rate-limited so we never got an answer" — the latter is retryable and
   // mustn't be shown as 見つかりませんでした. rk === null is the undetermined (skipped) case.
   const status = rk === null ? "unavailable" : "ok";
-  return json({ ...result, series: await seriesP, status }, 200, { "cache-control": "no-store" });
+  return json({ ...result, ...(await masterP), series: await seriesP, status }, 200, {
+    "cache-control": "no-store",
+  });
+}
+
+interface BookMaster {
+  label: string;
+  volume_number: string;
+  editions: string[]; // 同じシリーズ・同じ巻番号の別 ISBN（通常版/特装版/重版など）
+}
+
+async function bookMaster(env: Env, isbn: string): Promise<BookMaster> {
+  const isbn13 = toIsbn13(isbn);
+  const v = await env.DB.prepare(
+    `SELECT series_id, volume_number, label FROM volumes WHERE isbn = ? LIMIT 1`
+  )
+    .bind(isbn13)
+    .first<{ series_id: string | null; volume_number: string | null; label: string | null }>();
+  if (!v) return { label: "", volume_number: "", editions: [] };
+  let editions: string[] = [];
+  if (v.series_id && v.volume_number) {
+    const res = await env.DB.prepare(
+      `SELECT isbn FROM volumes WHERE series_id = ? AND volume_number = ? AND isbn != ?
+        ORDER BY pubdate, isbn LIMIT 10`
+    )
+      .bind(v.series_id, v.volume_number, isbn13)
+      .all<{ isbn: string }>();
+    editions = (res.results ?? []).map((r) => r.isbn);
+  }
+  return { label: v.label || "", volume_number: v.volume_number || "", editions };
 }
 
 async function bookSeries(env: Env, isbn: string): Promise<{ id: string; title: string } | null> {

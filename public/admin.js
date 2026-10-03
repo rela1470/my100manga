@@ -922,7 +922,7 @@ async function loadSeriesReports(page = pageState.seriesReports) {
 }
 
 async function overrideSeriesName(r, btn) {
-  const suggested = r.override_name || r.suggested_name || r.name_kana || r.vol_title || "";
+  const suggested = r.suggested_name || r.override_name || r.name_kana || r.vol_title || "";
   const name = await uiPrompt(
     `シリーズ「${r.reported_name || r.series_id}」の正しい名前を入力してください。\n全ての閲覧者の検索/詳細表示に反映されます。`,
     suggested
@@ -2007,19 +2007,25 @@ async function openSeriesVolumes(seriesId, label) {
     return;
   }
 
+  // 結合の判断に使えるよう、1 冊ごとに作者・出版社/レーベル・発行日・ISBN（版違いの数）まで
+  // 出す。押すと本の詳細（book-detail.js。あらすじ・他の版の ISBN）を重ねて開く。
   for (const v of vols) {
+    const others = (v.isbns || []).length - 1;
     const body = [
       el("div", { className: "di-pos", textContent: v.volume_number || "-" }),
       el("div", { className: "di-title", textContent: v.title || "（タイトルなし）" }),
-      el("div", { className: "di-author", textContent: v.isbn || "" }),
+      el("div", { className: "di-author", textContent: v.creators || v.author || "" }),
+      el("div", { className: "di-meta", textContent: [v.publisher, v.label].filter(Boolean).join(" / ") }),
+      el("div", { className: "di-meta", textContent: v.pubdate || "" }),
+      el("div", { className: "di-meta di-isbn", textContent: (v.isbn || "") + (others > 0 ? `（他${others}版）` : "") }),
     ];
     if (v.correction) body.push(el("div", { className: "di-flags", textContent: "ユーザ投稿" }));
-    grid.append(
-      el("div", { className: "detail-item" }, [
-        coverThumb(v.cover_url, "di-cover", "di-noimg", v.title),
-        el("div", { className: "di-body" }, body),
-      ])
-    );
+    const item = el("div", { className: "detail-item clickable", title: "本の詳細を表示" }, [
+      coverThumb(v.cover_url, "di-cover", "di-noimg", v.title),
+      el("div", { className: "di-body" }, body),
+    ]);
+    item.addEventListener("click", () => openBookDetail(v, { noSeries: true }));
+    grid.append(item);
   }
 }
 
@@ -3070,7 +3076,8 @@ $("coverZoom").addEventListener("click", closeCoverZoom);
 document.addEventListener("keydown", (e) => {
   if (e.key === "Escape") {
     closeCoverZoom();
-    closeDetail();
+    // 巻一覧の上に本の詳細（book-detail.js）が重なっていれば、そちらだけを閉じる（自前で閉じる）。
+    if (!$("bookDetailModal")?.classList.contains("open")) closeDetail();
   }
 });
 

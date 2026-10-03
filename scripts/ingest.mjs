@@ -236,6 +236,13 @@ function searchKey(s) {
   return s.normalize("NFKC").toLowerCase().replace(/[\s\p{P}\p{S}]+/gu, "");
 }
 
+// Fold ヴ行 to バ行 (ヴァ→バ … ヴ→ブ). MADB's own readings vary (デジャヴ／デジャブ), so the
+// folded form of each reading is stored too and search folds the query the same way.
+// Keep in sync with src/util.ts vuFold.
+function vuFold(s) {
+  return s.replace(/ヴ([ァィェォ])?/g, (_, v) => (v ? { ァ: "バ", ィ: "ビ", ェ: "ベ", ォ: "ボ" }[v] : "ブ"));
+}
+
 // MADB packs alternate readings/variants after "∥" (kana) or "／" (alt spelling):
 //   "講談社　∥　コウダンシャ" / "フラワーコミックス　／　少コミ..." → take the first.
 function firstVariant(s) {
@@ -432,8 +439,13 @@ function kanjiToNumber(s) {
 }
 const KANJI_VOLUME_RE =
   /^(?:[〇零一二三四五六七八九十百千][〇零一二三四五六七八九十百千ニ]*|(?:巻|巻ノ|巻の|第)[〇零一二三四五六七八九十百千][〇零一二三四五六七八九十百千ニ]*|第[〇零一二三四五六七八九十百千][〇零一二三四五六七八九十百千ニ]*[巻集]|[〇零一二三四五六七八九十百千][〇零一二三四五六七八九十百千ニ]*巻)$/;
+// Arc-prefixed label ("24億脱出編4", "第2部[9]") → arc × 1000 + volume. See src/util.ts.
+const ARC_VOLUME_RE =
+  /^[^／/]*?(\d+)[\p{sc=Han}\p{sc=Hiragana}\p{sc=Katakana}](?<![巻集])[^／/]*?(\d+)\]?$/u;
 function volSort(raw) {
   const s = String(raw ?? "").trim();
+  const arc = ARC_VOLUME_RE.exec(s);
+  if (arc) return parseInt(arc[1], 10) * 1000 + parseInt(arc[2], 10);
   const m = s.match(/\d+/);
   if (m) return parseInt(m[0], 10);
   return KANJI_VOLUME_RE.test(s) ? kanjiToNumber(s.match(KANJI_NUM_RE)[0]) : 0;
@@ -596,8 +608,9 @@ async function main() {
     const readings = kanaReadings(node["schema:name"]);
     const nameKana = readings.join(" / ");
     // Store each reading normalized and "|"-delimited so search can match either a
-    // whole reading (exact tier) or a substring across the combined blob.
-    const kanaNorm = [...new Set(readings.map(normTitle).filter(Boolean))].join("|");
+    // whole reading (exact tier) or a substring across the combined blob. A reading with
+    // ヴ also gets its バ行-folded form (see vuFold) so a folded query matches it.
+    const kanaNorm = [...new Set(readings.map(normTitle).flatMap((k) => [k, vuFold(k)]).filter(Boolean))].join("|");
     seriesWriter.add([
       sqlStr(id),
       sqlStr(name),

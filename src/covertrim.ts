@@ -159,7 +159,17 @@ async function encodeCrop(img: RgbaImage, sx: number, sy: number, sw: number, sh
     const srcStart = ((sy + y) * img.width + sx) * 4;
     out.set(img.data.subarray(srcStart, srcStart + rowBytes), y * rowBytes);
   }
+  return await encodeRgba(out, sw, sh, 82);
+}
+
+/** Encode raw RGBA pixels as JPEG (also used by src/shareImage.ts). */
+export async function encodeRgba(
+  data: Uint8ClampedArray,
+  width: number,
+  height: number,
+  quality: number
+): Promise<ArrayBuffer> {
   if (!encReady) encReady = (initEncode as (m: WebAssembly.Module) => Promise<void>)(ENC_WASM);
   await encReady;
-  return await encodeJpeg({ data: out, width: sw, height: sh }, { quality: 82 });
+  return await encodeJpeg({ data, width, height }, { quality });
 }

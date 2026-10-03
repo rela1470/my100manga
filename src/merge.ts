@@ -4,6 +4,7 @@ import type { PageOpts } from "./admin";
 import {
   isGroupId,
   loadGroup,
+  moveGroupRowsStmts,
   resolveGroup,
   unattributedGroupsFor,
   nextCustomSeriesId,
@@ -599,7 +600,8 @@ export async function adminMergeSeries(request: Request, env: Env): Promise<Resp
     created = await nextCustomSeriesId(env);
     stmts.push(
       ...createCustomSeriesStmts(env, created, name ? { ...g, title: name } : g, now),
-      ...linkStmts(env, g.isbns, created, now)
+      ...linkStmts(env, g.isbns, created, now),
+      ...moveGroupRowsStmts(env, g, created)
     );
     merged.push(target);
     target = created;
@@ -610,7 +612,7 @@ export async function adminMergeSeries(request: Request, env: Env): Promise<Resp
     merged.push(a);
     if (isGroupId(a)) {
       const g = await loadGroup(env, a.slice(1));
-      if (g) stmts.push(...linkStmts(env, g.isbns, target, now));
+      if (g) stmts.push(...linkStmts(env, g.isbns, target, now), ...moveGroupRowsStmts(env, g, target));
       continue;
     }
     stmts.push(env.DB.prepare(`UPDATE series_merge SET target_id = ? WHERE target_id = ?`).bind(target, a));

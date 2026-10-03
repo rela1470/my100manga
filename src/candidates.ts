@@ -103,6 +103,9 @@ interface VolumeCandidate {
   title: string;
   cover_url: string;
   volume: string; // volume number parsed from the Rakuten title ("" if none)
+  author: string; // Rakuten author string, contributors joined with "/"
+  publisher: string;
+  pubdate: string; // Rakuten salesDate ("2015年08月04日")
 }
 
 // Candidates for manually filling a single missing volume the master lacks (e.g.
@@ -123,6 +126,9 @@ export async function volumeCandidates(request: Request, env: Env): Promise<Resp
     title: b.title,
     cover_url: b.cover_url,
     volume: b.volume,
+    author: b.author,
+    publisher: b.publisher,
+    pubdate: b.pubdate,
   }));
   return json({ candidates }, 200, { "cache-control": "no-store" });
 }

@@ -2,6 +2,7 @@ import { Env } from "./types";
 import { badRequest, json, notFound, volumeLabelTemplate, formatVolumeLabel, readJsonObject, toIsbn13, volSort } from "./util";
 import { findNgWord } from "./ngwords";
 import { isTrustedCoverUrl, readCachedCovers, resolveCovers } from "./covers";
+import type { UnlinkedGroup } from "./groups";
 
 // A correction volume as merged into the series volume list. title/author are filled
 // from the series row by the caller, not stored, so they always track the master.
@@ -55,12 +56,22 @@ export async function getCorrectionVolumes(env: Env, seriesId: string): Promise<
 
 /** POST /api/series/:id/corrections — add a manually-found missing volume. Accepts
  *  only { isbn, volume_number }; the cover is re-resolved server-side and must exist
- *  (rejects fabricated ISBNs), so no client-supplied strings or images are trusted. */
-export async function addCorrection(request: Request, env: Env, seriesId: string): Promise<Response> {
-  const meta = await env.DB.prepare(`SELECT id, name, creator FROM series WHERE id = ?`)
-    .bind(seriesId)
-    .first<{ id: string; name: string; creator: string | null }>();
+ *  (rejects fabricated ISBNs), so no client-supplied strings or images are trusted.
+ *  `group` is set for a series-less group (G-id, src/groups.ts): the correction is
+ *  stored under the group's canonical id and merged by getGroupVolumes. */
+export async function addCorrection(
+  request: Request,
+  env: Env,
+  seriesId: string,
+  group: UnlinkedGroup | null = null
+): Promise<Response> {
+  const meta = group
+    ? { id: group.id, name: group.title, creator: group.creator }
+    : await env.DB.prepare(`SELECT id, name, creator FROM series WHERE id = ?`)
+        .bind(seriesId)
+        .first<{ id: string; name: string; creator: string | null }>();
   if (!meta) return notFound("シリーズが見つかりません");
+  seriesId = meta.id;
 
   const body = (await readJsonObject(request)) as { isbn?: unknown; volume_number?: unknown };
   const isbn = typeof body.isbn === "string" ? normalizeIsbn(body.isbn) : null;
@@ -92,12 +103,16 @@ export async function addCorrection(request: Request, env: Env, seriesId: string
 
   // Echo the label in the series' style so the client's immediate re-render matches
   // what GET /volumes returns (see the correction merge in src/series.ts).
-  const labels = await env.DB.prepare(
-    `SELECT DISTINCT volume_number FROM volumes WHERE series_id = ? AND volume_number IS NOT NULL`
-  )
-    .bind(seriesId)
-    .all<{ volume_number: string }>();
-  const template = volumeLabelTemplate((labels.results ?? []).map((r) => r.volume_number));
+  const labels = group
+    ? group.volumes.map((v) => v.volume_number).filter(Boolean)
+    : (
+        await env.DB.prepare(
+          `SELECT DISTINCT volume_number FROM volumes WHERE series_id = ? AND volume_number IS NOT NULL`
+        )
+          .bind(seriesId)
+          .all<{ volume_number: string }>()
+      ).results?.map((r) => r.volume_number) ?? [];
+  const template = volumeLabelTemplate(labels);
 
   return json(
     {
@@ -276,11 +291,20 @@ export async function reportSeriesName(request: Request, env: Env, seriesId: str
  *  The volume stays public for everyone else until an admin finalizes. Repeated flags
  *  just bump the count. Only the ISBN is trusted from the client; the volume label is a
  *  best-effort server-side snapshot (empty if the volume isn't in a table we can read). */
-export async function reportVolume(request: Request, env: Env, seriesId: string): Promise<Response> {
-  const meta = await env.DB.prepare(`SELECT id FROM series WHERE id = ?`)
-    .bind(seriesId)
-    .first<{ id: string }>();
-  if (!meta) return notFound("シリーズが見つかりません");
+export async function reportVolume(
+  request: Request,
+  env: Env,
+  seriesId: string,
+  group: UnlinkedGroup | null = null
+): Promise<Response> {
+  if (group) {
+    seriesId = group.id;
+  } else {
+    const meta = await env.DB.prepare(`SELECT id FROM series WHERE id = ?`)
+      .bind(seriesId)
+      .first<{ id: string }>();
+    if (!meta) return notFound("シリーズが見つかりません");
+  }
 
   const body = (await readJsonObject(request)) as { isbn?: unknown };
   const isbn = typeof body.isbn === "string" ? normalizeIsbn(body.isbn) : null;

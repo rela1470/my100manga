@@ -115,6 +115,7 @@ function render(data) {
     $("ownerLine").hidden = false;
   }
   document.title = `${owner}を構成する100の漫画 | My 100 Manga`;
+  wireShareX($("xPost"), $("xImage"), () => ({ slug: currentSlug, owner: data.owner_name }));
 
   const params = new URLSearchParams(location.search);
   // Prefer the token in the URL; otherwise recover it from this browser's
@@ -216,6 +217,8 @@ function openDetail(it, index) {
   setSourceRow("dSourceRow", "dSource", it.cover_url, it.isbn);
   setMetaRow("dPublisherRow", "dPublisher", "");
   setMetaRow("dPubdateRow", "dPubdate", "");
+  setMetaRow("dVolRow", "dVol", "");
+  setMetaRow("dLabelRow", "dLabel", "");
   $("dSeriesRow").style.display = "none";
   $("dSynopsisBox").style.display = "none";
   $("dSynopsis").textContent = "";
@@ -316,6 +319,8 @@ async function loadBookMeta(it, seq) {
   }
   setMetaRow("dPublisherRow", "dPublisher", data.publisher || "");
   setMetaRow("dPubdateRow", "dPubdate", data.pubdate || "");
+  setMetaRow("dVolRow", "dVol", data.volume_number || "");
+  setMetaRow("dLabelRow", "dLabel", data.label || "");
   // シリーズの巻一覧へ。巻一覧はトップ（編集画面）の検索モーダルにしか無いので、
   // そこを ?series= 付きで開く（public/app.js openSeriesFromUrl）。
   if (data.series) {

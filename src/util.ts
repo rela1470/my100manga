@@ -23,6 +23,21 @@ export function searchKey(s: string): string {
   return s.normalize("NFKC").toLowerCase().replace(/[\s\p{P}\p{S}]+/gu, "");
 }
 
+/** ひらがなをカタカナに寄せる（ぁ-ゖ → ァ-ヶ、ゝゞ → ヽヾ）。series.name_kana_norm（MADB の読み）は
+ *  カタカナなので、ひらがなの検索語「ひだまりすけっち」を読み「ヒダマリスケッチ」に当てるのに使う。 */
+export function hiraToKata(s: string): string {
+  return s.replace(/[\u3041-\u3096\u309d\u309e]/g, (c) => String.fromCharCode(c.charCodeAt(0) + 0x60));
+}
+
+/** ヴ行をバ行に寄せる（ヴァ→バ、ヴィ→ビ、ヴェ→ベ、ヴォ→ボ、ヴ→ブ）。MADB の読み自体が
+ *  「デジャヴ／デジャブ」「ヘヴン／ヘブン」と揺れているので、ingest は寄せた読みも
+ *  name_kana_norm に足しておき、検索語も同じく寄せて照合する。scripts/ingest.mjs の vuFold と揃える。 */
+export function vuFold(s: string): string {
+  return s.replace(/ヴ([ァィェォ])?/g, (_, v?: string) =>
+    v ? ({ ァ: "バ", ィ: "ビ", ェ: "ベ", ォ: "ボ" } as Record<string, string>)[v] : "ブ"
+  );
+}
+
 /** Escape LIKE wildcards so a value containing % or _ matches literally (ESCAPE '\'). */
 export function escapeLike(s: string): string {
   return s.replace(/[\\%_]/g, (m) => "\\" + m);
@@ -166,10 +181,20 @@ export function arabicVolumeLabel(label: string): string {
 const KANJI_VOLUME_RE =
   /^(?:[〇零一二三四五六七八九十百千][〇零一二三四五六七八九十百千ニ]*|(?:巻|巻ノ|巻の|第)[〇零一二三四五六七八九十百千][〇零一二三四五六七八九十百千ニ]*|第[〇零一二三四五六七八九十百千][〇零一二三四五六七八九十百千ニ]*[巻集]|[〇零一二三四五六七八九十百千][〇零一二三四五六七八九十百千ニ]*巻)$/;
 
-/** Sort key for a volume label: the first run of digits, else a kanji-numeral volume label
- *  ("巻ノ二十七" → 27), else 0. Mirrored in scripts/ingest.mjs. */
+// 部・編・幕の番号が頭に付き、巻番号が末尾にあるラベル（「24億脱出編4」「第2部[9]」「第2幕 9」）。
+// 先頭の数字だけだと全巻が同じ値になるので、部の番号 ×1000 + 巻番号にする（同じまとまりに
+// 第1部・第2部が混ざっても部ごとに並ぶ）。巻・集が続く数字（「第1巻　／　1」）や、
+// 「8 世紀末ギャンブル黙示録編 5」のように数字の後が空白のものは対象外。
+const ARC_VOLUME_RE =
+  /^[^／/]*?(\d+)[\p{sc=Han}\p{sc=Hiragana}\p{sc=Katakana}](?<![巻集])[^／/]*?(\d+)\]?$/u;
+
+/** Sort key for a volume label: an arc-prefixed label ("24億脱出編4" → 24004), else the
+ *  first run of digits, else a kanji-numeral volume label ("巻ノ二十七" → 27), else 0.
+ *  Mirrored in scripts/ingest.mjs. */
 export function volSort(label: string): number {
   const s = (label ?? "").trim();
+  const arc = ARC_VOLUME_RE.exec(s);
+  if (arc) return parseInt(arc[1], 10) * 1000 + parseInt(arc[2], 10);
   const m = s.match(/\d+/);
   if (m) return parseInt(m[0], 10);
   return KANJI_VOLUME_RE.test(s) ? parseInt(arabicVolumeLabel(s).match(/\d+/)![0], 10) : 0;

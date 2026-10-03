@@ -525,6 +525,11 @@ button.danger:hover { background: rgba(239, 68, 68, .12); filter: none; }
 .detail-item .di-title { font-weight: 600; line-height: 1.3; max-height: 2.6em; overflow: hidden; }
 .detail-item .di-author { color: var(--muted); max-height: 2.4em; overflow: hidden; }
 .detail-item .di-flags { margin-top: 4px; color: var(--accent); font-size: 11px; }
+.detail-item .di-meta { color: var(--muted); font-size: 11px; line-height: 1.35; overflow-wrap: anywhere; }
+.detail-item .di-meta:empty { display: none; }
+.detail-item .di-isbn { font-variant-numeric: tabular-nums; }
+.detail-item.clickable { cursor: pointer; }
+.detail-item.clickable:hover { border-color: var(--accent); }
 
 /* 表紙キャッシュ操作 */
 .cover-actions {
@@ -664,7 +669,13 @@ button.danger:hover { background: rgba(239, 68, 68, .12); filter: none; }
 }
 .merge-preview .hint { margin: 0; }
 .merge-preview-strip { display: flex; gap: 8px; overflow-x: auto; padding-bottom: 4px; }
-.merge-preview-vol { flex: none; width: 64px; text-align: center; }
+.merge-preview-vol {
+  flex: none; width: 64px; text-align: center;
+  padding: 0; border: 0; border-radius: 0; background: none; color: inherit; font: inherit; font-weight: 400;
+  cursor: pointer; /* button の既定を消す */
+}
+.merge-preview-vol:hover { filter: none; box-shadow: none; }
+.merge-preview-vol:hover img { outline: 2px solid var(--accent); }
 .merge-preview-vol img, .merge-preview-vol .noimg { width: 64px; height: 92px; border-radius: 4px; }
 .merge-preview-vol img { object-fit: cover; display: block; }
 .merge-preview-vol .noimg {
@@ -1047,6 +1058,8 @@ html:has(.modal-backdrop.open) { overflow: hidden; }
 }
 
 .results { max-height: 320px; overflow: auto; margin: 8px 0; }
+/* 検索結果が30件を超えるときの「さらに表示」。結果リストの末尾に横いっぱいで置く。 */
+.more-results { display: block; width: 100%; margin: 8px 0; }
 
 /* 画面いっぱいのモーダル（検索）。結果欄だけがスクロールし、見出しとフッターは常に見える。 */
 .modal-full { padding: 16px 12px; }
@@ -1151,6 +1164,8 @@ html:has(.modal-backdrop.open) { overflow: hidden; }
 .search-subtitle[hidden] { display: none; }
 .search-subtitle .name-report-flag { font-size: 13px; font-weight: normal; }
 .search-subtitle .sa { margin-top: 2px; font-size: 13px; font-weight: normal; color: var(--muted); }
+.search-bar { flex: none; margin: 0 0 4px; }
+.search-bar[hidden] { display: none; }
 
 /* キーワード取得バー（検索結果の先頭に常設）。 */
 .live-bar { justify-content: flex-start; flex-wrap: wrap; gap: 8px; }
@@ -1222,6 +1237,10 @@ html:has(.modal-backdrop.open) { overflow: hidden; }
   display: flex; gap: 8px; margin: 8px 0;
 }
 .share-url input { flex: 1; }
+/* X へのシェア（public/share-x.js）。ポスト導線は X の黒ボタンに寄せる。 */
+.share-x { display: flex; flex-wrap: wrap; gap: 8px; margin: 8px 0; }
+button.x-post { background: #000; border-color: #000; color: #fff; }
+button.x-post:hover { background: #222; border-color: #222; }
 /* 新刊の ISBN 追加。巻番号欄は数桁だけなので固定幅にする。 */
 .new-vol-row { align-items: center; }
 .share-url input.new-vol-num { flex: none; width: 4.5em; text-align: right; }

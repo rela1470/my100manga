@@ -664,11 +664,15 @@ function focusTopSearch() {
   input.focus({ preventScroll: true });
 }
 
-// Empties the modal body, the series title under the heading (searchSubtitle) and
-// the footer slot (searchActions) that holds the current view's 表紙を取得 button,
-// so neither outlives the view it belongs to.
+// Empties the modal body, the series title under the heading (searchSubtitle), the
+// header bar under it (searchBar: 巻一覧の「検索結果へ戻る」「全N巻を追加」) and the
+// footer slot (searchActions) that holds the current view's 表紙を取得 button, so
+// none of them outlives the view it belongs to.
 function clearResults() {
   $("searchActions").innerHTML = "";
+  const hbar = $("searchBar");
+  hbar.innerHTML = "";
+  hbar.hidden = true;
   const sub = $("searchSubtitle");
   sub.innerHTML = "";
   sub.hidden = true;
@@ -707,6 +711,8 @@ function openEdit(index) {
   setMetaRow("eIsbnRow", "eIsbn", it.isbn || "");
   setMetaRow("ePublisherRow", "ePublisher", "");
   setMetaRow("ePubdateRow", "ePubdate", "");
+  setMetaRow("eVolRow", "eVol", "");
+  setMetaRow("eLabelRow", "eLabel", "");
   $("eSeriesRow").style.display = "none";
   $("eSynopsisBox").style.display = "none";
   $("eSynopsis").textContent = "";
@@ -844,13 +850,20 @@ async function loadEditMeta(it, seq) {
 
 // Fill the author / 出版社 / 発行日 / あらすじ rows from an /api/book response.
 // `p` is the element-id prefix: "e" = edit modal, "v" = volume detail modal.
-function applyBookMeta(data, p = "e") {
-  if (Array.isArray(data.authors) && data.authors.length) {
+// opts.keepAuthor: 役割付きの全作者（巻一覧の creators）を出していれば上書きしない。
+function applyBookMeta(data, p = "e", opts = {}) {
+  if (!opts.keepAuthor && Array.isArray(data.authors) && data.authors.length) {
     $(p + "Author").textContent = data.authors.join("、");
     $(p + "Author").style.display = "";
   }
-  setMetaRow(p + "PublisherRow", p + "Publisher", data.publisher || "");
-  setMetaRow(p + "PubdateRow", p + "Pubdate", data.pubdate || "");
+  // 巻一覧のマスタ値を先に出している（巻詳細）ので、空の応答では消さない。
+  if (data.publisher || p !== "v") setMetaRow(p + "PublisherRow", p + "Publisher", data.publisher || "");
+  if (data.pubdate || p !== "v") setMetaRow(p + "PubdateRow", p + "Pubdate", data.pubdate || "");
+  if (data.label) setMetaRow(p + "LabelRow", p + "Label", data.label);
+  if (data.volume_number) setMetaRow(p + "VolRow", p + "Vol", data.volume_number);
+  if ($(p + "EditionsRow") && Array.isArray(data.editions) && data.editions.length) {
+    setMetaRow(p + "EditionsRow", p + "Editions", data.editions.join("、"));
+  }
   // シリーズへのリンク（編集ポップアップのみ。巻一覧から開く詳細には行が無い）。
   const seriesRow = $(p + "SeriesRow");
   if (seriesRow && data.series) {
@@ -1158,12 +1171,14 @@ function topSearch() {
 async function doSearch(q) {
   lastQuery = q;
   liveFetchedQuery = "";
+  searchNextOffset = null;
   $("searchSpinner").style.display = "";
   clearResults();
   try {
     const res = await fetch(`/api/search?q=${encodeURIComponent(q)}`);
     const data = await res.json();
     if (!res.ok) throw new Error(data.error || "検索に失敗しました");
+    searchNextOffset = data.next_offset ?? null;
     renderResults(data.results || [], data.isbn_miss);
   } catch (e) {
     clearResults();
@@ -1181,6 +1196,8 @@ let lastQuery = "";
 // The query whose live fetch already succeeded. The live bar is rebuilt on every
 // renderResults, so this keeps its button in the done state for that query.
 let liveFetchedQuery = "";
+// 31件目以降があるときの次ページの offset（サーバの next_offset）。無ければ null。
+let searchNextOffset = null;
 
 // Search returns series-level results. Clicking one drills into its volumes.
 function renderResults(results, isbnMiss = false) {
@@ -1200,6 +1217,7 @@ function renderResults(results, isbnMiss = false) {
   const pending = [];
   for (const r of results) box.appendChild(buildResultCard(r, pending));
   mountCoverFetch($("searchActions"), pending);
+  if (searchNextOffset != null) box.appendChild(buildMoreButton());
 
   // 常設: マスタ(月次ダンプ)に無い作品を live MADB からキーワードで取得する導線。
   // マスタ検索が0件でも手詰まりにならないよう、結果の有無にかかわらず末尾に出す。
@@ -1233,6 +1251,37 @@ function buildRetryForm() {
   return row;
 }
 
+// 「さらに表示」: 次の30件を取ってきて、すでに出ているカード（同じ series_id）を除いて末尾に足す。
+// 描き直しても結果欄のスクロール位置は保つ。
+function buildMoreButton() {
+  const btn = document.createElement("button");
+  btn.type = "button";
+  btn.className = "more-results";
+  btn.textContent = "さらに表示";
+  const q = lastQuery;
+  btn.addEventListener("click", async () => {
+    btn.disabled = true;
+    btn.textContent = "読み込み中…";
+    try {
+      const res = await fetch(`/api/search?q=${encodeURIComponent(q)}&offset=${searchNextOffset}`);
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || "検索に失敗しました");
+      if (q !== lastQuery) return; // 待っている間に別の語で検索し直した
+      searchNextOffset = data.next_offset ?? null;
+      const shown = new Set(lastResults.map((r) => r.series_id));
+      const box = $("results");
+      const top = box.scrollTop;
+      renderResults(lastResults.concat((data.results || []).filter((r) => !shown.has(r.series_id))));
+      box.scrollTop = top;
+    } catch (e) {
+      btn.disabled = false;
+      btn.textContent = "さらに表示";
+      uiAlert(e.message || "検索に失敗しました");
+    }
+  });
+  return btn;
+}
+
 // Keyword live-fetch bar shown below every result set. Probes MADB SPARQL for the
 // whole query (works absent from the master), dedupes against what's already shown,
 // and merges the finds in as `live` cards.
@@ -1249,7 +1298,7 @@ function buildLiveBar() {
     btn.textContent = "取得しました";
     btn.disabled = true;
   } else {
-    btn.textContent = `「${lastQuery}」を最新DBから取得`;
+    btn.textContent = "最新DBから取得";
     btn.addEventListener("click", () => liveFetch(lastQuery, btn));
   }
   bar.appendChild(label);
@@ -1525,15 +1574,17 @@ function mountCoverFetch(barEl, entries) {
   });
 }
 
-// シリーズに属さない巻のまとまり（書名+著者）の疑似 ID。シリーズと同じく巻一覧・結合依頼の
-// 対象になるが、C-id 前提の訂正・通報・補完は出さない（src/groups.ts）。
+// シリーズに属さない巻のまとまり（書名+著者）の疑似 ID。シリーズと同じく巻一覧・結合依頼・
+// 手動追加（抜け巻・新刊）・巻の通報の対象になるが、C-id 前提のシリーズ名の通報・分離依頼・
+// 補完は出さない（src/groups.ts）。
 const isGroupId = (id) => /^G\d{13}$/.test(id || "");
 
 async function openSeries(series) {
   // live 検索の結果、および series に未リンクの巻（マスタで schema:isPartOf 欠落）は
   // ローカルに C-id が無く、巻がカードに埋め込まれている。サーバを叩かずそのまま表示する
   // （追加は ISBN ベースなので C-id 不要。補完/訂正/通報も C-id 前提なので出さない）。
-  if (series.live || series.unlinked) {
+  // まとまり(G-id)のカードは手動追加の巻をサーバで混ぜるので、埋め込みを使わず取り直す。
+  if (series.live || (series.unlinked && !isGroupId(series.series_id))) {
     renderVolumes(series, series.volumes || [], { probed: true, live: true });
     return;
   }
@@ -1555,7 +1606,7 @@ async function openSeries(series) {
     // 巻ページから開いた場合など、カードに作者表記が無くてもサーバの creators で補う。
     if (data.creators) series.creators = data.creators;
     if (data.group) {
-      renderVolumes(series, data.volumes || [], { probed: true, live: true });
+      renderVolumes(series, data.volumes || [], { probed: true, masterAt: data.master_updated_at || 0 });
       return;
     }
     renderVolumes(series, data.volumes || [], {
@@ -1659,8 +1710,9 @@ function renderVolumes(series, volumes, opts) {
   const visible = volumes.filter((v) => !isReportedVolume(series.series_id, v.isbn));
   const hidden = volumes.filter((v) => isReportedVolume(series.series_id, v.isbn));
 
-  const bar = document.createElement("div");
-  bar.className = "vol-bar";
+  // 「検索結果へ戻る」「全N巻を追加」は巻一覧をスクロールしても押せるよう、結果欄の外の
+  // ヘッダ（シリーズ名の下の searchBar）に置く。
+  const bar = $("searchBar");
   const back = document.createElement("button");
   back.type = "button";
   back.className = "linkbtn";
@@ -1675,7 +1727,7 @@ function renderVolumes(series, volumes, opts) {
     addAll.addEventListener("click", () => bulkAddSeries(visible));
     bar.appendChild(addAll);
   }
-  box.appendChild(bar);
+  bar.hidden = !bar.childElementCount;
 
   // この端末で「間違っています」と非表示にした巻を、本人が戻せる導線（誤タップ救済）。
   if (hidden.length) box.appendChild(buildHiddenRestore(series, volumes, hidden, opts));
@@ -1689,7 +1741,7 @@ function renderVolumes(series, volumes, opts) {
   // マスタのシリーズ名が壊れている場合（例: 「ハレグゥ」が「ｖ」で取り込まれている）に、
   // 閲覧者が名前の誤りを通報できる導線。live シリーズは C-id が無く通報先が無いので出さない。
   // 通報はサーバに件数だけ記録し、全体反映（名前の修正）は管理者が確定するまで行わない。
-  if (!opts.live && series.series_id) {
+  if (!opts.live && series.series_id && !isGroupId(series.series_id)) {
     const nameFlag = document.createElement("button");
     nameFlag.type = "button";
     nameFlag.className = "report-flag name-report-flag";
@@ -1817,7 +1869,9 @@ function renderVolumes(series, volumes, opts) {
   const fetchNew = document.createElement("button");
   fetchNew.type = "button";
   fetchNew.className = "sup-btn";
-  if (supplementFetched.has(supKey(series))) {
+  if (isGroupId(series.series_id)) {
+    // まとまりは補完（live MADB）の対象外なので、取得ボタンは出さず新刊の入口だけ置く。
+  } else if (supplementFetched.has(supKey(series))) {
     fetchNew.textContent = "取得しました";
     fetchNew.disabled = true;
   } else if (opts.live) {
@@ -1827,14 +1881,14 @@ function renderVolumes(series, volumes, opts) {
     fetchNew.textContent = "最新巻を取得";
     fetchNew.addEventListener("click", () => fetchSupplement(series, fetchNew));
   }
-  supBar.appendChild(fetchNew);
+  if (!isGroupId(series.series_id)) supBar.appendChild(fetchNew);
   // MADB にまだ載っていない新刊（最新巻を取得でも出てこない末尾の巻）を ISBN で足す入口。
   // 欠番ボタンは既存の巻の間しか出さないので、末尾への追加はここから行う。先に最新DBを
-  // 見てもらうため「最新巻を取得」を押した後（このセッション中）だけ出す。訂正保存は
-  // C-id/U-id 前提なので live とまとまり(G-id)には出さない。
+  // 見てもらうため「最新巻を取得」を押した後（このセッション中）だけ出す（取得ボタンの無い
+  // まとまり(G-id)は常に出す）。live は訂正の保存先が無いので出さない。
   if (
-    !opts.live && series.series_id && !isGroupId(series.series_id) &&
-    supplementFetched.has(supKey(series))
+    !opts.live && series.series_id &&
+    (isGroupId(series.series_id) || supplementFetched.has(supKey(series)))
   ) {
     const newVol = document.createElement("button");
     newVol.type = "button";
@@ -1985,7 +2039,9 @@ function detectGaps(volumes) {
   }
   for (const n of rangeInts) present.add(n);
   if (kan > 0 && num > 0) return []; // genuinely mixed formats ⇒ ambiguous
-  if (rangeInts.length < 2) return []; // no trustworthy numbering to judge gaps
+  // no trustworthy numbering to judge gaps — except a lone 2巻/3巻 (マスタに 3巻だけある
+  // まとまりなど), whose earlier volumes are almost surely just missing.
+  if (rangeInts.length < 2 && !(rangeInts.length === 1 && rangeInts[0] >= 2 && rangeInts[0] <= 3)) return [];
   const fmt = kan > 0 ? "KAN" : "NUM";
   const min = Math.min(...rangeInts);
   const max = Math.max(...rangeInts);
@@ -2001,7 +2057,15 @@ function detectGaps(volumes) {
 
 // Assisted search (Rakuten by title+volume) for one missing volume. Renders the
 // candidates inline; picking one stages it exactly like selectVolume.
-async function openGapPicker(series, gap, volumes) {
+// opts.mkGap があれば新刊の追加（openNewVolumePicker）: 巻番号 n から gap を作る関数で、候補は
+// その候補の巻番号で、ISBN の直接指定は編集できる巻番号で追加する。
+async function openGapPicker(series, gap, volumes, opts) {
+  const mkGap = opts && opts.mkGap;
+  const inList = (isbn) => volumes.some((v) => v.isbn === isbn || (v.isbns || []).includes(isbn));
+  // 抜け巻では、同じ ISBN が巻番号なしで一覧にある（C269160 の 1巻）なら、その巻に番号を付ける
+  // 追加として受け付ける。弾くのは番号付きで一覧にある ISBN だけ。
+  const blocked = (isbn) =>
+    volumes.some((v) => (v.isbn === isbn || (v.isbns || []).includes(isbn)) && (mkGap || (v.volume_number || "").trim()));
   const box = clearResults();
   const bar = document.createElement("div");
   bar.className = "vol-bar";
@@ -2015,7 +2079,8 @@ async function openGapPicker(series, gap, volumes) {
 
   const head = document.createElement("p");
   head.className = "hint";
-  head.textContent = `${series.title} ${gap.disp} の候補を検索中...`;
+  const what = mkGap ? `の新刊（${gap.disp}）` : ` ${gap.disp}`;
+  head.textContent = `${series.title}${what} の候補を検索中...`;
   box.appendChild(head);
 
   // Rakuten's title search can't reach every volume (こち亀 1巻 is stocked but no
@@ -2023,9 +2088,11 @@ async function openGapPicker(series, gap, volumes) {
   // fallback. The server re-resolves the cover and rejects ISBNs without one.
   const isbnHint = document.createElement("p");
   isbnHint.className = "hint";
-  isbnHint.textContent = "候補に無い場合は ISBN を直接指定できます。";
+  isbnHint.textContent = mkGap
+    ? "候補に無い場合は ISBN13 と巻番号を直接指定できます。書影が見つかる ISBN のみ追加できます。"
+    : "候補に無い場合は ISBN を直接指定できます。";
   const isbnRow = document.createElement("div");
-  isbnRow.className = "share-url";
+  isbnRow.className = mkGap ? "share-url new-vol-row" : "share-url";
   const isbnInput = document.createElement("input");
   isbnInput.type = "text";
   isbnInput.inputMode = "numeric";
@@ -2033,19 +2100,50 @@ async function openGapPicker(series, gap, volumes) {
   const isbnBtn = document.createElement("button");
   isbnBtn.type = "button";
   isbnBtn.textContent = "このISBNで追加";
+  let volInput = null;
+  if (mkGap) {
+    volInput = document.createElement("input");
+    volInput.type = "text";
+    volInput.inputMode = "numeric";
+    volInput.className = "new-vol-num";
+    volInput.value = String(gap.n);
+    volInput.setAttribute("aria-label", "巻番号");
+  }
   const submitIsbn = () => {
     const isbn = isbnInput.value.replace(/[^0-9]/g, "");
     if (isbn.length !== 13) {
       uiAlert("ISBN は13桁（978…）で入力してください");
       return;
     }
-    pickManualVolume(series, gap, { isbn, cover_url: "" }, volumes);
+    let g = gap;
+    if (volInput) {
+      const n = parseInt(volInput.value.replace(/[^0-9]/g, ""), 10);
+      if (!n) {
+        uiAlert("巻番号を数字で入力してください");
+        return;
+      }
+      if (inList(isbn)) {
+        uiAlert("この ISBN はすでに巻一覧にあります");
+        return;
+      }
+      g = mkGap(n);
+    }
+    pickManualVolume(series, g, { isbn, cover_url: "" }, volumes);
   };
   isbnBtn.addEventListener("click", submitIsbn);
-  isbnInput.addEventListener("keydown", (e) => {
-    if (e.key === "Enter" && !e.isComposing) submitIsbn();
-  });
+  for (const el of [isbnInput, volInput].filter(Boolean)) {
+    el.addEventListener("keydown", (e) => {
+      if (e.key === "Enter" && !e.isComposing) submitIsbn();
+    });
+  }
   isbnRow.appendChild(isbnInput);
+  if (volInput) {
+    const volUnit = document.createElement("span");
+    volUnit.className = "hint";
+    volUnit.textContent = "巻";
+    isbnRow.appendChild(volInput);
+    isbnRow.appendChild(volUnit);
+  }
   isbnRow.appendChild(isbnBtn);
   const appendIsbnRow = () => {
     box.appendChild(isbnHint);
@@ -2060,6 +2158,8 @@ async function openGapPicker(series, gap, volumes) {
     const data = await res.json();
     if (!res.ok) throw new Error(data.error || "検索に失敗しました");
     candidates = data.candidates || [];
+    // 新刊の追加では、一覧にある巻（検索に既刊も混ざる）は候補から外す。
+    if (mkGap) candidates = candidates.filter((c) => !inList(c.isbn));
   } catch (e) {
     head.textContent = e.message || "検索に失敗しました";
     appendIsbnRow();
@@ -2067,11 +2167,11 @@ async function openGapPicker(series, gap, volumes) {
   }
 
   if (!candidates.length) {
-    head.textContent = `${series.title} ${gap.disp} の候補が見つかりませんでした。`;
+    head.textContent = `${series.title}${what} の候補が見つかりませんでした。`;
     appendIsbnRow();
     return;
   }
-  head.textContent = `${series.title} ${gap.disp} の候補（該当するものを選んで追加）`;
+  head.textContent = `${series.title}${what} の候補（該当するものを選んで追加）`;
 
   for (const c of candidates) {
     const row = document.createElement("div");
@@ -2082,33 +2182,41 @@ async function openGapPicker(series, gap, volumes) {
     const t = document.createElement("div");
     t.className = "t";
     t.textContent = c.title;
+    const author = (c.author || "").split("/").filter(Boolean).join("、");
     const a = document.createElement("div");
     a.className = "a";
-    a.textContent = [c.volume ? `${c.volume}巻` : "", c.isbn].filter(Boolean).join(" / ");
+    a.textContent = [author, c.publisher, c.pubdate].filter(Boolean).join(" / ");
+    const a2 = document.createElement("div");
+    a2.className = "a";
+    a2.textContent = [c.volume ? `${c.volume}巻` : "", c.isbn ? `ISBN ${c.isbn}` : ""].filter(Boolean).join(" / ");
     info.appendChild(t);
-    info.appendChild(a);
+    if (a.textContent) info.appendChild(a);
+    info.appendChild(a2);
     row.appendChild(info);
-    row.addEventListener("click", () => pickManualVolume(series, gap, c, volumes));
+    // 新刊は検索した巻の次の巻なども候補に出るので、候補自身の巻番号で追加する。
+    const cn = mkGap ? parseInt(c.volume, 10) : 0;
+    const g = cn > 0 ? mkGap(cn) : gap;
+    // タップで即追加せず、詳細（表紙・著者・出版社・発行日・あらすじ）を見せて「この巻を追加」で保存する。
+    row.addEventListener("click", () =>
+      openVolumeDetail(
+        { isbn: c.isbn, isbns: [c.isbn], title: c.title, volume_number: "", author, publisher: c.publisher || "",
+          pubdate: c.pubdate || "", cover_url: c.cover_url || "" },
+        {
+          addLabel: `${g.disp}として追加`,
+          addedLabel: blocked(c.isbn) ? "巻一覧にあります" : "",
+          onAdd: () => pickManualVolume(series, g, c, volumes),
+        }
+      )
+    );
     box.appendChild(row);
   }
   appendIsbnRow();
 }
 
-// 末尾の新刊を ISBN で追加する画面。巻番号は既存の最大巻 + 1 を初期値にするが、
-// まだ一覧に無い巻を挟んでいることもあるので編集できるようにする。保存は欠番と同じく
-// pickManualVolume（サーバが書影を引き直し、書影の無い ISBN は弾く）。
+// 末尾の新刊を追加する画面。抜け巻と同じ候補検索の画面（openGapPicker）を、既存の最大巻 + 1 を
+// 初期値にして開く。まだ一覧に無い巻を挟んでいることもあるので、候補はその巻番号で、ISBN の
+// 直接指定は巻番号を編集して追加できる。
 function openNewVolumePicker(series, volumes) {
-  const box = clearResults();
-  const bar = document.createElement("div");
-  bar.className = "vol-bar";
-  const back = document.createElement("button");
-  back.type = "button";
-  back.className = "linkbtn";
-  back.textContent = "‹ 巻一覧へ戻る";
-  back.addEventListener("click", () => renderVolumes(series, volumes));
-  bar.appendChild(back);
-  box.appendChild(bar);
-
   let kan = false;
   let max = 0;
   for (const v of volumes) {
@@ -2117,60 +2225,8 @@ function openNewVolumePicker(series, volumes) {
     const m = s.match(/\d+/);
     if (m) max = Math.max(max, parseInt(m[0], 10));
   }
-
-  const head = document.createElement("p");
-  head.className = "hint";
-  head.textContent = `${series.title} の新刊の ISBN13 と巻番号を入力してください。書影が見つかる ISBN のみ追加できます。`;
-  box.appendChild(head);
-
-  const row = document.createElement("div");
-  row.className = "share-url new-vol-row";
-  const isbnInput = document.createElement("input");
-  isbnInput.type = "text";
-  isbnInput.inputMode = "numeric";
-  isbnInput.placeholder = "ISBN13（例: 9784088528113）";
-  const volInput = document.createElement("input");
-  volInput.type = "text";
-  volInput.inputMode = "numeric";
-  volInput.className = "new-vol-num";
-  volInput.value = String(max + 1);
-  volInput.setAttribute("aria-label", "巻番号");
-  const volUnit = document.createElement("span");
-  volUnit.className = "hint";
-  volUnit.textContent = "巻";
-  const btn = document.createElement("button");
-  btn.type = "button";
-  btn.textContent = "追加";
-  const submit = () => {
-    const isbn = isbnInput.value.replace(/[^0-9]/g, "");
-    if (isbn.length !== 13) {
-      uiAlert("ISBN は13桁（978…）で入力してください");
-      return;
-    }
-    const n = parseInt(volInput.value.replace(/[^0-9]/g, ""), 10);
-    if (!n) {
-      uiAlert("巻番号を数字で入力してください");
-      return;
-    }
-    if (volumes.some((v) => v.isbn === isbn || (v.isbns || []).includes(isbn))) {
-      uiAlert("この ISBN はすでに巻一覧にあります");
-      return;
-    }
-    const gap = { n, vol: kan ? `巻${n}` : `${n}`, disp: `${n}巻` };
-    pickManualVolume(series, gap, { isbn, cover_url: "" }, volumes);
-  };
-  btn.addEventListener("click", submit);
-  for (const el of [isbnInput, volInput]) {
-    el.addEventListener("keydown", (e) => {
-      if (e.key === "Enter" && !e.isComposing) submit();
-    });
-  }
-  row.appendChild(isbnInput);
-  row.appendChild(volInput);
-  row.appendChild(volUnit);
-  row.appendChild(btn);
-  box.appendChild(row);
-  isbnInput.focus();
+  const mkGap = (n) => ({ n, vol: kan ? `巻${n}` : `${n}`, disp: `${n}巻` });
+  openGapPicker(series, mkGap(max + 1), volumes, { mkGap });
 }
 
 // Fill a missing volume: persist it as a correction (so it's cached for everyone),
@@ -2205,10 +2261,16 @@ async function pickManualVolume(series, gap, c, volumes) {
 
   // 抜け巻の申請は DB(correction)に補完して巻一覧へ差し込むだけ。100冊シェルフ
   // (state.items)には勝手に入れない。ユーザが巻一覧で選んで初めて追加される。
-  if (!volumes.some((v) => v.isbn && v.isbn === vol.isbn)) {
+  // 同じ ISBN の巻が巻番号なしで一覧にあれば、新しく足さずにその巻へ番号を付ける（サーバの
+  // getSeriesVolumes も同じ扱い）。
+  const same = volumes.find((v) => vol.isbn && (v.isbn === vol.isbn || (v.isbns || []).includes(vol.isbn)));
+  if (!same) {
     volumes.push(vol);
-    volumes.sort((a, b) => (a.vol_sort || 0) - (b.vol_sort || 0));
+  } else if (!(same.volume_number || "").trim()) {
+    same.volume_number = vol.volume_number;
+    same.vol_sort = vol.vol_sort;
   }
+  volumes.sort((a, b) => (a.vol_sort || 0) - (b.vol_sort || 0));
   renderVolumes(series, volumes);
 }
 
@@ -2613,8 +2675,10 @@ function buildMergeCandRow(series, c, selected, select, refresh) {
   return row;
 }
 
-// 結合候補のプレビュー: 巻一覧 API から巻を取り、表紙と巻ラベルを横並びで見せる。表紙は
+// 結合候補のプレビュー: 巻一覧 API から巻を取り、表紙と巻ラベル・発行日を横並びで見せる。表紙は
 // キャッシュ分を即表示し、未取得は先頭の数件だけ解決して埋める（閲覧で楽天を叩きすぎない）。
+// 巻を押すと巻一覧と同じ本の詳細（作者・出版社・レーベル・発行日・ISBN・他の版・あらすじ）を
+// 重ねて開き、同じ作品かを 1 冊ずつ見比べられる（ここからはリストに追加しない）。
 function buildMergePreview(seriesId) {
   const box = document.createElement("div");
   box.className = "merge-preview";
@@ -2642,15 +2706,26 @@ function buildMergePreview(seriesId) {
     strip.className = "merge-preview-strip";
     const missing = [];
     for (const v of vols) {
-      const cell = document.createElement("div");
+      const cell = document.createElement("button");
+      cell.type = "button";
       cell.className = "merge-preview-vol";
+      cell.title = `${volLabel(v)}（押すと詳細）`;
+      cell.addEventListener("click", (e) => {
+        e.stopPropagation();
+        openVolumeDetail(v, { viewOnly: true });
+      });
       let cover = coverImg(v.cover_url, v.title);
       cell.appendChild(cover);
       const lab = document.createElement("div");
       lab.className = "merge-preview-label";
       lab.textContent = v.volume_number || "-";
-      lab.title = v.title;
       cell.appendChild(lab);
+      if (v.pubdate) {
+        const date = document.createElement("div");
+        date.className = "merge-preview-label";
+        date.textContent = v.pubdate;
+        cell.appendChild(date);
+      }
       strip.appendChild(cell);
       if (!v.cover_url) {
         missing.push({
@@ -2938,25 +3013,42 @@ function isDuplicate(isbn, exceptIndex = -1) {
 // 上に重ねるので、閉じれば同じ一覧に戻って別の巻を見られる。
 let volSeq = 0;
 let volCurrent = null;
+let volOnAdd = null;
 
-function openVolumeDetail(v) {
+// opts.onAdd があれば「リストに追加」の代わりに使う（抜け巻・新刊の候補を巻一覧へ足す）。
+// ボタンの文言は opts.addLabel、追加できないときは opts.addedLabel で無効にする。
+// opts.viewOnly は追加ボタンを出さない（結合依頼画面のプレビューから見るだけのとき）。
+function openVolumeDetail(v, opts) {
   volCurrent = v;
+  volOnAdd = (opts && opts.onAdd) || null;
   const seq = ++volSeq;
   $("vTitle").textContent = volLabel(v);
-  $("vAuthor").textContent = v.author || "";
-  $("vAuthor").style.display = v.author ? "" : "none";
+  // creators = 役割付きの全作者（"原作：A、作画：B"）。巻一覧の行と同じ表記にする。
+  const author = v.creators || v.author || "";
+  $("vAuthor").textContent = author;
+  $("vAuthor").style.display = author ? "" : "none";
+  setMetaRow("vVolRow", "vVol", v.volume_number || "");
   setMetaRow("vPublisherRow", "vPublisher", v.publisher || "");
+  setMetaRow("vLabelRow", "vLabel", v.label || "");
   setMetaRow("vPubdateRow", "vPubdate", v.pubdate || "");
   setMetaRow("vIsbnRow", "vIsbn", v.isbn || "");
+  // 同じ巻の別 ISBN（通常版/特装版/重版）。巻一覧は版違いを 1 行にまとめているのでここで見せる。
+  setMetaRow("vEditionsRow", "vEditions", (v.isbns || []).filter((x) => x !== v.isbn).join("、"));
   $("vSynopsis").textContent = "";
   $("vSynopsisBox").style.display = "none";
   renderCoverInto($("vCoverBox"), v);
   renderEditBuy({ isbn: v.isbn || "", title: volLabel(v), author: v.author || "" }, "v");
 
   const add = $("vAdd");
-  const dup = !!(v.isbn && isDuplicate(toIsbn13(v.isbn)));
-  add.disabled = dup;
-  add.textContent = dup ? "追加済み" : "リストに追加";
+  add.style.display = opts && opts.viewOnly ? "none" : "";
+  if (volOnAdd) {
+    add.disabled = !!opts.addedLabel;
+    add.textContent = opts.addedLabel || opts.addLabel || "追加";
+  } else {
+    const dup = !!(v.isbn && isDuplicate(toIsbn13(v.isbn)));
+    add.disabled = dup;
+    add.textContent = dup ? "追加済み" : "リストに追加";
+  }
   $("volModal").classList.add("open");
 
   if (!v.cover_url && v.isbns && v.isbns.length) {
@@ -2971,7 +3063,7 @@ function openVolumeDetail(v) {
     fetch(`/api/book?isbn=${encodeURIComponent(v.isbn)}`)
       .then((res) => (res.ok ? res.json() : null))
       .then((data) => {
-        if (data && seq === volSeq) applyBookMeta(data, "v");
+        if (data && seq === volSeq) applyBookMeta(data, "v", { keepAuthor: !!v.creators });
       })
       .catch(() => {});
   }
@@ -2980,14 +3072,17 @@ function openVolumeDetail(v) {
 function closeVolumeDetail() {
   $("volModal").classList.remove("open");
   volCurrent = null;
+  volOnAdd = null;
   volSeq++;
 }
 
 async function addFromVolumeDetail() {
   const v = volCurrent;
+  const onAdd = volOnAdd;
   if (!v) return;
   closeVolumeDetail();
-  await selectVolume(v);
+  if (onAdd) await onAdd(v);
+  else await selectVolume(v);
 }
 
 // 1 巻をリストへ追加する（巻一覧では詳細ポップアップの「リストに追加」から呼ばれる）。
@@ -3337,7 +3432,10 @@ async function doPublish() {
   }
 }
 
+let shareSlug = null;
+
 function showShare(slug, token) {
+  shareSlug = slug;
   const shareUrl = `${location.origin}/l/${slug}`;
   const editUrl = `${location.origin}/?edit=${slug}&t=${token}`;
   $("shareUrl").value = shareUrl;
@@ -3351,6 +3449,7 @@ function wireEvents() {
   $("topSearchBtn").addEventListener("click", topSearch);
   $("topSearch").addEventListener("keydown", (e) => { if (e.key === "Enter" && !e.isComposing) topSearch(); });
   $("fetchCovers").addEventListener("click", fetchMissingCovers);
+  wireShareX($("shareXPost"), $("shareXImage"), () => ({ slug: shareSlug, owner: state.owner }));
   $("fixMissing").addEventListener("click", startFixMissing);
   $("clearAll").addEventListener("click", clearAll);
   $("revertPublished").addEventListener("click", revertToPublished);

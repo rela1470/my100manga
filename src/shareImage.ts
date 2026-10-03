@@ -2,7 +2,8 @@
 // 「◯◯'s My 100 Manga」 header with the list URL on the right. Used as the view page's
 // og:image (variant "og", 1200×630, the column count that makes the covers largest)
 // and as the image a visitor attaches to an X post themselves (variant "full",
-// portrait 10×10 grid).
+// portrait 10×10 grid, or "q1"–"q4": a quarter each, 25 covers on a 5×5 grid, for a
+// four-image post).
 //
 // Built server-side because the main cover host (thumbnail.image.rakuten.co.jp)
 // sends no CORS headers, so a browser canvas would be tainted (public/cover-fit.js).
@@ -21,7 +22,8 @@ import { encodeRgba } from "./covertrim";
 import { escapeHtml } from "./util";
 import { Env, MangaList } from "./types";
 
-export type ShareVariant = "og" | "full";
+export type ShareVariant = "og" | "full" | "q1" | "q2" | "q3" | "q4";
+export const SHARE_VARIANTS: readonly ShareVariant[] = ["og", "full", "q1", "q2", "q3", "q4"];
 
 // Bump to regenerate every stored image after a design change.
 const LAYOUT_VERSION = 3;
@@ -51,13 +53,22 @@ interface Layout {
   cellH: number;
   headerY: number; // header text baseline
   headerSize: number; // largest header font size (shrunk to fit a long name/URL)
+  first: number; // index of the first cell drawn (quarters start at 0/25/50/75)
+  count: number; // cells drawn
+}
+
+const QUARTER = 25;
+
+function quarterIndex(variant: ShareVariant): number | null {
+  const m = variant.match(/^q([1-4])$/);
+  return m ? Number(m[1]) - 1 : null;
 }
 
 function layout(variant: ShareVariant): Layout {
   const header =
     variant === "og"
       ? { width: 1200, pad: 16, gap: 4, gridTop: 56, headerY: 40, headerSize: 28 }
-      : { width: 1200, pad: 24, gap: 8, gridTop: 80, headerY: 54, headerSize: 36 };
+      : { width: 1200, pad: 24, gap: variant === "full" ? 8 : 12, gridTop: 80, headerY: 54, headerSize: 36 };
   const areaW = header.width - header.pad * 2;
   if (variant === "og") {
     // Fixed canvas: take whichever column count gives the biggest covers (3:4) in the
@@ -75,22 +86,23 @@ function layout(variant: ShareVariant): Layout {
       }
     }
     const gridW = cols * cellW + (cols - 1) * header.gap;
-    return { ...header, height, cols, cellW, cellH: (cellW * 4) / 3, gridLeft: (header.width - gridW) / 2 };
+    return { ...header, height, cols, cellW, cellH: (cellW * 4) / 3, gridLeft: (header.width - gridW) / 2, first: 0, count: CELLS };
   }
-  // Portrait 10×10 filling the width; the height follows from the grid.
-  const cols = 10;
+  // Portrait grid filling the width (10×10, or 5×5 for a quarter); the height follows.
+  const q = quarterIndex(variant);
+  const count = q === null ? CELLS : QUARTER;
+  const cols = q === null ? 10 : 5;
   const cellW = (areaW - header.gap * (cols - 1)) / cols;
   const cellH = (cellW * 4) / 3; // the site's cover frames are 3:4
-  const rows = Math.ceil(CELLS / cols);
+  const rows = Math.ceil(count / cols);
   const gridH = rows * cellH + (rows - 1) * header.gap;
   const height = Math.ceil(header.gridTop + gridH + header.pad);
-  return { ...header, height, cols, cellW, cellH, gridLeft: header.pad };
+  return { ...header, height, cols, cellW, cellH, gridLeft: header.pad, first: q === null ? 0 : q * QUARTER, count };
 }
 
-export const SHARE_IMAGE_SIZE: Record<ShareVariant, { width: number; height: number }> = {
-  og: { width: layout("og").width, height: layout("og").height },
-  full: { width: layout("full").width, height: layout("full").height },
-};
+export const SHARE_IMAGE_SIZE = Object.fromEntries(
+  SHARE_VARIANTS.map((v) => [v, { width: layout(v).width, height: layout(v).height }])
+) as Record<ShareVariant, { width: number; height: number }>;
 
 /** Identifies what a share image would show; changes whenever it would look different. */
 export async function shareImageHash(list: MangaList): Promise<string> {
@@ -113,6 +125,11 @@ function listUrlLabel(host: string, slug: string): string {
   return `${host}/l/${slug}`;
 }
 
+/** Quarters say which part they are, after the brand: 「1–25」. */
+function rangeLabel(L: Layout): string {
+  return L.count === CELLS ? "" : `${L.first + 1}–${L.first + L.count}`;
+}
+
 /** Rough advance width in em: full-width glyphs 1, ASCII ~0.6. Good enough to fit a line. */
 function emWidth(s: string): number {
   let w = 0;
@@ -125,7 +142,8 @@ function buildSvg(list: MangaList, variant: ShareVariant, hasCover: boolean[], h
   const owner = ownerPossessive(list.owner_name);
   const url = listUrlLabel(host, list.slug);
   // The URL is drawn at 0.75× the title size; shrink both if a long name would run into it.
-  const fit = (L.width - L.pad * 2 - 24) / (emWidth(`${owner}My 100 Manga`) + emWidth(url) * 0.75);
+  const range = rangeLabel(L);
+  const fit = (L.width - L.pad * 2 - 24) / (emWidth(`${owner}My 100 Manga ${range}`) + emWidth(url) * 0.75);
   const size = Math.max(16, Math.min(L.headerSize, Math.floor(fit)));
 
   const parts: string[] = [];
@@ -133,15 +151,16 @@ function buildSvg(list: MangaList, variant: ShareVariant, hasCover: boolean[], h
     `<svg xmlns="http://www.w3.org/2000/svg" width="${L.width}" height="${L.height}" viewBox="0 0 ${L.width} ${L.height}" font-family="${FONT_FAMILY}" font-weight="700">`,
     `<defs><clipPath id="r" clipPathUnits="objectBoundingBox"><rect width="1" height="1" rx="0.07" ry="0.0525"/></clipPath></defs>`,
     `<rect width="100%" height="100%" fill="${COLOR.bg}"/>`,
-    `<text x="${L.pad}" y="${L.headerY}" font-size="${size}" fill="${COLOR.text}">${escapeHtml(owner)}My <tspan fill="${COLOR.accent}">100</tspan> Manga</text>`,
+    `<text x="${L.pad}" y="${L.headerY}" font-size="${size}" fill="${COLOR.text}">${escapeHtml(owner)}My <tspan fill="${COLOR.accent}">100</tspan> Manga${range ? `<tspan dx="0.4em" fill="${COLOR.muted}">${range}</tspan>` : ""}</text>`,
     `<text x="${L.width - L.pad}" y="${L.headerY}" font-size="${Math.round(size * 0.75)}" fill="${COLOR.muted}" text-anchor="end">${escapeHtml(url)}</text>`
   );
 
   const r = (L.cellW * 0.07).toFixed(1);
   const numSize = Math.round(L.cellW * 0.32);
-  for (let i = 0; i < CELLS; i++) {
-    const x = (L.gridLeft + (i % L.cols) * (L.cellW + L.gap)).toFixed(1);
-    const y = (L.gridTop + Math.floor(i / L.cols) * (L.cellH + L.gap)).toFixed(1);
+  for (let i = L.first; i < L.first + L.count; i++) {
+    const k = i - L.first; // position within this image's grid
+    const x = (L.gridLeft + (k % L.cols) * (L.cellW + L.gap)).toFixed(1);
+    const y = (L.gridTop + Math.floor(k / L.cols) * (L.cellH + L.gap)).toFixed(1);
     const w = L.cellW.toFixed(1);
     const h = L.cellH.toFixed(1);
     if (i < list.items.length && hasCover[i]) {
@@ -188,10 +207,12 @@ async function loadFont(text: string): Promise<Uint8Array> {
   return new Uint8Array(await fontRes.arrayBuffer());
 }
 
-async function fetchCovers(env: Env, ctx: ExecutionContext, list: MangaList): Promise<(Uint8Array | null)[]> {
-  const urls = list.items.slice(0, CELLS).map((it) => it.cover_url);
+// Only the cells this image draws (a quarter fetches 25); the result is indexed by
+// list position like list.items.
+async function fetchCovers(env: Env, ctx: ExecutionContext, list: MangaList, first: number, count: number): Promise<(Uint8Array | null)[]> {
+  const urls = list.items.slice(0, first + count).map((it, i) => (i >= first ? it.cover_url : ""));
   const out: (Uint8Array | null)[] = new Array(urls.length).fill(null);
-  let next = 0;
+  let next = first;
   async function worker() {
     while (next < urls.length) {
       const i = next++;
@@ -208,9 +229,10 @@ async function fetchCovers(env: Env, ctx: ExecutionContext, list: MangaList): Pr
 }
 
 async function generate(env: Env, ctx: ExecutionContext, list: MangaList, variant: ShareVariant, host: string): Promise<ArrayBuffer> {
+  const L = layout(variant);
   const [covers, font] = await Promise.all([
-    fetchCovers(env, ctx, list),
-    loadFont(`${ownerPossessive(list.owner_name)}My Manga${listUrlLabel(host, list.slug)}0123456789`),
+    fetchCovers(env, ctx, list, L.first, L.count),
+    loadFont(`${ownerPossessive(list.owner_name)}My Manga–${listUrlLabel(host, list.slug)}0123456789`),
   ]);
   if (!wasmReady) wasmReady = initWasm(RESVG_WASM);
   await wasmReady;

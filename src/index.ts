@@ -540,7 +540,7 @@ export default {
       }
 
       // --- Share image (all 100 covers in one picture; og:image + X attachment) ---
-      const shareMatch = path.match(/^\/share\/([A-Za-z0-9_-]+)\/(og|full)\.jpg$/);
+      const shareMatch = path.match(/^\/share\/([A-Za-z0-9_-]+)\/(og|full|q[1-4])\.jpg$/);
       if (shareMatch && request.method === "GET") {
         return await handleShareImage(request, env, ctx, shareMatch[1], shareMatch[2] as ShareVariant);
       }

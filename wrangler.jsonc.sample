@@ -102,22 +102,37 @@
   // RL_WRITE はリスト作成/更新・通報・修正などの書き込み全般、RL_COVERS は外部 API や重い
   // クエリを叩くもの（/api/covers・/cover の R2 ミス・検索・候補・/api/book・共有画像の生成）用。
   // RL_COVERS はキーの bucket 名をエンドポイントごとに分けているので、limit は各々に効く。
+  // RL_HEAVY は MADB を全文検索する /api/live-search 用のさらに狭い枠。
   // period は 10 か 60 のみ。namespace_id は任意の一意値。
   "ratelimits": [
     { "name": "RL_WRITE", "namespace_id": "1001", "simple": { "limit": 30, "period": 60 } },
-    { "name": "RL_COVERS", "namespace_id": "1002", "simple": { "limit": 120, "period": 60 } }
+    { "name": "RL_COVERS", "namespace_id": "1002", "simple": { "limit": 120, "period": 60 } },
+    { "name": "RL_HEAVY", "namespace_id": "1003", "simple": { "limit": 20, "period": 60 } }
   ],
-  // 共有画像（src/shareImage.ts）の事前生成キュー。リストの作成/更新で {slug, host} を積み、
-  // 同じ Worker の queue() が og/full/q1–q4 を 1 枚ずつ描いて R2 に置く。描画はメモリを食う
-  // （isolate 128MB）ので batch 1・並列 1。キューは事前に `wrangler queues create <name>` で作る。
-  // binding が無ければ src/index.ts は従来どおり waitUntil で og だけ描く。
+  // 共有画像（src/shareImage.ts）の事前生成キュー。og は公開時に waitUntil で描き、残りの
+  // full/q1–q4 はリストの作成/更新で {slug, host, updated_at} を 60 秒遅延で積んで、同じ Worker の
+  // queue() が 1 枚ずつ描いて R2 に置く。描画はメモリを食う（isolate 128MB）ので batch 1・並列 1。
+  // キューは事前に `wrangler queues create <name>` で作る（閲覧ビーコンの my100manga-views も同様）。
+  // binding が無ければ og だけ描く。閲覧ビーコンは binding が無ければその場で D1 に書く。
   "queues": {
-    "producers": [{ "binding": "SHARE_QUEUE", "queue": "my100manga-share" }],
+    "producers": [
+      { "binding": "SHARE_QUEUE", "queue": "my100manga-share" },
+      { "binding": "VIEW_QUEUE", "queue": "my100manga-views" }
+    ],
     "consumers": [
       {
         "queue": "my100manga-share",
         "max_batch_size": 1,
         "max_batch_timeout": 1,
+        "max_concurrency": 1,
+        "max_retries": 3
+      },
+      // 閲覧ビーコン（src/publicLists.ts）。100 件か 10 秒でまとめて D1 に書く。キュー名は
+      // src/index.ts の VIEW_QUEUE_PREFIX で始めること（consumer の振り分けに使う）。
+      {
+        "queue": "my100manga-views",
+        "max_batch_size": 100,
+        "max_batch_timeout": 10,
         "max_concurrency": 1,
         "max_retries": 3
       }
@@ -174,10 +189,14 @@
       ],
       "ratelimits": [
         { "name": "RL_WRITE", "namespace_id": "1001", "simple": { "limit": 30, "period": 60 } },
-        { "name": "RL_COVERS", "namespace_id": "1002", "simple": { "limit": 120, "period": 60 } }
+        { "name": "RL_COVERS", "namespace_id": "1002", "simple": { "limit": 120, "period": 60 } },
+        { "name": "RL_HEAVY", "namespace_id": "1003", "simple": { "limit": 20, "period": 60 } }
       ],
       "queues": {
-        "producers": [{ "binding": "SHARE_QUEUE", "queue": "my100manga-share-dev" }],
+        "producers": [
+          { "binding": "SHARE_QUEUE", "queue": "my100manga-share-dev" },
+          { "binding": "VIEW_QUEUE", "queue": "my100manga-views-dev" }
+        ],
         "consumers": [
           {
             "queue": "my100manga-share-dev",
@@ -185,11 +204,163 @@
             "max_batch_timeout": 1,
             "max_concurrency": 1,
             "max_retries": 3
+          },
+          {
+            "queue": "my100manga-views-dev",
+            "max_batch_size": 100,
+            "max_batch_timeout": 10,
+            "max_concurrency": 1,
+            "max_retries": 3
           }
         ]
       },
       "routes": [
         { "pattern": "dev.example.com", "custom_domain": true }
+      ]
+    },
+    // ── R18版 (deployed by `wrangler deploy --env r18` / `--env r18dev`) ─────
+    // 本家と同じコードを別 Worker として出す（docs/r18.md）。SITE_VARIANT="adult" 以外の
+    // 違いは「本家と混ざらないよう別の入れ物を持つ」だけ。非継承キー（name / vars /
+    // d1_databases / r2_buckets / analytics_engine_datasets / durable_objects / migrations /
+    // ratelimits / queues / routes）は全部書く。triggers は**継承される**ので、売上ランキング
+    // の Cron を止めるために空で上書きする。
+    // 事前に作るもの: D1・R2 バケット・Queue 2 本（`wrangler queues create`）・R18 ドメイン用の
+    // Cloudflare Access アプリ・Google OAuth クライアント・Turnstile のホスト名登録。
+    // 注意: 閲覧ビーコンの consumer 振り分けは src/index.ts の VIEW_QUEUE_PREFIX
+    // （"my100manga-views" 直書き）で見ているので、下の queue 名にするなら先にそこを直す。
+    "r18": {
+      "name": "my100shunga",
+      "vars": {
+        "RAKUTEN_REFERER": "https://my100shunga.com/",
+        "GOOGLE_ENABLED": "false",
+        "COVER_SUGGESTIONS_ENABLED": "false",
+        // AdSense は成人向けコンテンツ不可。R18版では必ず空のままにする（docs/r18.md）。
+        "ADSENSE_CLIENT": "",
+        "GTM_CONTAINER_ID": "",
+        "TURNSTILE_SITE_KEY": "",
+        "DEV_TOOLS": "false",
+        "SITE_VARIANT": "adult"
+      },
+      "version_metadata": { "binding": "CF_VERSION" },
+      // 売上ランキング（楽天ブックスの一般書籍）は R18版では使わないので Cron を止める。
+      "triggers": { "crons": [] },
+      "d1_databases": [
+        {
+          "binding": "DB",
+          "database_name": "my100shunga",
+          "database_id": "REPLACE_WITH_R18_DATABASE_ID"
+        }
+      ],
+      "r2_buckets": [
+        { "binding": "COVERS", "bucket_name": "my100shunga-covers" }
+      ],
+      "analytics_engine_datasets": [
+        { "binding": "POPULARITY", "dataset": "my100shunga_popularity" }
+      ],
+      "durable_objects": {
+        "bindings": [
+          { "name": "RAKUTEN_LIMITER", "class_name": "RakutenRateLimiter" }
+        ]
+      },
+      "migrations": [
+        { "tag": "v1", "new_sqlite_classes": ["RakutenRateLimiter"] }
+      ],
+      // namespace_id は本家と別の値にする（同じ値だと枠を食い合う）。
+      "ratelimits": [
+        { "name": "RL_WRITE", "namespace_id": "2001", "simple": { "limit": 30, "period": 60 } },
+        { "name": "RL_COVERS", "namespace_id": "2002", "simple": { "limit": 120, "period": 60 } },
+        { "name": "RL_HEAVY", "namespace_id": "2003", "simple": { "limit": 20, "period": 60 } }
+      ],
+      "queues": {
+        "producers": [
+          { "binding": "SHARE_QUEUE", "queue": "my100shunga-share" },
+          { "binding": "VIEW_QUEUE", "queue": "my100shunga-views" }
+        ],
+        "consumers": [
+          {
+            "queue": "my100shunga-share",
+            "max_batch_size": 1,
+            "max_batch_timeout": 1,
+            "max_concurrency": 1,
+            "max_retries": 3
+          },
+          {
+            "queue": "my100shunga-views",
+            "max_batch_size": 100,
+            "max_batch_timeout": 10,
+            "max_concurrency": 1,
+            "max_retries": 3
+          }
+        ]
+      },
+      "routes": [
+        { "pattern": "my100shunga.com", "custom_domain": true }
+      ]
+    },
+    "r18dev": {
+      "name": "my100shunga-dev",
+      "vars": {
+        "RAKUTEN_REFERER": "https://dev.my100shunga.com/",
+        "GOOGLE_ENABLED": "false",
+        "COVER_SUGGESTIONS_ENABLED": "false",
+        "ADSENSE_CLIENT": "",
+        "GTM_CONTAINER_ID": "",
+        "TURNSTILE_SITE_KEY": "",
+        "DEV_TOOLS": "false",
+        "SITE_VARIANT": "adult"
+      },
+      "version_metadata": { "binding": "CF_VERSION" },
+      "triggers": { "crons": [] },
+      "d1_databases": [
+        {
+          "binding": "DB",
+          "database_name": "my100shunga-dev",
+          "database_id": "REPLACE_WITH_R18_DEV_DATABASE_ID"
+        }
+      ],
+      "r2_buckets": [
+        { "binding": "COVERS", "bucket_name": "my100shunga-covers-dev" }
+      ],
+      "analytics_engine_datasets": [
+        { "binding": "POPULARITY", "dataset": "my100shunga_popularity_dev" }
+      ],
+      "durable_objects": {
+        "bindings": [
+          { "name": "RAKUTEN_LIMITER", "class_name": "RakutenRateLimiter" }
+        ]
+      },
+      "migrations": [
+        { "tag": "v1", "new_sqlite_classes": ["RakutenRateLimiter"] }
+      ],
+      "ratelimits": [
+        { "name": "RL_WRITE", "namespace_id": "2001", "simple": { "limit": 30, "period": 60 } },
+        { "name": "RL_COVERS", "namespace_id": "2002", "simple": { "limit": 120, "period": 60 } },
+        { "name": "RL_HEAVY", "namespace_id": "2003", "simple": { "limit": 20, "period": 60 } }
+      ],
+      "queues": {
+        "producers": [
+          { "binding": "SHARE_QUEUE", "queue": "my100shunga-share-dev" },
+          { "binding": "VIEW_QUEUE", "queue": "my100shunga-views-dev" }
+        ],
+        "consumers": [
+          {
+            "queue": "my100shunga-share-dev",
+            "max_batch_size": 1,
+            "max_batch_timeout": 1,
+            "max_concurrency": 1,
+            "max_retries": 3
+          },
+          {
+            "queue": "my100shunga-views-dev",
+            "max_batch_size": 100,
+            "max_batch_timeout": 10,
+            "max_concurrency": 1,
+            "max_retries": 3
+          }
+        ]
+      },
+      "routes": [
+        { "pattern": "dev.my100shunga.com", "custom_domain": true }
       ]
     }
   }

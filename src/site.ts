@@ -29,8 +29,9 @@ export const GENERAL_ORIGIN = "https://my100manga.com";
 
 const SITES: Record<SiteVariant, SiteConfig> = {
   general: { variant: "general", name: GENERAL_NAME, hashtag: "my100manga", excludeAdult: true },
-  // TODO(R18): 名前・ハッシュタグは仮。決まったらここだけ直す。
-  adult: { variant: "adult", name: "My 100 Manga R18", hashtag: "my100mangaR18", excludeAdult: false },
+  // R18版（my100shunga.com / dev.my100shunga.com）。ドメインはここには持たない（canonical・og:url は
+  // 配信時のオリジンから applySiteIdentity が作る）。
+  adult: { variant: "adult", name: "My 100 Shunga", hashtag: "my100shunga", excludeAdult: false },
 };
 
 export function siteVariant(env: Pick<Env, "SITE_VARIANT">): SiteVariant {

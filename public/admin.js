@@ -2882,6 +2882,8 @@ const PAGES = {
     loadBookMeta(1);
   },
   "sales-ranking": () => loadSales(),
+  circulation: () => loadCirculation(),
+  warm: () => loadWarm(),
   "dev-tools": () => {},
 };
 
@@ -3082,11 +3084,373 @@ $("reloadSup").addEventListener("click", () => {
   loadSupplements(pageState.sup);
 });
 $("purgeSupEmpty").addEventListener("click", (e) => purgeSupplements("empty", e.currentTarget));
+/* ---------- 発行部数ランキング ---------- */
+// Wikipedia 由来の累計発行部数（src/circulation.ts）。取り込みそのものはローカルの
+// scripts/wikipedia-circulation.mjs → db/circulation-data.sql なので、ここからは
+// 寄せ直し（再集計）と、リンクが付かなかった作品の確認だけ。
+let circRows = [];
+let circPickArticle = "";
+
+async function loadCirculation() {
+  const stats = $("circStats");
+  stats.textContent = "";
+  $("circStates").textContent = "";
+  $("circRowsBody").textContent = "";
+  $("circRowsTable").style.display = "none";
+  $("circSource").textContent = "";
+
+  let data;
+  try {
+    const res = await fetch("/api/admin/circulation");
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    data = await res.json();
+  } catch {
+    $("circSummary").textContent = "状況の取得に失敗しました";
+    return;
+  }
+  circRows = data.rows || [];
+
+  const [linked, total] = data.linked || [0, 0];
+  $("circSummary").textContent = data.works
+    ? `${data.works} 作品（取り込み ${fmtDate(data.updated_at).slice(0, 10)}）`
+    : "まだ取り込んでいません";
+  const cards = [
+    [String(data.works), "取り込んだ作品数"],
+    [total ? `${linked} / ${total}` : "-", "巻一覧へのリンク付き"],
+    [data.computed_at ? fmtDate(data.computed_at).slice(5) : "-", "最後に集計した時刻"],
+  ];
+  for (const [n, k] of cards) {
+    stats.append(
+      el("div", { className: "stat-card" }, [
+        el("div", { className: "n", textContent: n }),
+        el("div", { className: "k", textContent: k }),
+      ])
+    );
+  }
+
+  if (data.source) {
+    $("circSource").append(
+      document.createTextNode("出典: "),
+      el("a", { href: data.source.url, target: "_blank", textContent: data.source.title }),
+      document.createTextNode(
+        `（oldid ${data.source.revid} / 記事の更新 ${data.source.touched} / 取得 ${data.source.retrieved}・${data.source.license}）`
+      )
+    );
+  }
+
+  // 要確認（auto / none / stale）は目立たせる。
+  const st = data.states || {};
+  for (const [key, label] of [
+    ["manual", "手動で指定"],
+    ["suggested", "サジェストのまま"],
+    ["auto", "指定なし（自動照合）"],
+    ["skipped", "寄せない"],
+    ["none", "寄せ先なし"],
+    ["stale", "指定先が見つからない"],
+  ]) {
+    const n = st[key] || 0;
+    if (!n && (key === "stale" || key === "none" || key === "skipped")) continue;
+    $("circStates").append(
+      el("div", { className: "stat-card" + (n && (key === "stale" || key === "none") ? " warn" : "") }, [
+        el("div", { className: "n", textContent: String(n) }),
+        el("div", { className: "k", textContent: label }),
+      ])
+    );
+  }
+  renderCircRows();
+}
+
+const CIRC_STATE_LABEL = {
+  manual: "手動",
+  suggested: "サジェスト",
+  auto: "指定なし",
+  none: "寄せ先なし",
+  skipped: "寄せない",
+  stale: "指定先が見つからない",
+};
+// 目で確かめたいもの。サジェストのままでも問題は無いので、ここには入れない。
+const CIRC_ISSUE = new Set(["auto", "none", "stale"]);
+
+function renderCircRows() {
+  const onlyIssues = $("circOnlyIssues").checked;
+  const rows = onlyIssues ? circRows.filter((r) => CIRC_ISSUE.has(r.state)) : circRows;
+  const body = $("circRowsBody");
+  body.textContent = "";
+  $("circRowsCount").textContent = onlyIssues ? `${rows.length} / ${circRows.length} 件` : `${circRows.length} 件`;
+
+  for (const r of rows) {
+    const target = r.series_id
+      ? el("div", {}, [
+          el("a", {
+            href: `/?series=${encodeURIComponent(r.series_id)}&st=${encodeURIComponent(r.title)}`,
+            target: "_blank",
+            textContent: r.series_name || r.series_id,
+          }),
+          el("div", {
+            className: "muted",
+            style: "font-size:12px",
+            textContent: [r.series_label, r.volume_count ? `${r.volume_count}巻` : ""].filter(Boolean).join(" / "),
+          }),
+        ])
+      : el("a", {
+          href: `/?q=${encodeURIComponent(r.search_q || r.title)}`,
+          target: "_blank",
+          className: "muted",
+          textContent: "（検索結果へ）",
+        });
+
+    const actions = el("div", { className: "cover-actions", style: "gap:6px;margin:0" }, [
+      el("button", { type: "button", textContent: "変更", onclick: () => openCircPick(r) }),
+      el("button", {
+        type: "button",
+        textContent: "寄せない",
+        disabled: r.state === "skipped",
+        onclick: () => setCircLink(r.article, "", `「${r.title}」を寄せないことにしますか？`),
+      }),
+      el("button", {
+        type: "button",
+        textContent: "戻す",
+        disabled: r.state === "auto" || r.state === "none",
+        onclick: () => setCircLink(r.article, null, `「${r.title}」の指定を外して自動照合に戻しますか？`),
+      }),
+    ]);
+
+    body.append(
+      el("tr", {}, [
+        el("td", { className: "num", textContent: `${r.rank}位` }),
+        el("td", { className: "wrap" }, [
+          el("div", { textContent: r.title }),
+          el("div", { className: "muted", style: "font-size:12px", textContent: `${r.title_en} / ${r.author}` }),
+        ]),
+        el("td", { className: "wrap" }, [target]),
+        el("td", {
+          className: CIRC_ISSUE.has(r.state) ? "" : "muted",
+          textContent: CIRC_STATE_LABEL[r.state] || r.state,
+        }),
+        el("td", {}, [actions]),
+      ])
+    );
+  }
+  $("circRowsTable").style.display = rows.length ? "" : "none";
+}
+
+// 寄せ先を選ぶダイアログ。候補は公開の検索 API（/api/search）をそのまま使う。
+function openCircPick(row) {
+  circPickArticle = row.article;
+  $("circPickTitle").textContent = `「${row.title}」の寄せ先を選ぶ`;
+  $("circPickQuery").value = row.title;
+  $("circPickHint").textContent = "";
+  $("circPickBody").textContent = "";
+  $("circPickTable").style.display = "none";
+  $("circPickDlg").showModal();
+  runCircPickSearch();
+}
+
+async function runCircPickSearch() {
+  const q = $("circPickQuery").value.trim();
+  const hint = $("circPickHint");
+  const body = $("circPickBody");
+  body.textContent = "";
+  $("circPickTable").style.display = "none";
+  if (q.length < 2) {
+    hint.textContent = "検索語を 2 文字以上で入力してください";
+    return;
+  }
+  hint.textContent = "検索中…";
+  let results;
+  try {
+    const res = await fetch(`/api/search?q=${encodeURIComponent(q)}`);
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
+    results = (data.results || []).filter((x) => x.series_id);
+  } catch (e) {
+    hint.textContent = "検索に失敗しました: " + e.message;
+    return;
+  }
+  hint.textContent = results.length ? "" : "見つかりませんでした。語を短くして試してください。";
+  for (const r of results) {
+    body.append(
+      el("tr", {}, [
+        el("td", { className: "wrap", textContent: r.title }),
+        el("td", { className: "wrap muted", textContent: r.creators || r.creator || "" }),
+        el("td", { className: "wrap muted", textContent: r.label || "" }),
+        el("td", { className: "num", textContent: String(r.volume_count ?? "") }),
+        el("td", {}, [
+          el("button", {
+            type: "button",
+            textContent: "これにする",
+            onclick: () => {
+              $("circPickDlg").close();
+              setCircLink(circPickArticle, r.series_id, "");
+            },
+          }),
+        ]),
+      ])
+    );
+  }
+  $("circPickTable").style.display = results.length ? "" : "none";
+}
+
+/** series_id: 文字列 = そこへ寄せる / "" = 寄せない / null = 指定を外す。 */
+async function setCircLink(article, seriesId, confirmMsg) {
+  if (confirmMsg && !(await uiConfirm(confirmMsg))) return;
+  try {
+    const res = await fetch("/api/admin/circulation/link", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ article, series_id: seriesId }),
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
+    await loadCirculation();
+  } catch (e) {
+    uiAlert("指定に失敗しました: " + e.message);
+  }
+}
+
+// 既存の指定には触らず、指定の無い作品だけ自動照合で埋める。サジェストのままの行も付け直す
+// （マスタを取り込み直して寄せ先が変わったとき）のは、?overwrite=1 を付けて叩く運用にしてある
+// ー 画面から押せると、確かめずに全部を入れ直してしまいやすいため。
+async function runCirculationSuggest(btn) {
+  if (!(await uiConfirm("指定の無い作品を自動照合して埋めます。手動で指定したものは変わりません。"))) return;
+  await postCirculation("/api/admin/circulation/suggest", btn, "取り込み中…（1分ほど）", (d) =>
+    `${d.added} 件を埋めました（既存の指定 ${d.kept} 件はそのまま）。リンク付き ${d.linked} / ${d.works}。`
+  );
+}
+
+async function runCirculationRecompute(btn) {
+  await postCirculation("/api/admin/circulation/recompute", btn, "集計中…（1分ほど）", (d) =>
+    `${d.works} 作品を集計し、${d.linked} 件に巻一覧へのリンクが付きました。`
+  );
+}
+
+async function postCirculation(url, btn, busyLabel, message) {
+  const orig = btn.textContent;
+  btn.disabled = true;
+  btn.textContent = busyLabel;
+  try {
+    const res = await fetch(url, { method: "POST" });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
+    uiAlert(message(data));
+    await loadCirculation();
+  } catch (e) {
+    uiAlert("失敗しました: " + e.message);
+  } finally {
+    btn.disabled = false;
+    btn.textContent = orig;
+  }
+}
+
+/* ---------- キャッシュ暖機 ---------- */
+// 楽天の枠（サイト全体で約 1 件/秒）に合わせて「次の数件」を繰り返し頼むループ（src/warm.ts）。
+// 進捗は covers 表で判断するので、止めても同じ対象を選び直せば続きから進む。
+let warmRunning = false;
+
+async function loadWarm() {
+  const stats = $("warmStats");
+  stats.textContent = "";
+  let data;
+  try {
+    const res = await fetch("/api/admin/warm");
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    data = await res.json();
+  } catch {
+    $("warmSummary").textContent = "状況の取得に失敗しました";
+    return;
+  }
+  const pct = (a, b) => (b ? `${Math.round((a / b) * 100)}%` : "-");
+  $("warmSummary").textContent = `${data.covers.toLocaleString("ja-JP")} / ${data.volumes.toLocaleString("ja-JP")} 巻`;
+  const cards = [
+    [pct(data.scopes.circulation.warmed, data.scopes.circulation.volumes), "発行部数ランキングの巻"],
+    [pct(data.scopes.sales.warmed, data.scopes.sales.volumes), "売上ランキングの巻"],
+    [data.covers_found.toLocaleString("ja-JP"), "表紙が見つかった巻"],
+    [data.book_meta.toLocaleString("ja-JP"), "あらすじ等を取得した巻"],
+  ];
+  for (const [n, k] of cards) {
+    stats.append(
+      el("div", { className: "stat-card" }, [
+        el("div", { className: "n", textContent: n }),
+        el("div", { className: "k", textContent: k }),
+      ])
+    );
+  }
+}
+
+async function warmLoop() {
+  const scope = $("warmScope").value;
+  const progress = $("warmProgress");
+  let cursor = "";
+  let cached = 0;
+  let idle = 0;
+  const started = Date.now();
+
+  while (warmRunning) {
+    const q = new URLSearchParams({ scope, limit: "8" });
+    if (cursor) q.set("cursor", cursor);
+    let r;
+    try {
+      const res = await fetch(`/api/admin/warm?${q}`, { method: "POST" });
+      r = await res.json();
+      if (!res.ok) throw new Error(r.error || `HTTP ${res.status}`);
+    } catch (e) {
+      progress.textContent = `中断しました: ${e.message}`;
+      break;
+    }
+    cached += r.cached;
+    cursor = r.cursor || "";
+    if (r.done) {
+      progress.textContent = `完了: ${cached} 件を新たにキャッシュしました。`;
+      break;
+    }
+    // 進まない要求が続いたら止める（楽天が落ちている・枠が取れない）。
+    idle = r.cached > 0 || (r.attempted === 0 && cursor) ? 0 : idle + 1;
+    if (idle >= 5) {
+      progress.textContent = `進まなくなったので中断しました（${cached} 件）。時間をおいて再開してください。`;
+      break;
+    }
+    const sec = Math.round((Date.now() - started) / 1000);
+    progress.textContent = `${cached} 件 / ${Math.floor(sec / 60)}分${String(sec % 60).padStart(2, "0")}秒`;
+  }
+
+  warmRunning = false;
+  $("warmStart").disabled = false;
+  $("warmStop").disabled = true;
+  $("warmScope").disabled = false;
+  await loadWarm();
+}
+
 $("purgeSupAll").addEventListener("click", (e) => purgeSupplements("all", e.currentTarget));
 $("delSup").addEventListener("click", (e) => deleteSupplement(e.currentTarget));
 $("reloadSales").addEventListener("click", () => loadSales());
 $("salesSnapshot").addEventListener("click", (e) => runSales(false, e.currentTarget));
 $("salesRecompute").addEventListener("click", (e) => runSales(true, e.currentTarget));
+$("reloadCirc").addEventListener("click", () => loadCirculation());
+$("circRecompute").addEventListener("click", (e) => runCirculationRecompute(e.currentTarget));
+$("circSuggest").addEventListener("click", (e) => runCirculationSuggest(e.currentTarget));
+$("circOnlyIssues").addEventListener("change", () => renderCircRows());
+$("circPickSearch").addEventListener("click", () => runCircPickSearch());
+$("circPickQuery").addEventListener("keydown", (e) => {
+  if (e.key === "Enter") {
+    e.preventDefault();
+    runCircPickSearch();
+  }
+});
+$("reloadWarm").addEventListener("click", () => loadWarm());
+$("warmStart").addEventListener("click", () => {
+  if (warmRunning) return;
+  warmRunning = true;
+  $("warmStart").disabled = true;
+  $("warmStop").disabled = false;
+  $("warmScope").disabled = true;
+  $("warmProgress").textContent = "開始しました…";
+  warmLoop();
+});
+$("warmStop").addEventListener("click", () => {
+  warmRunning = false;
+  $("warmStop").disabled = true;
+  $("warmProgress").textContent += "（停止中…現在の要求が終わるまで待ちます）";
+});
 $("reloadBookMeta").addEventListener("click", () => {
   loadBookMetaSummary();
   loadBookMeta(pageState.bookMeta);

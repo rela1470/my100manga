@@ -116,6 +116,8 @@ const SWAP_SQL = [
   "CREATE INDEX IF NOT EXISTS idx_volumes_series ON volumes (series_id, vol_sort);",
   // db/add-indexes-2026-10.sql で足した索引。表を作り直すたびに張り直さないと消える。
   "CREATE INDEX IF NOT EXISTS idx_series_name_label ON series (name, label);",
+  // db/add-circulation.sql で足した索引（暖機 src/warm.ts が巻数順にたどる）。
+  "CREATE INDEX IF NOT EXISTS idx_series_num_items ON series (num_items DESC, id);",
   "CREATE INDEX IF NOT EXISTS idx_volumes_unlinked_title ON volumes (title, label) WHERE series_id IS NULL;",
   "CREATE TABLE IF NOT EXISTS series_supplement (series_id TEXT PRIMARY KEY, volumes_json TEXT NOT NULL, checked_at INTEGER NOT NULL);",
   PRUNE_SUPPLEMENT_SQL,
@@ -819,8 +821,11 @@ async function main() {
     releaseTag ? ["madb_release_tag", releaseTag] : null,
     releasedAt ? ["madb_released_at", String(releasedAt)] : null,
   ].filter(Boolean);
+  // トップの収録数（シリーズ数・巻数）は meta に 1 日 materialize している（src/siteStats.ts）。
+  // 取り込み直後に古い数を 1 日出し続けないよう、そのキャッシュだけ消す（次の閲覧で数え直す）。
   const metaSql =
     "CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT NOT NULL); " +
+    "DELETE FROM meta WHERE key IN ('site_stats_master_json', 'site_stats_master_at'); " +
     metaRows
       .map(([k, v]) => `INSERT OR REPLACE INTO meta (key, value) VALUES (${sqlStr(k)}, ${sqlStr(v)});`)
       .join(" ");

@@ -324,7 +324,7 @@ async function computeSalesRanking(env: Env, now = Date.now()): Promise<SalesPay
 
 /** 寄せ先の最新巻の表紙。キャッシュに表紙が無ければ url は "" で、最新巻の ISBN だけ返す
  *  （閲覧側が /api/covers で引く）。 */
-async function latestSeriesCover(env: Env, id: string): Promise<{ url: string; isbn: string }> {
+export async function latestSeriesCover(env: Env, id: string): Promise<{ url: string; isbn: string }> {
   if (isGroupId(id)) {
     const vols = [...((await loadGroup(env, id.slice(1)))?.volumes ?? [])].reverse();
     return { url: vols.find((v) => v.cover_url)?.cover_url ?? "", isbn: vols[0]?.isbn ?? "" };
@@ -341,7 +341,7 @@ async function latestSeriesCover(env: Env, id: string): Promise<{ url: string; i
   return { url: rows.find((x) => x.cover_url)?.cover_url ?? "", isbn: rows[0]?.isbn ?? "" };
 }
 
-interface WorkRef {
+export interface WorkRef {
   key: string;
   work: string;
   author: string;
@@ -365,7 +365,7 @@ const creatorMatches = (creator: string | null, names: string[]): boolean => {
  *      以降を除いた基本書名の一致）。同名が複数（レーベル違いの文庫版・総集編など）なら pickBest
  *   3. シリーズの無い巻のまとまり（書名 + 著者 + レーベル）。複数なら同じく pickBest
  *  最後に resolveUnit で結合済みの読み替え・まとまりの正規 ID への寄せをする。 */
-async function resolveTargets(env: Env, works: WorkRef[]): Promise<Map<string, string>> {
+export async function resolveTargets(env: Env, works: WorkRef[]): Promise<Map<string, string>> {
   const found = new Map<string, string>();
 
   // 1. ISBN
@@ -418,14 +418,15 @@ function pickBest<T extends { creator: string | null; n: number }>(cands: T[], n
 }
 
 // 照合用のゆるいキー: 全角半角を寄せ、空白と区切り記号（「ちいかわ : なんか…」の「:」、
-// 「あさドラ!」の「!」、長音・中黒など）を全部落とす。楽天とマスタで表記が揺れるところ。
-const LOOSE_PUNCT = /[\s:：=＝・･!！?？、。,.．\-－‐ー~〜～＠@'"’”「」『』]/g;
+// 「あさドラ!」の「!」、長音・中黒・星など）を全部落とす。楽天とマスタで表記が揺れるところ
+// （「遊☆戯☆王」↔ マスタの「遊・戯・王」）。
+const LOOSE_PUNCT = /[\s:：=＝・･☆★!！?？、。,.．\-－‐ー~〜～＠@'"’”「」『』]/g;
 const looseKey = (s: string): string => s.normalize("NFKC").toLowerCase().replace(LOOSE_PUNCT, "");
 
 /** 作品名の先頭の語（最初の空白・区切り記号まで。2 文字未満なら作品名そのまま）。表記揺れは
  *  先頭より後ろに出やすい（「ハナバス 苔石花江のバスケ論」↔ マスタ「ハナバス」）ので、照合の
  *  LIKE と、寄せ先が無い作品の検索リンク（search_q）はこれで広めに拾う。 */
-function headWord(work: string): string {
+export function headWord(work: string): string {
   const head = work.split(/[\s　:：=＝・!！?？、。,.\-－‐~〜～＠@（(]/)[0];
   return head.length >= 2 ? head : work;
 }
@@ -520,6 +521,21 @@ export async function handleSalesRanking(env: Env): Promise<Response> {
     },
     (res) => res.status === 200 && !(res.headers.get("cache-control") ?? "").includes("no-store")
   );
+}
+
+/** 売上ランキングに出ている作品の寄せ先 ID を、窓をまたいだ最高順位の順に。暖機
+ *  （src/warm.ts）が「いま売れている作品の巻から先に温める」のに使う。 */
+export async function salesSeriesIds(env: Env): Promise<string[]> {
+  const payload = await readPayload(env);
+  const best = new Map<string, number>();
+  for (const w of WINDOWS) {
+    for (const e of payload?.windows[w] ?? []) {
+      if (!e.series_id) continue;
+      const cur = best.get(e.series_id);
+      if (cur === undefined || e.rank < cur) best.set(e.series_id, e.rank);
+    }
+  }
+  return [...best.entries()].sort((a, b) => a[1] - b[1]).map(([id]) => id);
 }
 
 /** 保存済みの行の作品名を今の salesWorkTitle で付け直す（書名ごと、変わったものだけ）。 */

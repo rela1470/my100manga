@@ -1,0 +1,69 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>発行部数ランキング | My 100 Manga</title>
+  <meta name="description" content="累計発行部数が多い漫画のランキング。2000万部以上の約200作品を、出版社の発表をもとにした累計部数の多い順に並べています。">
+  <link rel="canonical" href="https://my100manga.com/circulation">
+  <meta property="og:type" content="website">
+  <meta property="og:site_name" content="My 100 Manga">
+  <meta property="og:title" content="発行部数ランキング | My 100 Manga">
+  <meta property="og:description" content="累計発行部数が多い漫画のランキング。2000万部以上の約200作品を、出版社の発表をもとにした累計部数の多い順に並べています。">
+  <meta property="og:url" content="https://my100manga.com/circulation">
+  <meta property="og:image" content="https://my100manga.com/og-default.png">
+  <meta property="og:image:width" content="1200">
+  <meta property="og:image:height" content="630">
+  <meta name="twitter:card" content="summary_large_image">
+  <meta name="twitter:image" content="https://my100manga.com/og-default.png">
+  <link rel="icon" href="/favicon.ico" sizes="32x32">
+  <link rel="icon" href="/favicon.svg" type="image/svg+xml">
+  <link rel="apple-touch-icon" href="/apple-touch-icon.png">
+  <meta name="theme-color" content="#3b82f6">
+  <!--ANALYTICS-->
+  <link rel="stylesheet" href="/styles.css">
+</head>
+<body>
+  <!--GTM_BODY-->
+  <header class="site">
+    <h1><a class="site-logo" href="/">My <span class="accent">100</span> Manga</a></h1>
+    <p class="tagline">発行部数ランキング ― 歴代でいちばん売れた漫画</p>
+    <!--HEADER_LINKS-->
+  </header>
+
+  <div class="wrap">
+    <!--RANK_SWITCH-->
+    <p class="lead">
+      単行本の累計発行部数が 2000 万部を超えた作品を、部数の多い順に並べたランキングです。
+      出版社やその発表を伝えた記事がもとになっているので、連載が終わった昔の名作も入ります。
+      表紙を押すと巻の一覧を開いて、自分の100に追加できます。
+    </p>
+
+    <p class="rank-note" id="note"></p>
+    <div class="grid" id="list" aria-label="発行部数ランキング"></div>
+    <p class="rank-empty" id="empty" hidden>まだデータがありません。</p>
+
+    <p class="rank-source">
+      部数は「刷った数（発行部数・印刷部数）」で、実際に売れた数ではありません。デジタル版を含む作品と含まない作品があり、
+      集計の時点も作品ごとにばらばらです（各作品の「◯年◯月時点」を見てください）。
+      並び順は発表されている数字をそのまま比べたもので、同じ基準で測った順位ではありません。
+      いま売れている順は<a href="/sales-ranking">売上ランキング</a>を見てください。
+    </p>
+    <p class="rank-source" id="attribution"></p>
+
+    <div class="publish-bar">
+      <a class="button primary" href="/">自分の100を作る</a>
+    </div>
+  </div>
+
+  <!--FOOTER_AFF-->
+
+  <!--AFF_DATA-->
+  <script src="/ui-dialog.js"></script>
+  <script src="/api.js"></script>
+  <script src="/cover-fit.js"></script>
+  <script src="/affiliate.js"></script>
+  <script src="/book-detail.js"></script>
+  <script src="/circulation.js"></script>
+</body>
+</html>

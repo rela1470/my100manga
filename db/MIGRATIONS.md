@@ -37,9 +37,35 @@ DB 側に記録されないので、この表で管理する。
 | `add-accounts.sql` | `users` / `sessions` / `user_drafts` / `lists.user_id`（Google ログイン） | × | 2026-10-03 | 2026-10-03 |
 | `add-indexes-2026-10.sql` | 公開前の索引見直し・`series_supplement_isbn`（逆引き表＋トリガ）。**デプロイ前に** | ○ | 2026-10-03 | 2026-10-03 |
 | `add-adult-volumes.sql` | `adult_volumes`（成年向けで除外した巻。追加不可の明示用。中身は取り込み直しで埋まる）。**デプロイ前に** | ○ | 2026-10-03 | 2026-10-03 |
+| `add-circulation.sql` | `circulation`（発行部数ランキング）＋ `idx_series_num_items`（暖機が巻数順にたどる索引）。**デプロイ前に** | ○ | 2026-10-04 | 2026-10-04 |
+| `circulation-data.sql` | 発行部数ランキングの中身（`scripts/wikipedia-circulation.mjs` が生成。全件入れ替え） | ○ | 2026-10-04 | 2026-10-04 |
+| `add-circulation-link.sql` | `circulation_link`（発行部数ランキングの寄せ先の指定）。**デプロイ前に** | ○ | 2026-10-04 | 2026-10-04 |
+| `circulation-links.sql` | 寄せ先の指定の中身（`scripts/dump-circulation-links.mjs` が生成。upsert） | ○ | 2026-10-04 | 2026-10-04 |
 
 冪等: ○ = 何度流しても同じ結果。× = 2 回目はエラーになる（`ALTER TABLE ... ADD COLUMN` など。エラーで
 止まるだけで壊れはしないが、同じファイルの後続の文も流れない）。
+
+### 発行部数ランキングの 4 ファイルの注意
+
+- `src/circulation.ts` と `src/warm.ts` が `circulation` / `circulation_link` を参照するので、**全部流してから**デプロイする
+  （逆順だと `/circulation` と管理画面の「発行部数ランキング」「キャッシュ暖機」が「no such table」で落ちる）。
+
+- `circulation-data.sql` は `DELETE FROM circulation` から始まる全件入れ替えで、手で編集しない。更新するときは
+  `node scripts/wikipedia-circulation.mjs` を実行して作り直す（Wikipedia の最新版を取り直し、取得した oldid を
+  `meta.circulation_source` に記録する）。
+- 順番は `add-circulation.sql`（表と索引）→ `add-circulation-link.sql`（寄せ先の指定の表）→
+  `circulation-data.sql`（作品と部数）→ `circulation-links.sql`（寄せ先の指定）。
+- 流した後に管理画面「発行部数ランキング」の**再集計**を実行する（寄せ先と表紙を付け直す）。
+  2 つのデータ SQL の末尾で `meta` の集計を消しているので、忘れても最初のアクセスで作り直される。
+- `circulation_link` は**作品 → シリーズの寄せ先の指定**で、`circulation` とは別の表にしてある。
+  Wikipedia を取り込み直すと `circulation` は `DELETE` → `INSERT` で全件入れ替わるので、同じ表に
+  置くと指定が消えるため。`circulation-links.sql` は upsert で、本番で手動指定（`source='manual'`）した
+  行はローカルのサジェストで潰さない。
+- 既定の `circulation-links.sql` は 197 件すべて `source='suggested'`（自動照合の結果）。間違っている
+  ものだけ管理画面で直し、`node scripts/dump-circulation-links.mjs` で書き出し直して本番へ流す
+  （シリーズ結合の `series-merge-data.sql` と同じ運用）。
+- `idx_series_num_items` は `series`（約 14 万行）への索引で、作成に数秒かかる。月次取り込みの差し替え
+  （`scripts/ingest.mjs` の `SWAP_SQL`）でも張り直している。
 
 ### `add-indexes-2026-10.sql` の注意
 
@@ -48,6 +74,25 @@ DB 側に記録されないので、この表で管理する。
 - 中身は索引 5 本・逆引き表 1 つ・トリガ 3 つと、既存の `series_supplement` の展開（`INSERT OR IGNORE`）。
   `volumes` の部分索引（約 7 万行）と `series` の索引（約 14 万行）の作成で数秒〜十数秒かかる。
 - `series` / `volumes` の索引は月次取り込みの差し替え（`scripts/ingest.mjs` の `SWAP_SQL`）でも張り直す。
+
+### dev / 本番への適用記録（2026-10-04）
+
+**dev（2026-10-04）**
+
+- 適用前の Time Travel ブックマーク: `000000c4-00000000-000050f9-4cfb21d9feb31b729794f2996c1866a3`
+- 上の順で 4 ファイルを適用 → `circulation` 200 行 / `circulation_link` 199 行（うち `manual` 3）/
+  `idx_series_num_items` 作成。そのあと `npm run deploy:dev`。
+- **デプロイの前に Queues の作成が必要だった**（`wrangler.jsonc` が producer / consumer として
+  参照しているのに未作成で、無いまま deploy すると失敗する）。両方ともこの日に作成済み:
+  `npx wrangler queues create my100manga-views-dev` / `npx wrangler queues create my100manga-views`。
+
+**本番（2026-10-04）**
+
+- 適用前の Time Travel ブックマーク: `000000a4-00000000-000050f9-ce4aa8de714187a19b204d46787bead1`
+- ユーザデータの書き出し: `backups/prod-20261004-0303.sql`（`lists` ほか。マスタは含めない）
+- 同じ 4 ファイルを同じ順で適用 → `circulation` 200 行 / `circulation_link` 199 行（うち `manual` 3）/
+  `idx_series_num_items` 作成（`series` 13.3 万行）。`lists` / `users` は適用前後とも 1 行で無傷。
+- `npm run deploy` → Version ID `21ebe2f8-5086-45ad-99e8-d231b9af18d4`。
 
 ## バックアップ（リモートの migration / ingest の前に毎回）
 

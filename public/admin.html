@@ -32,6 +32,8 @@
       <a href="#supplements" data-page="supplements">補完キャッシュ</a>
       <a href="#book-meta" data-page="book-meta">楽天データ</a>
       <a href="#sales-ranking" data-page="sales-ranking">売上ランキング</a>
+      <a href="#circulation" data-page="circulation">発行部数ランキング</a>
+      <a href="#warm" data-page="warm">キャッシュ暖機</a>
       <a href="#dev-tools" data-page="dev-tools" id="navDevTools" hidden>開発ツール</a>
     </nav>
 
@@ -564,6 +566,96 @@
         </thead>
         <tbody id="salesUnlinkedBody"></tbody>
       </table>
+    </section>
+
+    <!-- 発行部数ランキング（Wikipedia 由来の累計部数, src/circulation.ts） -->
+    <section class="admin-page" id="page-circulation" hidden>
+      <div class="toolbar">
+        <strong>発行部数ランキング</strong>
+        <span class="count" id="circSummary"></span>
+        <div style="flex:1"></div>
+        <button id="reloadCirc">再読み込み</button>
+      </div>
+      <p class="hint">
+        英語版ウィキペディア「List of best-selling manga」（累計 2000 万部以上の約 200 作品）から取り込んだ累計発行部数です（公開ページ <a href="/circulation" target="_blank">/circulation</a>）。
+        取り込みはローカルで <code>node scripts/wikipedia-circulation.mjs</code> を実行して <code>db/circulation-data.sql</code> を作り直し、それを D1 に流します（手順は <code>db/MIGRATIONS.md</code>）。
+        「再集計」は取り込み済みのデータに対して、作品名 → シリーズの寄せと表紙を付け直します（取り込み直した後・シリーズを結合した後に実行してください）。
+      </p>
+      <div class="stat-grid compact" id="circStats"></div>
+      <div class="cover-actions">
+        <button id="circRecompute">再集計</button>
+      </div>
+      <p class="hint" id="circSource"></p>
+
+      <div class="toolbar" style="margin-top:20px">
+        <strong>寄せ先の指定</strong>
+        <span class="count" id="circRowsCount"></span>
+        <div style="flex:1"></div>
+        <label><input type="checkbox" id="circOnlyIssues"> 要確認だけ</label>
+        <button id="circSuggest">サジェストを取り込む</button>
+      </div>
+      <p class="hint">
+        作品ごとの寄せ先（巻一覧を開く先）です。既定では自動照合の結果が「サジェスト」として入っていて、
+        間違っているものだけここで直します。「変更」でマスタのシリーズを検索して選び、本編が収録されていない作品は
+        「寄せない」にします（検索結果へのリンクだけになります）。「戻す」で指定を外すと自動照合に戻ります。
+        <br>「サジェストを取り込む」は、指定の無い作品を自動照合して埋めます（既にある指定は変わりません）。
+        マスタを取り込み直したあと、新しく収録された作品を拾うのに使ってください。
+        サジェストのままの行も付け直したいときは <code>POST /api/admin/circulation/suggest?overwrite=1</code>（手動指定は残ります）。
+      </p>
+      <div class="stat-grid compact" id="circStates"></div>
+      <table class="admin-table" id="circRowsTable" style="display:none">
+        <thead><tr><th class="num">順位</th><th>作品名</th><th>寄せ先</th><th>状態</th><th></th></tr></thead>
+        <tbody id="circRowsBody"></tbody>
+      </table>
+
+      <dialog id="circPickDlg" class="admin-dialog">
+        <form method="dialog">
+          <h3 id="circPickTitle">寄せ先を選ぶ</h3>
+          <p class="hint">マスタのシリーズを検索して選びます。作品名の一部で検索してください。</p>
+          <div class="toolbar">
+            <input type="search" id="circPickQuery" placeholder="シリーズ名で検索" style="flex:1">
+            <button type="button" id="circPickSearch">検索</button>
+          </div>
+          <p class="hint" id="circPickHint"></p>
+          <table class="admin-table" id="circPickTable" style="display:none">
+            <thead><tr><th>シリーズ名</th><th>著者</th><th>レーベル</th><th class="num">巻数</th><th></th></tr></thead>
+            <tbody id="circPickBody"></tbody>
+          </table>
+          <div class="cover-actions">
+            <button value="cancel">閉じる</button>
+          </div>
+        </form>
+      </dialog>
+
+    </section>
+
+    <!-- キャッシュ暖機（公開前に表紙・書誌を先に埋める, src/warm.ts） -->
+    <section class="admin-page" id="page-warm" hidden>
+      <div class="toolbar">
+        <strong>キャッシュ暖機</strong>
+        <span class="count" id="warmSummary"></span>
+        <div style="flex:1"></div>
+        <button id="reloadWarm">再読み込み</button>
+      </div>
+      <p class="hint">
+        人気のある作品の巻から順に表紙（covers）とあらすじ（book_meta）を先に取得しておき、最初の閲覧者を待たせないようにします。
+        楽天 API の枠はサイト全体で約 1 件/秒なので、発行部数ランキングぶん（約 6 千巻）でおよそ 2 時間かかります。
+        このページを開いたまま「開始」で回し続けられます（閉じると止まりますが、続きから再開できます）。
+        長時間まとめて回すときは手元から <code>node scripts/warm-cache.mjs</code> を使ってください。
+      </p>
+      <div class="stat-grid compact" id="warmStats"></div>
+      <div class="cover-actions">
+        <label>対象
+          <select id="warmScope">
+            <option value="circulation">発行部数ランキング（部数順）</option>
+            <option value="sales">売上ランキング（順位順）</option>
+            <option value="series">残り全部（巻数の多い順）</option>
+          </select>
+        </label>
+        <button id="warmStart">開始</button>
+        <button id="warmStop" disabled>停止</button>
+      </div>
+      <p class="hint" id="warmProgress"></p>
     </section>
 
     <!-- 楽天データ（book_meta: あらすじ・作者・出版社・発行日のキャッシュ） -->

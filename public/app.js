@@ -1904,6 +1904,9 @@ function renderVolumes(series, volumes, opts) {
   titleEl.textContent = series.title;
   head.appendChild(titleEl);
   head.hidden = false;
+  // 通報・依頼の旗はタイトルの次の行にまとめる（長いタイトルと同じ行に並べると折り返しが崩れる）。
+  const flags = document.createElement("div");
+  flags.className = "st-flags";
   // マスタのシリーズ名が壊れている場合（例: 「ハレグゥ」が「ｖ」で取り込まれている）に、
   // 閲覧者が名前の誤りを通報できる導線。live シリーズは C-id が無く通報先が無いので出さない。
   // 通報はサーバに件数だけ記録し、全体反映（名前の修正）は管理者が確定するまで行わない。
@@ -1932,8 +1935,7 @@ function renderVolumes(series, volumes, opts) {
       }
       reportWrongSeriesName(series, nameFlag, nText);
     });
-    head.appendChild(document.createTextNode(" "));
-    head.appendChild(nameFlag);
+    flags.appendChild(nameFlag);
   }
   if (series.series_id && (!opts.live || isGroupId(series.series_id))) {
     // 同じ作品がマスタ上で別シリーズに分裂している（例: One piece SJR 版が 1巻だけ別 C-id）
@@ -1959,8 +1961,7 @@ function renderVolumes(series, volumes, opts) {
       }
       openMergeRequest(series, volumes, opts);
     });
-    if (!head.querySelector(".name-report-flag")) head.appendChild(document.createTextNode(" "));
-    head.appendChild(mergeFlag);
+    flags.appendChild(mergeFlag);
   }
   if (series.series_id && !opts.live && !isGroupId(series.series_id) && volumes.length > 1) {
     // 逆に、1 つのシリーズに別の版（復刻版・新装版など）が混ざっている（例: キン肉マン C261524 に
@@ -1989,9 +1990,9 @@ function renderVolumes(series, volumes, opts) {
       }
       openSplitRequest(series, volumes, opts);
     });
-    head.appendChild(document.createTextNode(" "));
-    head.appendChild(splitFlag);
+    flags.appendChild(splitFlag);
   }
+  if (flags.childElementCount) head.appendChild(flags);
   // 作者・出版社（検索カードと同じ並び）。シリーズに作者が無ければ先頭巻の著者で補う。
   const byline = [series.creators || series.creator || (visible[0] && visible[0].author), series.publisher]
     .filter(Boolean)

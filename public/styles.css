@@ -1350,6 +1350,7 @@ html:has(.modal-backdrop.open) { overflow: hidden; }
 .search-subtitle { margin: -4px 0 8px; font-size: 20px; font-weight: 800; line-height: 1.35; }
 .search-subtitle[hidden] { display: none; }
 .search-subtitle .name-report-flag { font-size: 13px; font-weight: normal; }
+.search-subtitle .st-flags { display: flex; flex-wrap: wrap; align-items: center; gap: 2px; margin: 2px 0 0 -6px; }
 .search-subtitle .sa { margin-top: 2px; font-size: 13px; font-weight: normal; color: var(--muted); }
 .search-bar { flex: none; margin: 0 0 4px; }
 .search-bar[hidden] { display: none; }

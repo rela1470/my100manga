@@ -1,5 +1,11 @@
 import { handleSearch, handleLiveSearch } from "./search";
-import { getSeriesVolumes, getMasterUpdatedAt, handleMasterInfo } from "./series";
+import {
+  cachedSeriesVolumes,
+  getMasterUpdatedAt,
+  getSeriesVolumes,
+  handleMasterInfo,
+  purgeSeriesVolumesCache,
+} from "./series";
 import { getGroupVolumes, resolveGroup } from "./groups";
 import { addCorrection, reportVolume, reportSeriesName, reportVolumeTitle, suggestCover } from "./corrections";
 import { coverCandidates, volumeCandidates } from "./candidates";
@@ -71,12 +77,23 @@ import {
 } from "./admin";
 import { addReport, purgePublishAudit } from "./reports";
 import { adminCsrfOk, isAdminUiPath, requireAdmin } from "./adminAuth";
-import { errorPageHtml, MAX_JSON_BODY, withSecurityHeaders } from "./util";
+import { errorPageHtml, MAX_JSON_BODY, readJsonBody, withSecurityHeaders } from "./util";
 import { currentUser, loginCallback, loginStart, logout, purgeExpiredSessions } from "./auth";
 import { handleAccountApi } from "./account";
 import { handleRanking } from "./ranking";
-import { handleListView, handlePublicLists, purgeListViewSeen } from "./publicLists";
+import { consumeViewBatch, handleListView, handlePublicLists, purgeListViewSeen } from "./publicLists";
 import { adminSalesSnapshot, adminSalesStatus, handleSalesRanking, runSalesSnapshot } from "./salesRanking";
+import {
+  adminCirculationLink,
+  adminCirculationRecompute,
+  adminCirculationStatus,
+  adminCirculationSuggest,
+  handleCirculation,
+} from "./circulation";
+import { adminWarm, adminWarmStatus } from "./warm";
+import { handleSiteFile } from "./robots";
+import { ageGate } from "./ageGate";
+import { fetchSiteAsset, isAdultAssetPath } from "./siteAssets";
 import { handleSiteStats } from "./siteStats";
 import { analyticsTags, applySiteIdentity, gtmBody, injectAnalytics, injectVersion, appVersion, affIds } from "./analytics";
 import { footerHtml } from "./footer";
@@ -89,6 +106,7 @@ import { turnstileAction, verifyTurnstile } from "./turnstile";
 import { COVER_CACHE, getTrimmedCover, trimKind } from "./coverBytes";
 import { ensureShareImage, getShareImage, isLinkPreviewBot, shareImageHash, SHARE_IMAGE_SIZE, SHARE_VARIANTS, type ShareVariant } from "./shareImage";
 import {
+  bumpsViewEpoch,
   bumpViewEpoch,
   getListSnapshot,
   ogpWorkTitles,
@@ -101,7 +119,7 @@ import {
 import { badRequest, escapeHtml, json, notFound, readJsonObject, replaceLiteral } from "./util";
 
 export { RakutenRateLimiter } from "./ratelimiter";
-import type { CoverQueue } from "./ratelimiter";
+import { limiterStub, type CoverQueue } from "./ratelimiter";
 
 function coverHeaders(etag?: string): Headers {
   const h = new Headers();
@@ -144,6 +162,17 @@ const worker = {
     const path = url.pathname;
 
     try {
+      // public/adult/ は R18版の差し替え用（src/siteAssets.ts）。直接は引かせない（URL を 1 本に
+      // 保つため。ここで止めないと本家で /adult/terms が R18版の本文を返してしまう）。
+      if (isAdultAssetPath(path)) {
+        const res = await env.ASSETS.fetch(new Request(`${url.origin}/404`));
+        return await injectAnalytics(new Response(res.body, { status: 404, headers: res.headers }), env, url.origin);
+      }
+      // 年齢確認ゲート（R18版だけ、src/ageGate.ts）。同意が無ければ中身を返さない。レート制限
+      // より前に置く（未確認の相手はゲートの HTML を返すだけなので、書き込み枠を使わせない）。
+      // 本家（SITE_VARIANT="general"）では常に null が返る＝素通り。
+      const gated = await ageGate(request, url, env);
+      if (gated) return gated;
       // 公開書き込み系の濫用よけ。ルート照合の前に IP 単位でレート制限をかける。
       // /api/covers は外部 API を叩くので別枠（RL_COVERS）、それ以外の書き込みは RL_WRITE。
       // /api/admin/* は Cloudflare Access で守られているので対象外。binding 未設定なら通す。
@@ -151,14 +180,17 @@ const worker = {
         if (path === "/api/covers") {
           const limited = await rateLimit(request, env.RL_COVERS, "covers");
           if (limited) return limited;
-        } else if (
-          path.startsWith("/api/") &&
-          !path.startsWith("/api/admin/") &&
-          // 作成中のリストの自動保存はログイン必須で 1 行 upsert なので書き込み枠に数えない
-          // （編集のたびに走るので数えると普通の編集で 429 になる）。
-          path !== "/api/me/draft"
-        ) {
-          const limited = await rateLimit(request, env.RL_WRITE, "write");
+        } else if (path === "/api/me/draft") {
+          // 作成中のリストの自動保存。ログイン必須の 1 行 upsert だが、無制限に打てる口を
+          // 残さない。公開の書き込み枠（30/分）だと編集中（2 秒ごとに保存）で普通に頭を打つ
+          // ので、広い方の binding を別 bucket で使う（120/分 = 0.5 秒に 1 回）。
+          const limited = await rateLimit(request, env.RL_COVERS, "draft");
+          if (limited) return limited;
+        } else if (path.startsWith("/api/") && !path.startsWith("/api/admin/")) {
+          // 閲覧ビーコンは公開・通報と枠を分ける（たくさん閲覧した人や同じ IP を共有する人が
+          // 直後の公開で 429 にならないように）。
+          const bucket = /^\/api\/lists\/[A-Za-z0-9_-]+\/view$/.test(path) ? "view" : "write";
+          const limited = await rateLimit(request, env.RL_WRITE, bucket);
           if (limited) return limited;
         }
       }
@@ -180,13 +212,31 @@ const worker = {
             ? url.searchParams.get("refresh") === "1" ? "covers" : "book"
             : path === "/api/search"
               ? "search"
-              : path === "/api/live-search"
-                ? "live-search"
-                : path === "/api/cover-candidates" || path === "/api/volume-candidates"
+              : path === "/api/cover-candidates" || path === "/api/volume-candidates"
                   ? "candidates"
-                  : null;
+                  : path === "/api/public-lists"
+                    ? "public-lists"
+                    : /^\/api\/series\/[A-Za-z0-9]+\/(volumes|merge-candidates)$/.test(path)
+                      ? "volumes"
+                      : null;
         if (getBucket) {
           const limited = await rateLimit(request, env.RL_COVERS, getBucket);
+          if (limited) return limited;
+        }
+        // MADB への全文検索（SPARQL）と最大 2000 行の書き込みを伴うので、さらに狭い枠（RL_HEAVY）。
+        if (path === "/api/live-search") {
+          const limited = await rateLimit(request, env.RL_HEAVY, "live-search");
+          if (limited) return limited;
+        }
+      }
+      // 「最新データベースから取得」(POST /api/series/:id/supplement) はキャッシュの TTL を
+      // 無視して毎回 MADB に SPARQL を投げる（src/madbLive.ts force）。/api/live-search と
+      // 同じ重さなので同じ狭い枠で縛る（上の書き込み枠にも数える）。G<ISBN> のまとまりは
+      // 探索しない（巻一覧を返すだけ）ので対象外。
+      if (request.method === "POST") {
+        const probe = path.match(/^\/api\/series\/([A-Za-z0-9]+)\/supplement$/);
+        if (probe && !/^G\d{13}$/.test(probe[1])) {
+          const limited = await rateLimit(request, env.RL_HEAVY, "supplement");
           if (limited) return limited;
         }
       }
@@ -197,6 +247,12 @@ const worker = {
         if (Number.isFinite(declared) && declared > MAX_JSON_BODY) {
           return json({ error: "リクエストが大きすぎます" }, 413, { "cache-control": "no-store" });
         }
+      }
+      // robots.txt / sitemap.xml はドメインを含むので、静的ファイルではなく配信時のオリジンから
+      // 組む（本家と R18版で同じコードを使うため。src/robots.ts）。
+      {
+        const siteFile = handleSiteFile(path, request.method, url.origin, env);
+        if (siteFile) return siteFile;
       }
       // --- API ---
       if (path === "/api/search" && request.method === "GET") {
@@ -209,7 +265,7 @@ const worker = {
       }
       // 本が追加されている回数ランキング (累計 / 過去30日 / 7日 / 24時間)。
       if (path === "/api/ranking" && request.method === "GET") {
-        return await handleRanking(env);
+        return await handleRanking(env, ctx);
       }
       // 公開リスト一覧（新着 / アクセス数順）。限定公開は含めない。
       if (path === "/api/public-lists" && request.method === "GET") {
@@ -219,9 +275,13 @@ const worker = {
       if (path === "/api/sales-ranking" && request.method === "GET") {
         return await handleSalesRanking(env);
       }
+      // 発行部数ランキング（Wikipedia「List of best-selling manga」の累計発行部数）。
+      if (path === "/api/circulation" && request.method === "GET") {
+        return await handleCirculation(env);
+      }
       // トップページの収録数（シリーズ / 巻 / 公開リスト）。
       if (path === "/api/site-stats" && request.method === "GET") {
-        return await handleSiteStats(env);
+        return await handleSiteStats(env, ctx);
       }
       // MADB master provenance (release tag/date + last import) for the about page.
       if (path === "/api/master-info" && request.method === "GET") {
@@ -242,31 +302,43 @@ const worker = {
       // シリーズ名の通報は C-id 前提なので受け付けない（結合依頼は merge.ts 側で対応）。
       const groupMatch = path.match(/^\/api\/series\/(G\d{13})\/(volumes|supplement|corrections|corrections\/report|report)$/);
       if (groupMatch) {
-        if ((groupMatch[2] === "volumes" && request.method === "GET") ||
-            (groupMatch[2] === "supplement" && request.method === "POST")) {
-          return await getGroupVolumes(env, groupMatch[1], (id) => getSeriesVolumes(env, id), () => getMasterUpdatedAt(env));
+        const groupVolumes = () =>
+          getGroupVolumes(env, groupMatch[1], (id) => getSeriesVolumes(env, id), () => getMasterUpdatedAt(env));
+        // 巻一覧はエッジキャッシュ越しに返す（src/series.ts cachedSeriesVolumes）。まとまりの
+        // supplement は探索せず巻一覧を返すだけだが、POST なのでキャッシュは挟まない。
+        if (groupMatch[2] === "volumes" && request.method === "GET") {
+          return await cachedSeriesVolumes(env, groupMatch[1], groupVolumes);
+        }
+        if (groupMatch[2] === "supplement" && request.method === "POST") {
+          return await groupVolumes();
         }
         if ((groupMatch[2] === "corrections" || groupMatch[2] === "corrections/report") && request.method === "POST") {
           const r = await resolveGroup(env, groupMatch[1]);
           if (!r) return notFound("シリーズが見つかりません");
           const [id, group] = "seriesId" in r ? [r.seriesId, null] : [r.group.id, r.group];
-          return groupMatch[2] === "corrections"
-            ? await addCorrection(request, env, id, group)
-            : await reportVolume(request, env, id, group);
+          if (groupMatch[2] !== "corrections") return await reportVolume(request, env, id, group);
+          const res = await addCorrection(request, env, id, group);
+          // 手動追加は巻一覧の中身を変える。書いた本人がすぐ開き直すので、この colo の
+          // キャッシュ（たどってきた G<ISBN> の分と、寄せ先のシリーズの分）を消す。
+          if (res.ok) await Promise.all([groupMatch[1], id].map((k) => purgeSeriesVolumesCache(env, k)));
+          return res;
         }
         return badRequest("このまとまりはシリーズに属していないため、この操作はできません");
       }
       const seriesMatch = path.match(/^\/api\/series\/([A-Za-z0-9]+)\/volumes$/);
       if (seriesMatch && request.method === "GET") {
         bumpPopularity(env, "series", seriesMatch[1]);
-        return await getSeriesVolumes(env, seriesMatch[1]);
+        return await cachedSeriesVolumes(env, seriesMatch[1], () => getSeriesVolumes(env, seriesMatch[1]));
       }
       // Button-triggered live-MADB supplement probe (see src/series.ts). Kept out
       // of the GET above so browsing never blocks on the SPARQL round-trip.
       const supplementMatch = path.match(/^\/api\/series\/([A-Za-z0-9]+)\/supplement$/);
       if (supplementMatch && request.method === "POST") {
         bumpPopularity(env, "supplement", supplementMatch[1]);
-        return await getSeriesVolumes(env, supplementMatch[1], true);
+        const res = await getSeriesVolumes(env, supplementMatch[1], true);
+        // 補完の取得は巻一覧の中身と supplement_probed を変えるので、この colo の分を消す。
+        if (res.ok) await purgeSeriesVolumesCache(env, supplementMatch[1]);
+        return res;
       }
       const correctionReportMatch = path.match(/^\/api\/series\/([A-Za-z0-9]+)\/corrections\/report$/);
       if (correctionReportMatch && request.method === "POST") {
@@ -274,7 +346,9 @@ const worker = {
       }
       const correctionMatch = path.match(/^\/api\/series\/([A-Za-z0-9]+)\/corrections$/);
       if (correctionMatch && request.method === "POST") {
-        return await addCorrection(request, env, correctionMatch[1]);
+        const res = await addCorrection(request, env, correctionMatch[1]);
+        if (res.ok) await purgeSeriesVolumesCache(env, correctionMatch[1]);
+        return res;
       }
       // Flag a corrupt series NAME (collect-only; admin fixes via override). Placed
       // after the /corrections/report route above so the more specific path wins.
@@ -336,15 +410,15 @@ const worker = {
         if (res.ok) {
           const { slug } = (await res.clone().json()) as { slug: string };
           // 作成者はすぐ /l/:slug を開くので、応答前にスナップショットを作っておく。
-          await refreshListView(env, slug, url.origin);
-          await queueShareImages(env, ctx, slug, url.host);
+          const fresh = await refreshListView(env, slug, url.origin);
+          await queueShareImages(env, ctx, slug, url.host, fresh);
         }
         return res;
       }
       // 閲覧ページのアクセス数ビーコン（src/publicLists.ts）。
       const listViewMatch = path.match(/^\/api\/lists\/([A-Za-z0-9_-]+)\/view$/);
       if (listViewMatch && request.method === "POST") {
-        return await handleListView(request, env, listViewMatch[1]);
+        return await handleListView(request, env, ctx, listViewMatch[1]);
       }
       const reportMatch = path.match(/^\/api\/lists\/([A-Za-z0-9_-]+)\/reports$/);
       if (reportMatch && request.method === "POST") {
@@ -353,12 +427,12 @@ const worker = {
       const listMatch = path.match(/^\/api\/lists\/([A-Za-z0-9_-]+)$/);
       if (listMatch) {
         const slug = listMatch[1];
-        if (request.method === "GET") return await handleListJson(env, ctx, slug, url.origin);
+        if (request.method === "GET") return await handleListJson(request, env, ctx, slug, url.origin);
         if (request.method === "PUT") {
           const res = await updateList(request, env, slug);
           if (res.ok) {
-            await refreshListView(env, slug, url.origin);
-            await queueShareImages(env, ctx, slug, url.host);
+            const fresh = await refreshListView(env, slug, url.origin);
+            await queueShareImages(env, ctx, slug, url.host, fresh);
           }
           return res;
         }
@@ -392,6 +466,29 @@ const worker = {
       }
       if (path === "/api/admin/sales-ranking/snapshot" && request.method === "POST") {
         return await adminSalesSnapshot(env, url.searchParams.get("recompute") === "1");
+      }
+      // 発行部数ランキングの取り込み状況と、作品 → シリーズの寄せ直し。
+      if (path === "/api/admin/circulation" && request.method === "GET") {
+        return await adminCirculationStatus(env);
+      }
+      if (path === "/api/admin/circulation/recompute" && request.method === "POST") {
+        return await adminCirculationRecompute(env);
+      }
+      // 指定の無い作品を自動照合して circulation_link に 'suggested' で入れる
+      // （?overwrite=1 は 'suggested' の行も入れ直す。'manual' は触らない）。
+      if (path === "/api/admin/circulation/suggest" && request.method === "POST") {
+        return await adminCirculationSuggest(env, url.searchParams.get("overwrite") === "1");
+      }
+      // 寄せ先の確定（series_id: 文字列 = そこへ寄せる / "" = 寄せない / null = 自動に戻す）。
+      if (path === "/api/admin/circulation/link" && request.method === "POST") {
+        return await adminCirculationLink(env, await readJsonBody(request, MAX_JSON_BODY));
+      }
+      // 表紙・書誌キャッシュの暖機（公開前。scripts/warm-cache.mjs が繰り返し叩く）。
+      if (path === "/api/admin/warm" && request.method === "GET") {
+        return await adminWarmStatus(env);
+      }
+      if (path === "/api/admin/warm" && request.method === "POST") {
+        return await adminWarm(env, url);
       }
       // 開発用: マスターデータ以外を全削除して DB を初期化。dev（ADMIN_DEV_BYPASS）限定。
       if (path === "/api/admin/dev/reset" && request.method === "POST") {
@@ -614,7 +711,7 @@ const worker = {
       // --- Public view page with OGP meta ---
       const viewMatch = path.match(/^\/l\/([A-Za-z0-9_-]+)$/);
       if (viewMatch && request.method === "GET") {
-        return await renderViewPage(env, ctx, viewMatch[1], url.origin, url.searchParams.get("i") === "1");
+        return await renderViewPage(request, env, ctx, viewMatch[1], url.origin, url.searchParams.get("i") === "1");
       }
 
       // --- Share image (all 100 covers in one picture; og:image + X attachment) ---
@@ -632,7 +729,7 @@ const worker = {
 
     // --- Static assets (editor, css, js, view.html template, etc.) ---
     // HTML ページには <!--ANALYTICS--> に Google タグを差し込む（admin は素通り）。
-    return injectAnalytics(await env.ASSETS.fetch(request), env, url.origin);
+    return injectAnalytics(await fetchSiteAsset(request, env, path), env, url.origin, path);
   },
 
   // Cron（wrangler.jsonc triggers）: 売上ランキングの日次スナップショット。
@@ -650,9 +747,12 @@ const worker = {
     ctx.waitUntil(purgeExpiredSessions(env).catch((err) => console.error("session purge failed", err)));
   },
 
-  // 共有画像の事前生成（SHARE_QUEUE, wrangler.jsonc queues）。max_batch_size 1 /
-  // max_concurrency 1 で、1 リストの og/full/q1–q4 を 1 枚ずつ描いて R2 に置く。
+  // キューの consumer。閲覧ビーコン（VIEW_QUEUE）と共有画像（SHARE_QUEUE）の 2 本を受ける。
   async queue(batch: MessageBatch<unknown>, env: Env, ctx: ExecutionContext): Promise<void> {
+    if (batch.queue.includes(VIEW_QUEUE_MARK)) return await consumeViewBatch(batch, env);
+    // 共有画像の事前生成（SHARE_QUEUE, wrangler.jsonc queues）。max_batch_size 1 /
+    // max_concurrency 1 で、1 リストの og/full/q1–q4 を 1 枚ずつ描いて R2 に置く（og は
+    // 公開時に描き済みなので、R2 にあれば飛ばす）。
     for (const msg of batch.messages) {
       const job = msg.body as Partial<ShareJob> | null;
       if (!job || typeof job.slug !== "string" || typeof job.host !== "string" || !/^[A-Za-z0-9_-]+$/.test(job.slug)) {
@@ -660,7 +760,7 @@ const worker = {
         continue;
       }
       try {
-        await renderAllShareImages(env, ctx, job.slug, job.host);
+        await renderAllShareImages(env, ctx, job as ShareJob);
         msg.ack();
       } catch (err) {
         console.error("share queue job failed", job.slug, err);
@@ -670,13 +770,19 @@ const worker = {
   },
 } satisfies ExportedHandler<Env>;
 
+// 閲覧ビーコンのキューの見分け方。1 つの Worker が閲覧ビーコンと共有画像の 2 本を受けるので、
+// キュー名で振り分ける。名前の頭はデプロイごとに違う（my100manga-views / my100shunga-views-dev
+// 等）ので、プロジェクト名ではなく用途の部分だけを見る。wrangler.jsonc のキュー名はこれに
+// 合わせて付けること（閲覧ビーコン側に "-views" を含める）。
+const VIEW_QUEUE_MARK = "-views";
+
 export default {
   ...worker,
   async fetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
     const res = await worker.fetch(request, env, ctx);
-    // 管理者の変更（結合・表紙承認・名前修正など）を閲覧ページに早く反映するため、admin の
-    // 更新系 API が成功したら表示データの世代を上げる（src/viewSnapshot.ts）。
-    if (res.ok && request.method !== "GET" && request.method !== "HEAD" && new URL(request.url).pathname.startsWith("/api/admin/")) {
+    // 管理者の変更（結合・表紙承認・名前修正など）を閲覧ページに早く反映するため、表示に効く
+    // admin の更新系 API が成功したら表示データの世代を上げる（src/viewSnapshot.ts）。
+    if (res.ok && bumpsViewEpoch(request)) {
       ctx.waitUntil(bumpViewEpoch(env).catch((err) => console.error("view epoch bump failed", err)));
     }
     return withSecurityHeaders(res);
@@ -713,7 +819,7 @@ async function reportCoverQueue(env: Env, client: unknown, pending: unknown): Pr
   if (!env.RAKUTEN_LIMITER || typeof client !== "string" || !/^[\w-]{8,64}$/.test(client)) return null;
   if (typeof pending !== "number" || !Number.isFinite(pending)) return null;
   try {
-    return await env.RAKUTEN_LIMITER.getByName("cover-queue").report(client, Math.min(Math.max(Math.floor(pending), 0), 1000));
+    return await limiterStub(env.RAKUTEN_LIMITER, "cover-queue").report(client, Math.min(Math.max(Math.floor(pending), 0), 1000));
   } catch {
     return null; // presence is cosmetic — never fail the cover fill over it
   }
@@ -732,9 +838,12 @@ async function handleShareImage(
   const data = await getListSnapshot(env, ctx, slug);
   if (!data) return new Response("not found", { status: 404 });
   let limited: Response | null = null;
-  const bot = isLinkPreviewBot(request.headers.get("user-agent"));
+  // リンクプレビューのクローラ（X 等）は投稿直後に一斉に取りに来るので、人のブラウザとは
+  // 別 bucket にして互いに干渉させない。素通しにはしない: UA は名乗るだけで詐称できるので、
+  // 素通しだと描画（CPU とメモリを最も食う処理）を無制限に起こせる。
+  const bucket = isLinkPreviewBot(request.headers.get("user-agent")) ? "share-bot" : "share";
   const body = await getShareImage(env, ctx, data, variant, new URL(request.url).host, {
-    onMiss: async () => bot || !(limited = await rateLimit(request, env.RL_COVERS, "share")),
+    onMiss: async () => !(limited = await rateLimit(request, env.RL_COVERS, bucket)),
   });
   if (!body) return limited ?? new Response("rate limited", { status: 429 });
   return new Response(body, {
@@ -746,30 +855,35 @@ async function handleShareImage(
 }
 
 // 作成/更新の直後に共有画像を描いておく。X 等のクローラは投稿直後に og:image を取りに来る
-// ので、そこで描画を待たせない（タイムアウトさせない）。キュー（SHARE_QUEUE）があれば全
-// variant を consumer に任せ、無ければ従来どおりこのリクエストの waitUntil で og だけ描く。
-async function queueShareImages(env: Env, ctx: ExecutionContext, slug: string, host: string): Promise<void> {
-  if (env.SHARE_QUEUE) {
-    try {
-      await env.SHARE_QUEUE.send({ slug, host } satisfies ShareJob);
-      return;
-    } catch (err) {
-      console.error("share queue send failed; prewarming og inline", err);
-    }
-  }
+// ので、og はこのリクエストの waitUntil ですぐ描く（グローバルに直列のキューで待たせない）。
+// 残りの variant（full/q1–q4）はキュー（SHARE_QUEUE）に遅延付きで積み、consumer が描く。
+// 遅延の間に編集し直されたら、consumer は古いメッセージを捨てる（renderAllShareImages）ので、
+// 編集を続けても描画は最後の版の 1 回で済む。
+const SHARE_QUEUE_DELAY_SEC = 60;
+
+async function queueShareImages(env: Env, ctx: ExecutionContext, slug: string, host: string, list: MangaList | null): Promise<void> {
   ctx.waitUntil(
     (async () => {
-      const data = await getListSnapshot(env, ctx, slug);
+      const data = list ?? (await getListSnapshot(env, ctx, slug));
       if (data) await getShareImage(env, ctx, data, "og", host);
     })().catch((err) => console.error("share image prewarm failed", err))
   );
+  if (!env.SHARE_QUEUE) return;
+  try {
+    const job: ShareJob = { slug, host, updated_at: list?.updated_at };
+    await env.SHARE_QUEUE.send(job, { delaySeconds: SHARE_QUEUE_DELAY_SEC });
+  } catch (err) {
+    console.error("share queue send failed", err);
+  }
 }
 
-/** キュー consumer の本体: og を先頭に全 variant を 1 枚ずつ、R2 に無いものだけ描く。 */
-async function renderAllShareImages(env: Env, ctx: ExecutionContext, slug: string, host: string): Promise<void> {
-  const data = await getListSnapshot(env, ctx, slug);
+/** キュー consumer の本体: og を先頭に全 variant を 1 枚ずつ、R2 に無いものだけ描く。
+ *  メッセージより新しい版があれば（遅延中に編集された）、その版のメッセージが後から来るので捨てる。 */
+async function renderAllShareImages(env: Env, ctx: ExecutionContext, job: ShareJob): Promise<void> {
+  const data = await getListSnapshot(env, ctx, job.slug);
   if (!data) return; // 削除済み
-  for (const variant of SHARE_VARIANTS) await ensureShareImage(env, ctx, data, variant, host);
+  if (typeof job.updated_at === "number" && data.updated_at > job.updated_at) return;
+  for (const variant of SHARE_VARIANTS) await ensureShareImage(env, ctx, data, variant, job.host);
 }
 
 // 閲覧レスポンスの cache-control。ブラウザは毎回取り直し（編集直後に古い版を見せない）、
@@ -780,24 +894,63 @@ const OWNER_HEADER = "x-my100manga-owner";
 
 /** 公開 JSON（GET /api/lists/:slug）。スナップショットから返し、colo キャッシュに置く。
  *  edit_token は MangaList に元から含まれない（編集用は /api/me/lists が返す）。 */
-async function handleListJson(env: Env, ctx: ExecutionContext, slug: string, origin: string): Promise<Response> {
+async function handleListJson(
+  request: Request,
+  env: Env,
+  ctx: ExecutionContext,
+  slug: string,
+  origin: string
+): Promise<Response> {
   const key = (await viewCacheKeys(env, origin, slug)).json;
   const cached = await readViewCache(key);
-  if (cached) return cached;
+  if (cached) {
+    if (cached.status !== 404) return cached;
+    // 404 の写しは colo の中だけで使う。ブラウザに持たせると、作成直後に同じ slug を開いた
+    // 端末が「見つかりません」を抱えたままになる。
+    const headers = new Headers(cached.headers);
+    headers.set("cache-control", "no-store");
+    return new Response(cached.body, { status: 404, headers });
+  }
   const data = await getListSnapshot(env, ctx, slug);
-  if (!data) return notFound("リストが見つかりません");
+  if (!data) {
+    const limited = await listMissLimited(request, env);
+    if (limited) return limited;
+    // ブラウザには持たせない（作成直後に「見つかりません」を抱えたままにしない）。写しだけ
+    // colo に短く置く。
+    const res = notFound("リストが見つかりません");
+    res.headers.set("cache-control", "no-store");
+    ctx.waitUntil(writeViewCache(key, notFoundCacheCopy(res)));
+    return res;
+  }
   const res = json(data, 200, { "cache-control": VIEW_CACHE_CONTROL });
   ctx.waitUntil(writeViewCache(key, res.clone()));
   return res;
 }
 
+/** 存在しない slug は R2（スナップショット）と D1 を 1 回ずつ使うので、総当たり（/l/<ランダム>・
+ *  /api/lists/<ランダム>）を無制限には通さない。見つからなかったときだけ数えるので、普通の閲覧や
+ *  共有リンクは何度開いても当たらない（同じ IP を大勢で共有していても閲覧は止まらない）。 */
+async function listMissLimited(request: Request, env: Env): Promise<Response | null> {
+  return await rateLimit(request, env.RL_COVERS, "list-404");
+}
+
+/** 404 を colo キャッシュに置く写し（本体はブラウザに no-store で返す）。 */
+function notFoundCacheCopy(res: Response): Response {
+  const headers = new Headers(res.headers);
+  headers.set("cache-control", `public, max-age=${NOT_FOUND_CACHE_TTL}`);
+  return new Response(res.clone().body, { status: 404, headers });
+}
+
 // 見つからないリストは 404 のページを返す（以前は /?notfound=list へ 302 していた。
 // app.js 側の ?notfound=list 処理は古いリンク用にそのまま残る）。public/404.html があれば
 // それを使い、無ければ簡単なページを出す。
+/** 存在しないリストの 404 を colo キャッシュに置く秒数。 */
+const NOT_FOUND_CACHE_TTL = 60;
+
 async function listNotFoundPage(env: Env, origin: string): Promise<Response> {
   const headers = { "content-type": "text/html; charset=utf-8", "cache-control": "no-store" };
   try {
-    const res = await env.ASSETS.fetch(new Request(`${origin}/404`));
+    const res = await fetchSiteAsset(new Request(`${origin}/404`), env, "/404");
     if (res.ok && (res.headers.get("content-type") ?? "").includes("text/html")) {
       return await injectAnalytics(new Response(await res.text(), { status: 404, headers }), env, origin);
     }
@@ -828,23 +981,44 @@ async function listNotFoundPage(env: Env, origin: string): Promise<Response> {
 
 // noCard（?i=1）は画像付きで投稿するとき用の URL（public/share-x.js）。リンクカードの
 // メタタグを出さないので、X 等がカードを作らず添付画像の邪魔をしない。
-async function renderViewPage(env: Env, ctx: ExecutionContext, slug: string, origin: string, noCard = false): Promise<Response> {
+async function renderViewPage(
+  request: Request,
+  env: Env,
+  ctx: ExecutionContext,
+  slug: string,
+  origin: string,
+  noCard = false
+): Promise<Response> {
   const keys = await viewCacheKeys(env, origin, slug);
   const key = noCard ? keys.pageNoCard : keys.page;
   const cached = await readViewCache(key);
   if (cached) {
+    const headers = new Headers(cached.headers);
+    if (cached.status === 404) {
+      headers.set("cache-control", "no-store");
+      return new Response(cached.body, { status: 404, headers });
+    }
     const owner = cached.headers.get(OWNER_HEADER);
     bumpPopularity(env, "list", slug, owner ? decodeURIComponent(owner) : "");
-    const headers = new Headers(cached.headers);
     headers.delete(OWNER_HEADER);
     return new Response(cached.body, { status: cached.status, headers });
   }
 
   const data = await getListSnapshot(env, ctx, slug);
-  if (!data) return await listNotFoundPage(env, origin);
+  if (!data) {
+    // 毎回違う slug で総当たりされるとキャッシュは効かないので、見つからなかった回数で止める。
+    const limited = await listMissLimited(request, env);
+    if (limited) return limited;
+    // 存在しない slug も colo キャッシュに短く置く（同じ URL を繰り返し叩かれても R2・D1 を
+    // 使わない）。作成時は refreshListView がこの colo のキーを消すので、出来たてのリストが
+    // 404 のまま見えるのは、作成前に同じ slug を開いた他の colo で最大 NOT_FOUND_CACHE_TTL 秒だけ。
+    const res = await listNotFoundPage(env, origin);
+    ctx.waitUntil(writeViewCache(key, notFoundCacheCopy(res)));
+    return res;
+  }
   bumpPopularity(env, "list", slug, data.owner_name ?? "");
 
-  const templateRes = await env.ASSETS.fetch(new Request(`${origin}/view.html`));
+  const templateRes = await fetchSiteAsset(new Request(`${origin}/view.html`), env, "/view.html");
   // script/stylesheet の ?v= と <meta app-version>、サイト種別の表記は、ユーザ入力を差し込む前の
   // テンプレートに付ける。
   let html = injectVersion(applySiteIdentity(await templateRes.text(), env, origin), appVersion(env));
@@ -863,7 +1037,7 @@ async function renderViewPage(env: Env, ctx: ExecutionContext, slug: string, ori
     ["<!--ANALYTICS-->", analyticsTags(env)],
     ["<!--GTM_BODY-->", gtmBody(env)],
     ["<!--LIST_DATA-->", injected],
-    ["<!--HEADER_LINKS-->", headerLinksHtml()],
+    ["<!--HEADER_LINKS-->", headerLinksHtml(env)],
     ["<!--FOOTER_AFF-->", footerHtml(env, true)],
   ];
   for (const [ph, value] of fill) html = replaceLiteral(html, ph, value);

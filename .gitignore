@@ -7,3 +7,4 @@ worker-configuration.d.ts
 .DS_Store
 *.log
 .idea/
+wrangler.test.jsonc

@@ -1,7 +1,8 @@
-// Share image: every cover of a list composited onto one picture with the
-// 「◯◯さんを構成する100の漫画」 title. Used as the view page's og:image (variant "og",
-// 1200×630, 20×5 grid) and as the image a visitor attaches to an X post themselves
-// (variant "full", portrait 10×10 grid).
+// Share image: every cover of a list composited onto one picture, under a one-line
+// 「◯◯'s My 100 Manga」 header with the list URL on the right. Used as the view page's
+// og:image (variant "og", 1200×630, the column count that makes the covers largest)
+// and as the image a visitor attaches to an X post themselves (variant "full",
+// portrait 10×10 grid).
 //
 // Built server-side because the main cover host (thumbnail.image.rakuten.co.jp)
 // sends no CORS headers, so a browser canvas would be tainted (public/cover-fit.js).
@@ -23,7 +24,7 @@ import { Env, MangaList } from "./types";
 export type ShareVariant = "og" | "full";
 
 // Bump to regenerate every stored image after a design change.
-const LAYOUT_VERSION = 1;
+const LAYOUT_VERSION = 3;
 const CELLS = 100;
 const COVER_CONCURRENCY = 10;
 const MAX_NAME_CHARS = 16;
@@ -42,32 +43,48 @@ interface Layout {
   width: number;
   height: number;
   cols: number;
-  padX: number;
+  pad: number;
   gap: number;
   gridTop: number;
-  brandY: number;
-  brandSize: number;
-  titleY: number;
-  titleMax: number; // largest title font size
-  footerY: number | null; // baseline of the site URL under the grid (null: shown in the header)
+  gridLeft: number;
+  cellW: number;
+  cellH: number;
+  headerY: number; // header text baseline
+  headerSize: number; // largest header font size (shrunk to fit a long name/URL)
 }
 
-function layout(variant: ShareVariant): Layout & { cellW: number; cellH: number } {
-  const base: Layout =
+function layout(variant: ShareVariant): Layout {
+  const header =
     variant === "og"
-      ? { width: 1200, height: 630, cols: 20, padX: 24, gap: 4, gridTop: 0, brandY: 52, brandSize: 26, titleY: 158, titleMax: 62, footerY: null }
-      : { width: 1200, height: 0, cols: 10, padX: 40, gap: 10, gridTop: 230, brandY: 70, brandSize: 34, titleY: 170, titleMax: 72, footerY: 0 };
-  const cellW = (base.width - base.padX * 2 - base.gap * (base.cols - 1)) / base.cols;
-  const cellH = (cellW * 4) / 3; // the site's cover frames are 3:4
-  const rows = Math.ceil(CELLS / base.cols);
-  const gridH = rows * cellH + (rows - 1) * base.gap;
+      ? { width: 1200, pad: 16, gap: 4, gridTop: 56, headerY: 40, headerSize: 28 }
+      : { width: 1200, pad: 24, gap: 8, gridTop: 80, headerY: 54, headerSize: 36 };
+  const areaW = header.width - header.pad * 2;
   if (variant === "og") {
-    base.gridTop = base.height - base.padX - gridH;
-  } else {
-    base.footerY = base.gridTop + gridH + 56;
-    base.height = Math.ceil(base.footerY + 34);
+    // Fixed canvas: take whichever column count gives the biggest covers (3:4) in the
+    // area under the header, and centre the grid horizontally.
+    const height = 630;
+    const areaH = height - header.gridTop - header.pad;
+    let cols = 1;
+    let cellW = 0;
+    for (let c = 1; c <= CELLS; c++) {
+      const rows = Math.ceil(CELLS / c);
+      const w = Math.min((areaW - header.gap * (c - 1)) / c, (((areaH - header.gap * (rows - 1)) / rows) * 3) / 4);
+      if (w > cellW) {
+        cellW = w;
+        cols = c;
+      }
+    }
+    const gridW = cols * cellW + (cols - 1) * header.gap;
+    return { ...header, height, cols, cellW, cellH: (cellW * 4) / 3, gridLeft: (header.width - gridW) / 2 };
   }
-  return { ...base, cellW, cellH };
+  // Portrait 10×10 filling the width; the height follows from the grid.
+  const cols = 10;
+  const cellW = (areaW - header.gap * (cols - 1)) / cols;
+  const cellH = (cellW * 4) / 3; // the site's cover frames are 3:4
+  const rows = Math.ceil(CELLS / cols);
+  const gridH = rows * cellH + (rows - 1) * header.gap;
+  const height = Math.ceil(header.gridTop + gridH + header.pad);
+  return { ...header, height, cols, cellW, cellH, gridLeft: header.pad };
 }
 
 export const SHARE_IMAGE_SIZE: Record<ShareVariant, { width: number; height: number }> = {
@@ -85,10 +102,15 @@ export async function shareImageHash(list: MangaList): Promise<string> {
   return (await sha256Hex(key)).slice(0, 16);
 }
 
-function ownerLabel(name: string): string {
+/** 「rela1470's 」 before the brand; nothing when the list has no name. */
+function ownerPossessive(name: string): string {
   const chars = [...name.trim()];
-  if (chars.length === 0) return "誰か";
-  return (chars.length > MAX_NAME_CHARS ? chars.slice(0, MAX_NAME_CHARS).join("") + "…" : chars.join("")) + "さん";
+  if (chars.length === 0) return "";
+  return (chars.length > MAX_NAME_CHARS ? chars.slice(0, MAX_NAME_CHARS).join("") + "…" : chars.join("")) + "'s ";
+}
+
+function listUrlLabel(host: string, slug: string): string {
+  return `${host}/l/${slug}`;
 }
 
 /** Rough advance width in em: full-width glyphs 1, ASCII ~0.6. Good enough to fit a line. */
@@ -98,36 +120,27 @@ function emWidth(s: string): number {
   return w;
 }
 
-function buildSvg(list: MangaList, variant: ShareVariant, hasCover: boolean[]): string {
+function buildSvg(list: MangaList, variant: ShareVariant, hasCover: boolean[], host: string): string {
   const L = layout(variant);
-  const owner = ownerLabel(list.owner_name);
-  const head = `${owner}を構成する`;
-  const tail = "の漫画";
-  const maxW = L.width - L.padX * 2;
-  const titleSize = Math.max(24, Math.min(L.titleMax, Math.floor(maxW / emWidth(head + "100" + tail))));
+  const owner = ownerPossessive(list.owner_name);
+  const url = listUrlLabel(host, list.slug);
+  // The URL is drawn at 0.75× the title size; shrink both if a long name would run into it.
+  const fit = (L.width - L.pad * 2 - 24) / (emWidth(`${owner}My 100 Manga`) + emWidth(url) * 0.75);
+  const size = Math.max(16, Math.min(L.headerSize, Math.floor(fit)));
 
   const parts: string[] = [];
   parts.push(
     `<svg xmlns="http://www.w3.org/2000/svg" width="${L.width}" height="${L.height}" viewBox="0 0 ${L.width} ${L.height}" font-family="${FONT_FAMILY}" font-weight="700">`,
     `<defs><clipPath id="r" clipPathUnits="objectBoundingBox"><rect width="1" height="1" rx="0.07" ry="0.0525"/></clipPath></defs>`,
     `<rect width="100%" height="100%" fill="${COLOR.bg}"/>`,
-    `<text x="${L.padX}" y="${L.brandY}" font-size="${L.brandSize}" fill="${COLOR.text}">My <tspan fill="${COLOR.accent}">100</tspan> Manga</text>`,
-    `<text x="${L.width / 2}" y="${L.titleY}" font-size="${titleSize}" fill="${COLOR.text}" text-anchor="middle">${escapeHtml(head)}<tspan fill="${COLOR.accent}">100</tspan>${tail}</text>`
+    `<text x="${L.pad}" y="${L.headerY}" font-size="${size}" fill="${COLOR.text}">${escapeHtml(owner)}My <tspan fill="${COLOR.accent}">100</tspan> Manga</text>`,
+    `<text x="${L.width - L.pad}" y="${L.headerY}" font-size="${Math.round(size * 0.75)}" fill="${COLOR.muted}" text-anchor="end">${escapeHtml(url)}</text>`
   );
-  if (L.footerY === null) {
-    parts.push(
-      `<text x="${L.width - L.padX}" y="${L.brandY}" font-size="${Math.round(L.brandSize * 0.75)}" fill="${COLOR.muted}" text-anchor="end">${SITE}</text>`
-    );
-  } else {
-    parts.push(
-      `<text x="${L.width / 2}" y="${L.footerY}" font-size="${L.brandSize}" fill="${COLOR.muted}" text-anchor="middle">${SITE}</text>`
-    );
-  }
 
   const r = (L.cellW * 0.07).toFixed(1);
   const numSize = Math.round(L.cellW * 0.32);
   for (let i = 0; i < CELLS; i++) {
-    const x = (L.padX + (i % L.cols) * (L.cellW + L.gap)).toFixed(1);
+    const x = (L.gridLeft + (i % L.cols) * (L.cellW + L.gap)).toFixed(1);
     const y = (L.gridTop + Math.floor(i / L.cols) * (L.cellH + L.gap)).toFixed(1);
     const w = L.cellW.toFixed(1);
     const h = L.cellH.toFixed(1);
@@ -194,15 +207,15 @@ async function fetchCovers(env: Env, ctx: ExecutionContext, list: MangaList): Pr
   return out;
 }
 
-async function generate(env: Env, ctx: ExecutionContext, list: MangaList, variant: ShareVariant): Promise<ArrayBuffer> {
+async function generate(env: Env, ctx: ExecutionContext, list: MangaList, variant: ShareVariant, host: string): Promise<ArrayBuffer> {
   const [covers, font] = await Promise.all([
     fetchCovers(env, ctx, list),
-    loadFont(`${ownerLabel(list.owner_name)}を構成する100の漫画My Manga${SITE}0123456789`),
+    loadFont(`${ownerPossessive(list.owner_name)}My Manga${listUrlLabel(host, list.slug)}0123456789`),
   ]);
   if (!wasmReady) wasmReady = initWasm(RESVG_WASM);
   await wasmReady;
 
-  const svg = buildSvg(list, variant, covers.map((c) => c !== null));
+  const svg = buildSvg(list, variant, covers.map((c) => c !== null), host);
   const resvg = new Resvg(svg, {
     font: { fontBuffers: [font], defaultFontFamily: FONT_FAMILY, sansSerifFamily: FONT_FAMILY },
   });
@@ -226,12 +239,15 @@ async function generate(env: Env, ctx: ExecutionContext, list: MangaList, varian
 /**
  * The share image for a list, from R2 if this exact content was rendered before,
  * otherwise rendered now and stored (older renders of the list are removed).
+ * `host` is the site's host, printed in the og header as the list URL. It's fixed per
+ * deployment (and each deployment has its own bucket), so it isn't part of the hash.
  */
 export async function getShareImage(
   env: Env,
   ctx: ExecutionContext,
   list: MangaList,
   variant: ShareVariant,
+  host: string,
   opts: { onMiss?: () => Promise<boolean> } = {}
 ): Promise<ArrayBuffer | ReadableStream | null> {
   const hash = await shareImageHash(list);
@@ -243,7 +259,7 @@ export async function getShareImage(
   }
   if (opts.onMiss && !(await opts.onMiss())) return null;
 
-  const jpeg = await generate(env, ctx, list, variant);
+  const jpeg = await generate(env, ctx, list, variant, host);
   if (env.COVERS) {
     const bucket = env.COVERS;
     ctx.waitUntil(

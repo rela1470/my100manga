@@ -268,7 +268,7 @@ export default {
         const res = await createList(request, env);
         if (res.ok) {
           const { slug } = (await res.clone().json()) as { slug: string };
-          prewarmShareImage(env, ctx, slug);
+          prewarmShareImage(env, ctx, slug, url.host);
         }
         return res;
       }
@@ -282,7 +282,7 @@ export default {
         if (request.method === "GET") return await getList(env, slug);
         if (request.method === "PUT") {
           const res = await updateList(request, env, slug);
-          if (res.ok) prewarmShareImage(env, ctx, slug);
+          if (res.ok) prewarmShareImage(env, ctx, slug, url.host);
           return res;
         }
         return new Response("Method Not Allowed", { status: 405 });
@@ -615,7 +615,7 @@ async function handleShareImage(
   const data = await getListData(env, slug);
   if (!data) return new Response("not found", { status: 404 });
   let limited: Response | null = null;
-  const body = await getShareImage(env, ctx, data, variant, {
+  const body = await getShareImage(env, ctx, data, variant, new URL(request.url).host, {
     onMiss: async () => !(limited = await rateLimit(request, env.RL_COVERS, "share")),
   });
   if (!body) return limited ?? new Response("rate limited", { status: 429 });
@@ -629,11 +629,11 @@ async function handleShareImage(
 
 // Render the og variant right after a publish so X's crawler, which fetches it
 // when the link is first posted, doesn't wait on (or time out during) the render.
-function prewarmShareImage(env: Env, ctx: ExecutionContext, slug: string): void {
+function prewarmShareImage(env: Env, ctx: ExecutionContext, slug: string, host: string): void {
   ctx.waitUntil(
     (async () => {
       const data = await getListData(env, slug);
-      if (data) await getShareImage(env, ctx, data, "og");
+      if (data) await getShareImage(env, ctx, data, "og", host);
     })().catch((err) => console.error("share image prewarm failed", err))
   );
 }

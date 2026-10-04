@@ -8,16 +8,22 @@
     "dev": "wrangler dev",
     "deploy": "wrangler deploy --env=''",
     "deploy:dev": "wrangler deploy --env dev",
+    "deploy:r18": "wrangler deploy --env r18",
+    "deploy:r18dev": "wrangler deploy --env r18dev",
     "types": "wrangler types",
     "db:init:local": "wrangler d1 execute DB --local --file db/schema.sql",
     "db:init:remote": "wrangler d1 execute DB --remote --file db/schema.sql",
     "db:init:remote:dev": "wrangler d1 execute DB --env dev --remote --file db/schema.sql",
+    "db:init:remote:r18": "wrangler d1 execute DB --env r18 --remote --file db/schema.sql",
+    "db:init:remote:r18dev": "wrangler d1 execute DB --env r18dev --remote --file db/schema.sql",
     "ingest:local": "node scripts/ingest.mjs --local",
     "ingest:remote": "node scripts/ingest.mjs --remote",
     "ingest:remote:dev": "node scripts/ingest.mjs --remote --env dev",
     "test": "vitest run",
     "db:bookmark": "wrangler d1 time-travel info DB",
-    "db:bookmark:dev": "wrangler d1 time-travel info DB --env dev"
+    "db:bookmark:dev": "wrangler d1 time-travel info DB --env dev",
+    "db:bookmark:r18": "wrangler d1 time-travel info DB --env r18",
+    "db:bookmark:r18dev": "wrangler d1 time-travel info DB --env r18dev"
   },
   "devDependencies": {
     "@cloudflare/vitest-pool-workers": "^0.22.0",

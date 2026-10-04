@@ -42,7 +42,7 @@ DB 側に記録されないので、この表で管理する。
 | `add-circulation-link.sql` | `circulation_link`（発行部数ランキングの寄せ先の指定）。**デプロイ前に** | ○ | 2026-10-04 | 2026-10-04 |
 | `circulation-links.sql` | 寄せ先の指定の中身（`scripts/dump-circulation-links.mjs` が生成。upsert） | ○ | 2026-10-04 | 2026-10-04 |
 | `add-is-adult.sql` | `series.is_adult` / `volumes.is_adult`（R18版が成年向けを収録するための印。本家では常に 0）。**R18版の D1 では ingest の前に** | × | 未適用 | 未適用（本家は次の月次 ingest で shadow テーブルごと入れ替わるときに入る。R18版は dev 2026-10-04 適用済み・本番未適用） |
-| `add-volume-subtitle.sql` | `volumes.subtitle`（巻の副題。同じ巻番号の別作品が 1 冊に畳まれるのを直す。中身は取り込み直しで埋まる）。**デプロイ前に** | × | 未適用 | 未適用 |
+| `add-volume-subtitle.sql` | `volumes.subtitle`（巻の副題。同じ巻番号の別作品が 1 冊に畳まれるのを直す。中身は取り込み直しで埋まる）。**デプロイ前に** | × | 2026-10-04 | 未適用 |
 
 冪等: ○ = 何度流しても同じ結果。× = 2 回目はエラーになる（`ALTER TABLE ... ADD COLUMN` など。エラーで
 止まるだけで壊れはしないが、同じファイルの後続の文も流れない）。
@@ -95,6 +95,25 @@ DB 側に記録されないので、この表で管理する。
 - 同じ 4 ファイルを同じ順で適用 → `circulation` 200 行 / `circulation_link` 199 行（うち `manual` 3）/
   `idx_series_num_items` 作成（`series` 13.3 万行）。`lists` / `users` は適用前後とも 1 行で無傷。
 - `npm run deploy:prod` → Version ID `21ebe2f8-5086-45ad-99e8-d231b9af18d4`。
+
+### `add-volume-subtitle.sql` の適用記録
+
+**dev（2026-10-04）**
+
+- 適用前の Time Travel ブックマーク: `000000ce-00000000-000050fa-22718a1ddb3552abe55c3079fa9cbccf`
+- ユーザデータの書き出し: `backups/dev-20261004-2227.sql`（`series_merge` 168 / `volume_series_link` 36 /
+  `custom_series` 1 / `series_correction` 3 / `reports` 3 / `users` 1 ほか。マスタは含めない）
+- 順番: `db/add-volume-subtitle.sql` → `npm run deploy:dev` → `npm run ingest:remote:dev`。
+  **列の追加はデプロイより前**（逆にすると、取り込み前に `subtitle` を読むコードが出て no such column になる）。
+- `npm run deploy:dev` → Version ID `e46d1649-0a47-4364-a1f2-cc856008c5f7`。
+- 取り込み後: `series` 133,584 行 / `volumes` 349,020 行（うち `subtitle` ありが 70,680 = 20%）/
+  `adult_volumes` 7,624 行。`series_merge` 168・`volume_series_link` 36・`custom_series` 1 は適用前後とも同数で、
+  独自シリーズ（U-id）も `series` に入り直している。
+- 確認: ISBN 9784063637564 で C318330 が「全13巻」（前は 5 巻）、巻一覧に 13 冊すべてと副題が出る。
+  回帰: 七つの大罪 C332469 が 38 巻のまま（刷りによって副題が付かないケース）、世界一初恋 C256404 の
+  13 巻が 1 行（副題を書名に畳み込んだ行との同居）、ONE PIECE C268196 が 100 巻のまま。
+
+**本番**: 未適用。dev の確認後に R18版とまとめて流す。
 
 ### R18版（my100shunga）への適用記録
 

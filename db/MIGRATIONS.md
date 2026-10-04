@@ -42,7 +42,7 @@ DB 側に記録されないので、この表で管理する。
 | `add-circulation-link.sql` | `circulation_link`（発行部数ランキングの寄せ先の指定）。**デプロイ前に** | ○ | 2026-10-04 | 2026-10-04 |
 | `circulation-links.sql` | 寄せ先の指定の中身（`scripts/dump-circulation-links.mjs` が生成。upsert） | ○ | 2026-10-04 | 2026-10-04 |
 | `add-is-adult.sql` | `series.is_adult` / `volumes.is_adult`（R18版が成年向けを収録するための印。本家では常に 0）。**R18版の D1 では ingest の前に** | × | 未適用 | 未適用（本家は次の月次 ingest で shadow テーブルごと入れ替わるときに入る。R18版は dev 2026-10-04 適用済み・本番未適用） |
-| `add-volume-subtitle.sql` | `volumes.subtitle`（巻の副題。同じ巻番号の別作品が 1 冊に畳まれるのを直す。中身は取り込み直しで埋まる）。**デプロイ前に** | × | 2026-10-04 | 未適用 |
+| `add-volume-subtitle.sql` | `volumes.subtitle`（巻の副題。同じ巻番号の別作品が 1 冊に畳まれるのを直す。中身は取り込み直しで埋まる）。**デプロイ前に** | × | 2026-10-04 | 2026-10-04 |
 
 冪等: ○ = 何度流しても同じ結果。× = 2 回目はエラーになる（`ALTER TABLE ... ADD COLUMN` など。エラーで
 止まるだけで壊れはしないが、同じファイルの後続の文も流れない）。
@@ -113,7 +113,27 @@ DB 側に記録されないので、この表で管理する。
   回帰: 七つの大罪 C332469 が 38 巻のまま（刷りによって副題が付かないケース）、世界一初恋 C256404 の
   13 巻が 1 行（副題を書名に畳み込んだ行との同居）、ONE PIECE C268196 が 100 巻のまま。
 
-**本番**: 未適用。dev の確認後に R18版とまとめて流す。
+**本番（2026-10-04）**
+
+- 適用前の Time Travel ブックマーク: `000000c8-00000000-000050fa-b8037226e600f296c502d0b0adbbaff9`
+- ユーザデータの書き出し: `backups/prod-20261004-2237.sql`（`lists` 1 / `users` 1 / `series_merge` 194 /
+  `volume_series_link` 430 / `custom_series` 20 / `series_correction` 142 ほか）
+- dev と同じ順: `db/add-volume-subtitle.sql` → `npm run deploy:prod` → `npm run ingest:remote:prod`。
+  Version ID `6930a297-7b82-4cac-99dc-0daf21d014c5`。
+- **取り込みは `--work /tmp/madb-main` で流した。** `scripts/ingest.mjs` の作業ディレクトリは既定で
+  `/tmp/madb` 固定で、R18版の取り込み（`--include-adult`）と同時に走らせると同じ `/tmp/madb/seed/
+  volumes_new_*.sql` を書き合い、本家に成年向けが混入しうる。R18版側は `5f144ed` で
+  `--work /tmp/madb-r18` を npm script に固定した。本家を並行で流すときはこの指定を付ける。
+- 取り込み後: `series` 133,603 行 / `volumes` 349,020 行（うち `subtitle` ありが 70,680 = 20%、
+  `is_adult = 1` は **0 行**＝成年向けの混入なし）/ `adult_volumes` 7,624 行。
+  `lists` 1・`users` 1・`series_merge` 194・`volume_series_link` 430・`custom_series` 20・
+  `series_correction` 142 は適用前後とも同数で、独自シリーズ 20 件も `series` に入り直している。
+- 確認: ISBN 9784063637564 で C318330「金田一少年の事件簿 第Ⅱ期」が全14巻（前は 6 巻）、
+  巻一覧に当該 ISBN が「下 獄門塾殺人事件」として出る。`/api/book` の「同じ巻の別 ISBN」は空
+  （前は同じ「下」の別作品 4 冊を並べていた）。
+  回帰: 七つの大罪 C332469 が 38 巻・巻番号の重複なし、世界一初恋 C256404 の 13 巻が 1 行、
+  ONE PIECE C268196 が 115 巻・重複なし。楳図かずおこわい本 C260484 は 14 行で「1」「2」が
+  複数あるが、これは 12 作品が別々の本として並んだ意図どおりの状態。
 
 ### R18版（my100shunga）への適用記録
 

@@ -61,18 +61,29 @@ const TO_TOP =
   `window.scrollTo({top:0,behavior:r?"auto":"smooth"});});})();</script>`;
 
 export function footerHtml(env: Env, withAff = false): string {
-  const name = escapeHtml(site(env).name);
-  const aff = withAff
-    ? `<p class="aff-disclosure">当サイトはアフィリエイト広告（PR）を利用しています（<a href="/about">詳細</a>）。</p>`
-    : "";
+  const s = site(env);
+  const name = escapeHtml(s.name);
+  // アフィリエイト注記も楽天 / Yahoo のクレジットも、外部ストアを使っているサイトだけのもの。
+  // R18版（commerce: false）は購入リンクも API 呼び出しも無いので両方出さない。
+  const aff =
+    withAff && s.commerce
+      ? `<p class="aff-disclosure">当サイトはアフィリエイト広告（PR）を利用しています（<a href="/about">詳細</a>）。</p>`
+      : "";
+  // MADB の利用規約は、出典に加えて「編集・加工した」旨の記載を求めている（当サイトはシリーズの
+  // 結合・巻の並べ替え・表記の正規化をしている）。書影の行は外部ストアから取っている本家だけ。
+  // see https://mediaarts-db.artmuseums.go.jp/terms
+  const source = s.commerce
+    ? `データ: メディア芸術データベース（国立アートリサーチセンター）を加工して作成 ／ 書影: 楽天ブックス・楽天市場・Yahoo!ショッピング`
+    : `データ: メディア芸術データベース（国立アートリサーチセンター）を加工して作成`;
+  const credits = s.commerce ? `${RAKUTEN_CREDIT}\n${YAHOO_CREDIT}` : "";
   const links = FOOT_LINKS.map((l) => `<a href="${l.href}">${l.label}</a>`).join("");
   return (
     `<footer class="site">` +
     `<nav class="foot-links" aria-label="サイト情報">${links}</nav>` +
     aff +
     // 出典の行そのものを /about（利用ソース・広告の説明）へのリンクにする（リンク一覧には別に置かない）。
-    `<p class="foot-source"><a href="/about">データ: メディア芸術データベース（国立アートリサーチセンター）／ 書影: 楽天ブックス・楽天市場・Yahoo!ショッピング</a></p>` +
-    `<p class="foot-credits">${RAKUTEN_CREDIT}\n${YAHOO_CREDIT}` +
+    `<p class="foot-source"><a href="/about">${source}</a></p>` +
+    `<p class="foot-credits">${credits}` +
     `<button type="button" id="reset-local-data">この端末のデータを初期化</button></p>` +
     `<p class="foot-copy">© 2026 ${name} @rela1470</p>` +
     `</footer>` +

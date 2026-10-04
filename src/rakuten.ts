@@ -1,4 +1,4 @@
-import { excludeAdult } from "./site";
+import { commerceEnabled, excludeAdult } from "./site";
 import { Env } from "./types";
 import { isValidIsbn } from "./util";
 
@@ -26,6 +26,8 @@ export interface RakutenBook extends RakutenBookFull {
 
 /** True when Rakuten credentials are configured; callers should skip Rakuten otherwise. */
 export function rakutenReady(env: Env): boolean {
+  // R18版は外部ストアの API を一切使わない（src/site.ts commerce）。鍵が入っていても呼ばない。
+  if (!commerceEnabled(env)) return false;
   return Boolean(env.RAKUTEN_APP_ID && env.RAKUTEN_ACCESS_KEY);
 }
 

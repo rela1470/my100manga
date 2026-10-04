@@ -2,7 +2,7 @@ import { Env } from "./types";
 import { footerHtml } from "./footer";
 import { headerLinksHtml } from "./header";
 import { rankSwitchHtml } from "./rankSwitch";
-import { GENERAL_NAME, GENERAL_ORIGIN, site } from "./site";
+import { brandHtml, GENERAL_MAIL_DOMAIN, GENERAL_NAME, GENERAL_ORIGIN, site } from "./site";
 import { escapeHtml } from "./util";
 
 // 全 HTML ページの <head> の <!--ANALYTICS--> に差し込む Google タグを組み立てる。
@@ -13,7 +13,7 @@ import { escapeHtml } from "./util";
 // サイト種別（src/site.ts）も window.__SITE__ で渡す（public/share-x.js 等が読む）。
 export function analyticsTags(env: Env): string {
   const s = site(env);
-  let out = `<script>window.__SITE__=${JSON.stringify({ variant: s.variant, name: s.name, hashtag: s.hashtag }).replace(/</g, "\\u003c")};</script>`;
+  let out = `<script>window.__SITE__=${JSON.stringify({ variant: s.variant, name: s.name, hashtag: s.hashtag, commerce: s.commerce }).replace(/</g, "\\u003c")};</script>`;
   const sitekey = (env.TURNSTILE_SITE_KEY ?? "").trim();
   if (sitekey) {
     out += `<meta name="turnstile-sitekey" content="${escapeHtml(sitekey)}">`;
@@ -47,6 +47,9 @@ export function gtmBody(env: Env): string {
 // secret ではなく env の vars。view ページは renderViewPage 側で __AFF__ を注入するため
 // このプレースホルダを持たず、素通りする。
 export function affIds(env: Env) {
+  // R18版は購入リンクを出さない（src/site.ts commerce）。紹介 ID を渡さないだけでなく、
+  // public/affiliate.js の buildBuyLinks が window.__SITE__.commerce を見てリンク自体を作らない。
+  if (!site(env).commerce) return { amazon: "", rakuten: "", mercari: "", yahooSid: "", yahooPid: "" };
   return {
     amazon: env.AMAZON_ASSOCIATE_TAG ?? "",
     rakuten: env.RAKUTEN_AFFILIATE_ID ?? "",
@@ -90,13 +93,22 @@ export function injectVersion(html: string, v: string): string {
 
 // 静的 HTML（本家の表記で書いてある）をサイト種別（src/site.ts）に合わせる。<html> に
 // data-site を付け（public/styles.css が配色を切り替える）、本家以外ならサイト名と canonical /
-// og:url の本家ドメインを差し替える。ユーザ入力を差し込む前のテンプレートにだけ使うこと
-// （表示名などに「My 100 Manga」と書かれていても書き換えないように）。
+// og:url の本家ドメイン、問い合わせ窓口の mailto を差し替える。ユーザ入力を差し込む前の
+// テンプレートにだけ使うこと（表示名などに「My 100 Manga」と書かれていても書き換えないように）。
+//
+// mailto は canonical と別扱いで、配信オリジンではなく site(env).mailDomain を使う。dev
+// （dev.my100shunga.com）には受信箱が無く、メールは本番ドメインで受けるため。see docs/r18.md 3 節
 export function applySiteIdentity(html: string, env: Env, origin: string): string {
   const s = site(env);
   let out = html.replace(/<html\b(?![^>]*\bdata-site=)/, `<html data-site="${s.variant}"`);
   if (s.variant !== "general") {
-    out = out.replaceAll(GENERAL_NAME, s.name).replaceAll(GENERAL_ORIGIN, origin);
+    out = out
+      // <h1>My <span class="accent">100</span> Manga</h1> のように要素で割れている表記は
+      // GENERAL_NAME の置換に引っかからないので、同じ形を組み立てて先に差し替える。
+      .replaceAll(brandHtml(GENERAL_NAME), brandHtml(s.name))
+      .replaceAll(GENERAL_NAME, s.name)
+      .replaceAll(`@${GENERAL_MAIL_DOMAIN}`, `@${s.mailDomain}`)
+      .replaceAll(GENERAL_ORIGIN, origin);
   }
   return out;
 }

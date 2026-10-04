@@ -213,6 +213,10 @@
   // Returns the buy links for an item, grouped by format. Print entries are
   // omitted when there's nothing to search (no isbn and no title).
   window.buildBuyLinks = function (item) {
+    // R18版（src/site.ts の commerce: false）は購入リンクを一切出さない。__SITE__ は
+    // src/analytics.ts の analyticsTags が全ページに差し込む。旧いキャッシュの HTML には
+    // commerce が無いことがあるので、明示的に false のときだけ止める（本家を巻き込まない）。
+    if (window.__SITE__ && window.__SITE__.commerce === false) return [];
     var hasQuery = Boolean(q(item) || cleanIsbn(item && item.isbn));
     if (!hasQuery) return [];
     var links = [

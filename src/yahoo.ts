@@ -1,4 +1,4 @@
-import { excludeAdult } from "./site";
+import { commerceEnabled, excludeAdult } from "./site";
 import { Env } from "./types";
 import { pacedFetchJson, PROBE_TIMEOUT_MS, type Priority } from "./ratelimiter";
 import { isValidIsbn } from "./util";
@@ -30,6 +30,8 @@ const ADULT = /アダルト|成人|18禁|FANZA|官能|ボーイズラブ用品/;
 
 /** True when the Yahoo Client ID is configured; callers skip Yahoo otherwise. */
 export function yahooReady(env: Env): boolean {
+  // R18版は外部ストアの API を一切使わない（src/site.ts commerce）。鍵が入っていても呼ばない。
+  if (!commerceEnabled(env)) return false;
   return Boolean(env.YAHOO_APP_ID);
 }
 

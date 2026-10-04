@@ -25,18 +25,58 @@ export interface SiteConfig {
    *  マスタ）を出すか。R18版では中身が全年齢作品なので出さない（ヘッダーのボタンと sitemap）。
    *  ページ自体は残る（URL を知っていれば見られる）。 */
   allAgesRankings: boolean;
+  /** 外部ストアの API とアフィリエイトを使うか。表紙の取得（楽天ブックス・Yahoo!ショッピング・
+   *  楽天市場）、購入リンク（Amazon・楽天・Yahoo・メルカリ）、売上ランキング（楽天ブックス）、
+   *  フッターの楽天 / Yahoo 公式クレジットがまとめてこれで切れる。R18版が false なのは、
+   *  各社の規約が成人向けサイトでの利用を認めているか未確認で、使う予定の DMM アフィリエイトが
+   *  承認待ちのため（docs/r18.md 6 節）。false の間 R18版に表紙は出ない（MADB の書誌だけ）。 */
+  commerce: boolean;
+  /** 問い合わせ窓口（info@ / abuse@）のドメイン。利用規約・プライバシー・運営者の mailto を
+   *  applySiteIdentity がこれに差し替える。canonical と違って**配信オリジンから作れない**:
+   *  dev（dev.my100shunga.com）には受信箱が無く、メールは本番ドメインで受けるため。 */
+  mailDomain: string;
 }
 
 // 本家の静的 HTML に書かれている表記。applySiteIdentity が置き換える元の文字列。
 export const GENERAL_NAME = "My 100 Manga";
 export const GENERAL_ORIGIN = "https://my100manga.com";
+export const GENERAL_MAIL_DOMAIN = "my100manga.com";
 
 const SITES: Record<SiteVariant, SiteConfig> = {
-  general: { variant: "general", name: GENERAL_NAME, hashtag: "my100manga", excludeAdult: true, allAgesRankings: true },
-  // R18版（my100shunga.com / dev.my100shunga.com）。ドメインはここには持たない（canonical・og:url は
-  // 配信時のオリジンから applySiteIdentity が作る）。
-  adult: { variant: "adult", name: "My 100 Shunga", hashtag: "my100shunga", excludeAdult: false, allAgesRankings: false },
+  general: {
+    variant: "general",
+    name: GENERAL_NAME,
+    hashtag: "my100manga",
+    excludeAdult: true,
+    allAgesRankings: true,
+    commerce: true,
+    mailDomain: GENERAL_MAIL_DOMAIN,
+  },
+  // R18版（my100shunga.com / dev.my100shunga.com）。サイトのドメインはここには持たない
+  // （canonical・og:url は配信時のオリジンから applySiteIdentity が作る）。mailDomain だけは
+  // 例外で、dev でも本番ドメインの窓口を出す（上の mailDomain のコメント）。
+  adult: {
+    variant: "adult",
+    name: "My 100 Shunga",
+    hashtag: "my100shunga",
+    excludeAdult: false,
+    allAgesRankings: false,
+    commerce: false,
+    mailDomain: "my100shunga.com",
+  },
 };
+
+/** 見出し用のブランド表記。「My 100 Manga」の数字だけをアクセント色にした HTML を組む。
+ *  静的 HTML（public/*.html の <h1>）には本家の形が直書きしてあるが、`<span>` で割れていて
+ *  applySiteIdentity の文字列置換（GENERAL_NAME）に引っかからない。そこで同じ形を組み立てて
+ *  差し替える。src/shareImage.ts の brandSvg と同じ考え方。名前は SITES の定数なので
+ *  エスケープは要らない（ユーザ入力は通さないこと）。 */
+export function brandHtml(name: string): string {
+  return name
+    .split(" ")
+    .map((w) => (/^\d+$/.test(w) ? `<span class="accent">${w}</span>` : w))
+    .join(" ");
+}
 
 export function siteVariant(env: Pick<Env, "SITE_VARIANT">): SiteVariant {
   return (env.SITE_VARIANT ?? "").trim() === "adult" ? "adult" : "general";
@@ -44,6 +84,12 @@ export function siteVariant(env: Pick<Env, "SITE_VARIANT">): SiteVariant {
 
 export function site(env: Pick<Env, "SITE_VARIANT">): SiteConfig {
   return SITES[siteVariant(env)];
+}
+
+/** 外部ストアの API・アフィリエイトを使うか。rakutenReady / yahooReady（＝表紙 Tier1–3 と
+ *  売上ランキング）、affIds（購入リンク）、フッターのクレジットがこれを見る。 */
+export function commerceEnabled(env: Pick<Env, "SITE_VARIANT">): boolean {
+  return site(env).commerce;
 }
 
 /** 成年向けを除外するか。src/adult.ts・表紙ソース・MADB ライブ検索の判定はこれを通す。 */

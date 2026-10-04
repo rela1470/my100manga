@@ -1498,6 +1498,28 @@ html:has(.modal-backdrop.open) { overflow: hidden; }
 .gap-btn { font-size: 13px; }
 
 .modal-actions { display: flex; justify-content: space-between; gap: 8px; margin-top: 12px; }
+
+/* ランキングから開く読み取り専用の巻一覧（public/series-volumes.js）。本の詳細と同じ枠に、
+   ページ側のランキングと同じ .slot を並べる。巻数が多いシリーズがあるので一覧だけスクロール
+   させ、見出しと「トップで開く」は常に見えるようにしておく。 */
+.sv-modal { max-width: 720px; }
+/* 本の詳細（.modal-backdrop は z-index 50）より 1 つ下に敷く。巻一覧 → 巻をタップ → 本の詳細、
+   と重ねて開くので、同じ z-index だと後から DOM に入った巻一覧が詳細を覆ってしまう
+   （詳細のモーダルは最初に開いたときに作られるため、必ず巻一覧より前に入る）。 */
+#seriesVolumesModal { z-index: 49; }
+.sv-sub { color: var(--muted); font-size: 13px; margin-top: 2px; }
+.sv-grid {
+  grid-template-columns: repeat(auto-fill, minmax(96px, 1fr));
+  max-height: 56vh;
+  overflow-y: auto;
+  margin-top: 10px;
+  padding: 2px;
+}
+/* .slot の見た目は a 向けに書いてあるので、button で使うときに効かない分だけ戻す。 */
+.sv-slot { font: inherit; color: inherit; }
+@media (max-width: 560px) {
+  .sv-grid { grid-template-columns: repeat(auto-fill, minmax(84px, 1fr)); max-height: none; }
+}
 /* 検索モーダルのフッター左側。表示中の画面の「表紙を取得」を入れる（閉じるの左に左寄せ）。 */
 .search-actions { flex: 1; display: flex; align-items: center; flex-wrap: wrap; gap: 8px; min-width: 0; }
 .search-actions .cover-status { margin: 0; }

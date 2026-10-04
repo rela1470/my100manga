@@ -63,6 +63,19 @@
     modal.innerHTML = MODAL_HTML;
     document.body.appendChild(modal);
     $("bdClose").addEventListener("click", close);
+    $("bdSeries").addEventListener("click", (ev) => {
+      if (ev.metaKey || ev.ctrlKey || ev.shiftKey || ev.button !== 0) return;
+      const id = $("bdSeries").dataset.seriesId;
+      if (!id || !window.openSeriesVolumes) return; // 従来どおりトップへ遷移
+      ev.preventDefault();
+      const title = $("bdTitle").textContent;
+      const editHref = $("bdSeries").href;
+      // 巻一覧は詳細の「下」（z-index 49。styles.css #seriesVolumesModal）に開く。巻一覧から
+      // 巻をタップしたときに詳細がその上へ出る向きにしてあるので、ここで詳細を閉じておかないと
+      // 開いたままの詳細に隠れて、巻一覧が下にはみ出して見えることになる。
+      close();
+      window.openSeriesVolumes(id, title, { editHref });
+    });
     modal.addEventListener("click", (e) => {
       if (e.target === modal) close();
     });
@@ -81,12 +94,23 @@
     if (text) $(valueId).textContent = text;
   }
 
+  // 「巻一覧を開く」。リンクのままにしておき（Ctrl/⌘ クリックで新しいタブに開ける）、
+  // public/series-volumes.js を読んでいるページでは、クリックを奪ってその場で巻一覧を開く。
+  // シリーズ ID は href（/?series=<id>&st=…）から取る。?q= 検索へ落ちるケース（マスタに
+  // 寄せ先が無い新刊など）は ID が無いので、従来どおりトップへ遷移する。
   function setSeries(href, label) {
     const a = $("bdSeries");
     a.style.display = href ? "" : "none";
     if (!href) return;
     a.href = href;
     a.textContent = label;
+    let id = "";
+    try {
+      id = new URL(href, location.href).searchParams.get("series") || "";
+    } catch {
+      id = "";
+    }
+    a.dataset.seriesId = id;
   }
 
   function renderCover(book) {

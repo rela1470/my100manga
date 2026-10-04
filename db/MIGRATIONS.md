@@ -41,7 +41,7 @@ DB 側に記録されないので、この表で管理する。
 | `circulation-data.sql` | 発行部数ランキングの中身（`scripts/wikipedia-circulation.mjs` が生成。全件入れ替え） | ○ | 2026-10-04 | 2026-10-04 |
 | `add-circulation-link.sql` | `circulation_link`（発行部数ランキングの寄せ先の指定）。**デプロイ前に** | ○ | 2026-10-04 | 2026-10-04 |
 | `circulation-links.sql` | 寄せ先の指定の中身（`scripts/dump-circulation-links.mjs` が生成。upsert） | ○ | 2026-10-04 | 2026-10-04 |
-| `add-is-adult.sql` | `series.is_adult` / `volumes.is_adult`（R18版が成年向けを収録するための印。本家では常に 0）。**R18版の D1 では ingest の前に** | × | 未適用 | 未適用 |
+| `add-is-adult.sql` | `series.is_adult` / `volumes.is_adult`（R18版が成年向けを収録するための印。本家では常に 0）。**R18版の D1 では ingest の前に** | × | 未適用 | 未適用（本家は次の月次 ingest で shadow テーブルごと入れ替わるときに入る。R18版は dev 2026-10-04 適用済み・本番未適用） |
 
 冪等: ○ = 何度流しても同じ結果。× = 2 回目はエラーになる（`ALTER TABLE ... ADD COLUMN` など。エラーで
 止まるだけで壊れはしないが、同じファイルの後続の文も流れない）。
@@ -94,6 +94,18 @@ DB 側に記録されないので、この表で管理する。
 - 同じ 4 ファイルを同じ順で適用 → `circulation` 200 行 / `circulation_link` 199 行（うち `manual` 3）/
   `idx_series_num_items` 作成（`series` 13.3 万行）。`lists` / `users` は適用前後とも 1 行で無傷。
 - `npm run deploy:prod` → Version ID `21ebe2f8-5086-45ad-99e8-d231b9af18d4`。
+
+### R18版（my100shunga）への適用記録
+
+**dev（2026-10-04）**
+
+- 適用前の Time Travel ブックマーク: `00000005-00000000-000050fa-c61c73670ce90c432942d5f4e5dba261`（取り込み前は空の DB）
+- `db/add-is-adult.sql` を適用 → `npm run ingest:remote:r18:dev`（MADB release 1.2.20）。所要 4 分ほど。
+- 結果: `series` 139,130 行（うち `is_adult=1` が 5,586）/ `volumes` 356,644 行（うち 7,624）/ `adult_volumes` 0 行。
+- 確認: `/api/search?q=ONE PIECE` が 0 件、`&all=1` で 30 件。成年向けのタイトルは既定で出る。
+
+**本番（my100shunga）**: 未適用。dev で通し確認してから同じ順で流す
+（`db/add-is-adult.sql` → `npm run ingest:remote:r18:prod`）。
 
 ## バックアップ（リモートの migration / ingest の前に毎回）
 

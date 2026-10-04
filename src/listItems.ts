@@ -78,6 +78,7 @@ labs AS (
 SELECT w.isbn, b.isbn AS found, b.tid AS series_id, b.volume_number, b.title, b.subtitle, b.author,
        vto.title AS title_override, sno.name AS series_override,
        canon.title AS canonical, labs.labels, s.creator AS series_creator, s.name AS series_name,
+       s.version AS series_version,
        bm.authors AS meta_authors,
        COALESCE(
          NULLIF(cv.cover_url, ''),
@@ -114,6 +115,7 @@ interface Row {
   labels: string | null; // JSON array of the series' distinct volume labels
   series_creator: string | null;
   series_name: string | null;
+  series_version: string | null; // 版表示（db/add-series-version.sql）。独自シリーズは NULL
   meta_authors: string | null; // book_meta.authors ("/"-joined)
   cover: string;
 }
@@ -170,6 +172,13 @@ export async function resolveBooks(env: Env, isbns: string[]): Promise<Map<strin
       // シリーズ名は独自シリーズの名前にする。
       const custom = !!sid && isCustomSeriesId(sid);
       seriesTitle = r.series_override || (custom ? r.series_name : r.canonical) || r.title || "";
+      // 版表示（series.version）。MADB は同じ作品の版違いを同じ書名の別シリーズとして持つので、
+      // これが無いとリストの中で「ドラゴンボール 第1巻」が通常版と完全版のどちらか分からない。
+      // 検索カード・巻一覧と同じ規則で、書名が既にその版を名乗っていれば足さない
+      // （src/search.ts SERIES_COLS / public/app.js editionTitle）。
+      if (r.series_version && !seriesTitle.includes(r.series_version)) {
+        seriesTitle = `${seriesTitle}（${r.series_version}）`;
+      }
       // 巻番号の無い巻（総集編など）も書名が本の区別なので揃えない（getSeriesVolumes と同じ）。
       const own = custom || (r.found && !r.volume_number);
       const base = r.title_override || (own ? r.title || seriesTitle : seriesTitle);

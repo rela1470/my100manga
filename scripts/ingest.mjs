@@ -54,7 +54,7 @@ const ID_PREFIX = "https://mediaarts-db.artmuseums.go.jp/id/";
 const SERIES_COLS =
   "id TEXT PRIMARY KEY, name TEXT NOT NULL, name_norm TEXT NOT NULL, name_kana TEXT, " +
   "name_kana_norm TEXT, name_search TEXT, creator TEXT, creators TEXT, creators_norm TEXT, publisher TEXT, label TEXT, num_items INTEGER, " +
-  "is_adult INTEGER NOT NULL DEFAULT 0";
+  "is_adult INTEGER NOT NULL DEFAULT 0, version TEXT";
 const VOLUMES_COLS =
   "isbn TEXT PRIMARY KEY, series_id TEXT, volume_number TEXT, vol_sort INTEGER, " +
   "title TEXT NOT NULL, subtitle TEXT, title_search TEXT, creator TEXT, creators TEXT, creators_norm TEXT, publisher TEXT, label TEXT, pubdate TEXT, " +
@@ -267,6 +267,22 @@ function subtitle(v) {
   // 他の値を丸ごと含む値は重複なので落とし、短い方（作品名そのもの）を残す。
   const kept = all.filter((x) => !all.some((y) => y !== x && x.includes(y)));
   return kept.join("：");
+}
+
+// 版表示（schema:version）。同じ schema:name の別シリーズとして並ぶ版違い（新装版・完全版・
+// 愛蔵版・大判…）を見分ける唯一のマスタ情報で、表示にだけ使う。see db/add-series-version.sql
+//
+// 落とすもの:
+//   ・ASCII だけの値 … 外国語版の版表示（"1st ed." / "Wyd. 1." / "1a ed." 等 205 件）。
+//     日本語のカードに出しても区別にならない。
+//   ・シリーズ名・レーベルに既に入っている値 … 「ブラック・エンジェルズ」(レーベル
+//     「集英社文庫 コミック版」) に「コミック版」を足しても同じことを二度言うだけ。
+//     272 件がレーベル、14 件が名前と重複する。
+function editionVersion(v, name, brand) {
+  const ver = firstVariant(primary(v)).trim();
+  if (!ver || /^[\x20-\x7e]+$/.test(ver)) return "";
+  if (name.includes(ver) || (brand && brand.includes(ver))) return "";
+  return ver;
 }
 
 function cid(node, prop) {
@@ -668,7 +684,7 @@ async function main() {
   const seriesWriter = new SqlChunkWriter(
     a.out,
     "series_new",
-    ["id", "name", "name_norm", "name_kana", "name_kana_norm", "name_search", "creator", "creators", "creators_norm", "publisher", "label", "num_items"],
+    ["id", "name", "name_norm", "name_kana", "name_kana_norm", "name_search", "creator", "creators", "creators_norm", "publisher", "label", "num_items", "version"],
     a.chunk
   );
   let seriesCount = 0;
@@ -702,6 +718,7 @@ async function main() {
       sqlStr(firstVariant(primary(node["schema:publisher"]))),
       sqlStr(firstVariant(primary(node["schema:brand"]))),
       sqlInt(node["schema:numberOfItems"] ? parseInt(node["schema:numberOfItems"], 10) : null),
+      sqlStr(editionVersion(node["schema:version"], name, primary(node["schema:brand"]))),
     ]);
     seriesCount++;
   });

@@ -1494,7 +1494,8 @@ function renderResults(results, isbnMiss = false) {
     box.appendChild(buildRetryForm());
   }
   const pending = [];
-  for (const r of results) box.appendChild(buildResultCard(r, pending));
+  const ambiguous = ambiguousEditionKeys(results);
+  for (const r of results) box.appendChild(buildResultCard(r, pending, ambiguous));
   mountCoverFetch($("searchActions"), pending);
   if (searchNextOffset != null) box.appendChild(buildMoreButton());
   if (searchAdult.hits) {
@@ -1596,7 +1597,33 @@ function buildLiveBar() {
   return bar;
 }
 
-function buildResultCard(r, pending) {
+// 版違いの見分け（MADB は「新装版」「大判」などを同じ schema:name の別シリーズとして持つ）。
+// 横山光輝「三国志」は潮出版社だけで 8 シリーズあり、マスタの名前はどれも「三国志」。
+// 書名に添える版表示（server: version = schema:version）があればそれを使い、版表示を持たない
+// 行が同名で並ぶときだけ、レーベルと初版年をメタ行に足す。see src/search.ts SERIES_COLS
+function editionTitle(r) {
+  const title = (r && r.title) || "";
+  // 書名が既に版を名乗っているときは足さない（「三国志 大判（大判）」を防ぐ）。サーバは
+  // 管理者の修正名が出ているときに版表示を返さないが、巻側の最多タイトルが版名を含むことも
+  // あるので、こちらでも見る。
+  if (!r || !r.version || title.includes(r.version)) return title;
+  return `${title}（${r.version}）`;
+}
+
+// 版表示を足してもなお同じ「書名＋作者」になるカードの鍵の集合。これに入るカードだけ
+// メタ行にレーベルと初版年を出す（1 件しか出ていないときに年を出しても邪魔なだけなので）。
+function ambiguousEditionKeys(results) {
+  const seen = new Map();
+  for (const r of results) {
+    const k = normKey(editionTitle(r)) + "|" + normKey(r.creators || r.creator);
+    seen.set(k, (seen.get(k) || 0) + 1);
+  }
+  const dup = new Set();
+  for (const [k, n] of seen) if (n > 1) dup.add(k);
+  return dup;
+}
+
+function buildResultCard(r, pending, ambiguous) {
   const row = document.createElement("div");
   row.className = "result";
   let cell = coverImg(r.cover_url, r.title);
@@ -1605,7 +1632,7 @@ function buildResultCard(r, pending) {
   info.className = "info";
   const t = document.createElement("div");
   t.className = "t";
-  t.textContent = r.title;
+  t.textContent = editionTitle(r);
   if (r.live) {
     const badge = document.createElement("span");
     badge.className = "live-badge";
@@ -1917,6 +1944,8 @@ async function openSeries(series) {
       series.series_id = data.series_id;
       series.title = data.title || series.title;
     }
+    // 巻ページ・直リンクから開いたカードは版表示を持たないので、サーバの値で埋める。
+    if (data.version !== undefined) series.version = data.version;
     // 巻ページから開いた場合など、カードに作者表記が無くてもサーバの creators で補う。
     if (data.creators) series.creators = data.creators;
     if (data.group) {
@@ -2047,7 +2076,7 @@ function renderVolumes(series, volumes, opts) {
   const head = $("searchSubtitle");
   const titleEl = document.createElement("span");
   titleEl.className = "st";
-  titleEl.textContent = series.title;
+  titleEl.textContent = editionTitle(series);
   head.appendChild(titleEl);
   head.hidden = false;
   // 通報・依頼の旗はタイトルの次の行にまとめる（長いタイトルと同じ行に並べると折り返しが崩れる）。

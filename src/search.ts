@@ -17,6 +17,12 @@ interface SeriesResult {
   creators: string; // all authors with roles for display; falls back to creator
   publisher: string;
   label: string;
+  // 版表示（MADB schema:version。「新装版」「大判」…）。同名の版違いが別シリーズとして
+  // 並ぶので、あればカードの書名に添える。無い版も多いので label / first_year で補う。
+  version: string;
+  // 初版の発行年（"1974"。マスタに日付が 1 つも無ければ ""）。同名・同著者のカードが
+  // 並んだときだけクライアントが出す（public/app.js ambiguousEditionKeys）。
+  first_year: string;
   volume_count: number;
   // The count may be low: the newest tankobon are only fetched from live MADB when
   // the series is opened and 取得 is pressed. True until that probe has run, so the
@@ -33,6 +39,8 @@ interface SeriesRow {
   creators: string | null;
   publisher: string | null;
   label: string | null;
+  version: string | null;
+  first_pubdate: string | null;
   first_isbn: string | null;
   vol_count: number;
   probed: number;
@@ -72,7 +80,8 @@ const VOL_COUNT = `((SELECT COALESCE(SUM(MAX(nsub, 1)), 0) FROM (
                       FROM series_supplement sp WHERE sp.series_id = s.id), 0)
          + COALESCE((SELECT COUNT(*) FROM series_correction sc
                       WHERE sc.series_id IN ${MEMBERS}), 0))`;
-const SERIES_COLS = `s.id, COALESCE(o.name, s.name) AS name, s.publisher, s.label,
+const SERIES_COLS = `s.id, COALESCE(o.name, s.name) AS name, s.publisher, s.label, s.version,
+        (SELECT MIN(NULLIF(v.pubdate, '')) FROM volumes v WHERE v.series_id IN ${MEMBERS}) AS first_pubdate,
         COALESCE((SELECT v.creator FROM volumes v WHERE v.series_id IN ${MEMBERS} AND v.creator != ''
            ORDER BY v.vol_sort, v.pubdate LIMIT 1), s.creator) AS creator,
         COALESCE((SELECT v.creators FROM volumes v WHERE v.series_id IN ${MEMBERS} AND v.creators != ''
@@ -101,6 +110,8 @@ function toSeriesResult(r: SeriesRow, covers: Map<string, string>): SeriesResult
     creators: r.creators || r.creator || "",
     publisher: r.publisher ?? "",
     label: r.label ?? "",
+    version: r.version ?? "",
+    first_year: (r.first_pubdate ?? "").slice(0, 4),
     volume_count: r.vol_count,
     // Only flag "＋未確認" for numbered series with a known author — the ones a 取得 probe
     // can actually extend. One-shots and unattributed rows would show a marker that never

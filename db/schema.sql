@@ -162,7 +162,14 @@ CREATE TABLE IF NOT EXISTS series (
   -- 成年向けの巻を 1 冊でも持つシリーズ。R18版 (SITE_VARIANT="adult") の検索が既定でこれだけを
   -- 出し、「全年齢も含める」で外す (src/site.ts adultOnly, src/search.ts)。本家の DB には成年
   -- 向けの行が 1 行も入らない (ingest が adult_volumes へ落とす) ので常に 0。see docs/r18.md
-  is_adult       INTEGER NOT NULL DEFAULT 0
+  is_adult       INTEGER NOT NULL DEFAULT 0,
+  -- 版表示 (schema:version)。「新装版」「完全版」「愛蔵版」「大判」「カジュアルワイド」など、
+  -- 同名シリーズを分ける唯一のマスタ情報。MADB は同じ作品の版違いを同じ schema:name の別
+  -- C-id で持つので（横山光輝「三国志」は潮出版社だけで 8 シリーズ）、これが無いと検索結果が
+  -- 同名のカードだらけになる。13.9 万シリーズ中 3,923 件が持つ。表示専用で、検索の照合には
+  -- 使わない（name_norm / name_kana_norm はそのまま）。外国語の版表示（"1st ed." 等）や、
+  -- 既に名前・レーベルに入っている値は取り込みで落とす（scripts/ingest.mjs editionVersion）。
+  version        TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_series_name_norm ON series (name_norm);
 CREATE INDEX IF NOT EXISTS idx_series_kana_norm ON series (name_kana_norm);

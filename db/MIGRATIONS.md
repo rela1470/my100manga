@@ -43,6 +43,7 @@ DB 側に記録されないので、この表で管理する。
 | `circulation-links.sql` | 寄せ先の指定の中身（`scripts/dump-circulation-links.mjs` が生成。upsert） | ○ | 2026-10-04 | 2026-10-04 |
 | `add-is-adult.sql` | `series.is_adult` / `volumes.is_adult`（R18版が成年向けを収録するための印。本家では常に 0）。**R18版の D1 では ingest の前に** | × | 未適用 | 未適用（本家は次の月次 ingest で shadow テーブルごと入れ替わるときに入る。R18版は dev 2026-10-04 適用済み・本番未適用） |
 | `add-volume-subtitle.sql` | `volumes.subtitle`（巻の副題。同じ巻番号の別作品が 1 冊に畳まれるのを直す。中身は取り込み直しで埋まる）。**デプロイ前に** | × | 2026-10-04 | 2026-10-04 |
+| `add-series-version.sql` | `series.version`（版表示。同名の版違いシリーズを見分ける。中身は取り込み直しで埋まる）。**デプロイ前に** | × | 2026-10-04 | 2026-10-04 |
 
 冪等: ○ = 何度流しても同じ結果。× = 2 回目はエラーになる（`ALTER TABLE ... ADD COLUMN` など。エラーで
 止まるだけで壊れはしないが、同じファイルの後続の文も流れない）。
@@ -134,6 +135,79 @@ DB 側に記録されないので、この表で管理する。
   回帰: 七つの大罪 C332469 が 38 巻・巻番号の重複なし、世界一初恋 C256404 の 13 巻が 1 行、
   ONE PIECE C268196 が 115 巻・重複なし。楳図かずおこわい本 C260484 は 14 行で「1」「2」が
   複数あるが、これは 12 作品が別々の本として並んだ意図どおりの状態。
+
+### `add-series-version.sql` の適用記録
+
+MADB の `schema:version`（版表示）の取り込み。横山光輝「三国志」のように、同じ作品の版違いが
+同じ `schema:name` の別 C-id として並んで区別できなかった件（README「同名の版違いの見分け」）。
+
+**dev（2026-10-04）**
+
+- 適用前の Time Travel ブックマーク: `000000d1-00000000-000050fa-a8cf1a580a9f7711b9648ce7ebc45633`
+- ユーザデータの書き出し: `backups/dev-20261004-2318-seriesversion.sql`
+- 順番: `db/add-series-version.sql` → `npm run deploy:dev` → `npm run ingest:remote:dev -- --work /tmp/madb-main`。
+  **列の追加はデプロイより前**（逆だと取り込み前に `version` を読むコードが出て no such column）。
+- `npm run deploy:dev` → Version ID `35a537ca-47d4-41e6-83cf-609d5ef8c780`。
+- 取り込み後: `series` 133,584 行（うち `version` ありが 3,403 = 2.5%）/ `volumes` 349,020 行
+  （`subtitle` あり 70,680・`is_adult = 1` は 0 行）/ `adult_volumes` 7,624 行。
+  `series_merge` 168・`custom_series` 1・`volume_series_link` 36・`series_correction` 3 は適用前後とも同数。
+- 確認: `/api/search?q=三国志` が C367640 を `version="大判"`、C276817 を `"カジュアルワイド"`、
+  C433383 を `"改訂版"` で返す。版表示を持たない 3 件（C276797 2007年・C276805 1974年・C276801 1997年）は
+  `first_year` とレーベルで並ぶ。
+  回帰: 七つの大罪 C332469 が 38 巻、ONE PIECE C268196 が 100 巻、金田一少年の事件簿 C318330 が 13 巻（全巻副題あり）。
+
+**本番（2026-10-04）**
+
+- 適用前の Time Travel ブックマーク: `000000cc-00000000-000050fa-5208264a8a82c145b5e15d8113a9a794`
+- ユーザデータの書き出し: `backups/prod-20261004-2325-seriesversion.sql`
+- dev と同じ順: `db/add-series-version.sql` → `npm run deploy:prod`（Version ID
+  `79b984dc-5570-44f1-9d7a-8273fba4a3f8`）→ `npm run ingest:remote:prod -- --work /tmp/madb-main --skip-download`。
+- 取り込み後: `series` 133,603 行（`version` あり 3,403）/ `volumes` 349,020 行（`subtitle` 70,680・
+  `is_adult = 1` は 0 行）/ `adult_volumes` 7,624 行。`lists` 1・`users` 1・`series_merge` 194・
+  `custom_series` 20・`volume_series_link` 430・`series_correction` 142 は適用前後とも同数。
+- **取り込み後に 1 点直してデプロイし直した**（Version ID `4a8f3414-45c2-40a1-9feb-6a59e2234712`、
+  dev は `711cab18-d52d-4270-8c85-7a6bc454f8a9`）。本番には管理者のシリーズ名の上書き
+  （`series_name_override`、60 件）があり、うち 16 件が版違いを手で名乗らせたもの
+  （「三国志 大判」「鋼の錬金術師 完全版」…）。そこへ版表示を足すと「三国志 大判（大判）」と
+  二重になる。`public/app.js` の `editionTitle` に「書名が既にその版を名乗っていれば足さない」
+  ガードを入れた。dev には上書きが無いので dev では出なかった。
+  上書き名と版表示が別の語のとき（C276817「三国志 廉価版」＋ `カジュアルワイド`）は併記のまま
+  残る。上書きは別途全件見直す予定なので、`series_name_override` の有無でコードを分岐させることは
+  していない。
+- 確認: `/api/search?q=三国志` のカードが「三国志 愛蔵版 / 三国志（希望コミックス）/ 三国志 文庫版 /
+  三国志 大判 / …」と版ごとに分かれ、二重表記が無い。
+
+### `series_name_override` の整理（2026-10-04、本番のみ）
+
+`series.version` が入ったことで、管理者のシリーズ名の上書きのうち「マスタ名 ＋ 版表示」でしかない
+ものは不要になったので削除した。dev の `series_name_override` は 0 件なので本番だけの作業。
+
+**前提: `src/listItems.ts` に版表示を効かせてから消すこと。** リスト・ランキング・編集画面の本の
+タイトルを作る `resolveBooks` は `series_name_override` を見るが `version` を見ていなかった。先に
+上書きを消すと公開リストの表示が「ドラゴンボール 完全版 第1巻」→「ドラゴンボール 第1巻」に戻り、
+通常版と区別が付かなくなる。この順でデプロイしてから消した（本番 Version ID
+`917d35ad-1f9f-47a7-b9a8-0efc55a5dc81`）。
+
+- 削除前の Time Travel ブックマーク: `000000d0-00000004-000050fa-987bfc18472c2e54542b53d8e4784428`
+- 書き出し: `backups/prod-20261004-2351-series_name_override.sql`（削除前の全 60 行）
+- 削除した 10 件（`series` / `volumes` には触れていない）:
+  `C253984` YAIBA 新装版 / `C257147` ドラゴンボール 完全版 / `C276817` 三国志 廉価版 /
+  `C311611` 金田一少年の事件簿 バイリンガル版 / `C321571` 金田一少年の事件簿 極厚愛蔵版 /
+  `C326531` グラップラー刃牙 完全版 / `C332274` タッチ<完全復刻版> / `C338357` 鋼の錬金術師 完全版 /
+  `C367640` 三国志 大判 / `C371167` 宇宙兄弟 スペシャルエディション
+- 削除と同時に `meta.view_epoch` を更新した（検索のエッジキャッシュとリストのスナップショットは
+  世代を鍵に混ぜているので、直接 SQL で消すだけだと最大 1 時間古い名前が出る。管理画面経由の
+  修正では `bumpViewEpoch` が呼ばれる、src/viewSnapshot.ts）。
+- 残り 50 件は消していない。内訳は、MADB に版表示が無く上書きが唯一の情報源のもの 36 件
+  （ゴルゴ13 の コンパクト版 / POCKET EDITION / My First Big / 小学館文庫版、金田一少年の事件簿の
+  第Ⅰ期 / 第Ⅱ期 / 廉価版 / Ｃａｓｅ版 など）、書名そのものの修正 7 件（`ｖ`→「ハレグゥ」、
+  ジョジョの Part 番号の統一）、版表示以外の修正を兼ねるもの 7 件。
+- **`C262152` は意図的に残した。** 上書きは「SLAM DUNK 完全版」だがマスタ名が `Slam dunk` なので、
+  消すと「Slam dunk（完全版）」になり大文字小文字の修正まで失われる。版表示と別の修正が同じ行に
+  同居している例。
+- 確認: `/api/search?q=三国志` が「三国志（全60巻）/ 三国志 愛蔵版 / 三国志 文庫版 / 三国志（大判）」、
+  `q=ドラゴンボール` が「ドラゴンボール / ドラゴンボール（完全版）」と版ごとに分かれ、二重表記が無い。
+  `/api/lists/:slug` が 100 件を正常に返す（`RESOLVE_SQL` に足した `s.version` が本番で解決できている）。
 
 ### R18版（my100shunga）への適用記録
 

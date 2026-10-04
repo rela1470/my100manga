@@ -250,7 +250,7 @@ npm run dev
 
 `http://localhost:8787/` でエディタが開く。
 
-- `GET /api/search?q=<タイトル>` — シリーズ検索（ローカル MADB マスタ）
+- `GET /api/search?q=<タイトル>` — シリーズ検索（ローカル MADB マスタ）。カードは `version`（版表示）と `first_year`（初版の発行年）も返す（下記「同名の版違いの見分け」）
 - `GET /api/series/:id/volumes` — シリーズの全巻一覧（巻順）
 - `POST /api/lists` — リスト作成 `{owner_name, items[], slug?}` → `{slug, edit_token}`。`slug` は任意（英数字・ハイフン・アンダースコアのみ、15文字以内）。未指定ならランダム10文字。既存と衝突すると `409`
 - `GET /api/lists/:slug` — リスト取得
@@ -389,8 +389,8 @@ MADB の取り込みでは成年コミック（MADB の `schema:contentRating` �
 ## データモデル（D1）
 
 - `lists` — `slug`(PK), `edit_token`, `owner_name`, `items_json`, `created_at`, `updated_at`
-- `series` — MADB シリーズ。`id`(PK, C-id), `name`, `name_norm`, `name_kana`, `name_kana_norm`, `name_search`(検索専用。全角半角を寄せて記号を落とした書名、`src/util.ts` `searchKey`), `creator`(代表作者), `creators`(表示用。役割付き全作者), `creators_norm`(検索専用), `publisher`, `label`, `num_items`
-- `volumes` — MADB 単行本。`isbn`(PK), `series_id`, `volume_number`, `vol_sort`, `title`, `title_search`(検索専用、`name_search` と同じ変換), `creator`, `creators`, `creators_norm`, `publisher`, `label`, `pubdate`
+- `series` — MADB シリーズ。`id`(PK, C-id), `name`, `name_norm`, `name_kana`, `name_kana_norm`, `name_search`(検索専用。全角半角を寄せて記号を落とした書名、`src/util.ts` `searchKey`), `creator`(代表作者), `creators`(表示用。役割付き全作者), `creators_norm`(検索専用), `publisher`, `label`, `num_items`, `version`(版表示。MADB `schema:version`。下記「同名の版違いの見分け」)
+- `volumes` — MADB 単行本。`isbn`(PK), `series_id`, `volume_number`, `vol_sort`, `title`, `subtitle`(巻の副題。MADB `schema:alternateName`), `title_search`(検索専用、`name_search` と同じ変換), `creator`, `creators`, `creators_norm`, `publisher`, `label`, `pubdate`
 - `covers` — 書影解決結果のキャッシュ。`isbn`(PK), `cover_url`(解決した書影URL。`""` は「どこにも無し」), `checked_at`。詳細は下記。
 - `list_item_events` — 巻の「追加」イベントログ（ランキングの元データ）。`id`(PK), `slug`, `isbn`, `added_at`。表示名・著者・表紙は持たず、ランキング計算時に ISBN から引く。公開時に新しく加わった巻を追記（作成は全 item、更新は旧→新差分の新規 isbn のみ）。ランキングは `COUNT(DISTINCT slug)` で人数を数え `added_at` で窓を切る。リスト削除時は `slug` 単位で掃除。集計結果は `meta` に `book_ranking_json` / `book_ranking_at` として 10 分 TTL キャッシュ。`src/ranking.ts`。
 - `sales_snapshot` — 売上ランキングの日次スナップショット。`(day, rank)`(PK), `isbn`, `title`(楽天の書名), `work` / `work_norm`(巻数・版の表記を除いた作品名と集計キー), `author`, `publisher`, `sales_date`, `cover_url`。1 日 300 行。集計結果は `meta` の `sales_ranking_json` に保存し、Cron のたびに作り直す。`src/salesRanking.ts`。
@@ -411,6 +411,12 @@ MADB の取り込みでは成年コミック（MADB の `schema:contentRating` �
   3. **同名＋同著者で同形式を使う別シリーズが無い**こと（新装版と原作が両方 `巻N` 等だと巻を奪い合うため、曖昧なら補完しない）。
   結果（"[]" 含む）は `series_supplement` テーブルに月次キャッシュし、SPARQL 問い合わせは各シリーズ初回オープン時のみ。検索カードの「全N巻」（`/api/search`）もキャッシュ済み補完数を加算するので、一度開いたシリーズは検索側と開いた側の巻数が一致する（未オープンのシリーズは初回オープンで揃う）。ライブ側にも欠番はある（ONE PIECE 巻110 は SPARQL にも無い）。
 - **欠番の手動補正（ダンプにもライブにも無い巻）**: MADB のダンプ・ライブ双方に単行本エントリ自体が無い巻（例: ONE PIECE 巻110）は自動補完できない。巻一覧はこの種の**内部欠番**（支配的な標準巻番号形式 `巻N`/`N` の最小〜最大の間で抜けている番号）を検出して「＋110巻を追加」の導線を出す（`public/app.js` `detectGaps`）。少数の非標準ラベル（例: ゴルゴ13 が `1`〜`202` に混ぜて持つ `50巻`・`第100巻`・`volume. 155`）は**数値だけ抽出して"存在"として扱う**ので、それらは欠番として誤検出しない（信頼できる範囲は標準形式の巻番号からのみ取り、`2020年版` のような値がレンジを広げて偽の欠番を作ることは無い）。標準形式が `巻N`/`N` で混在している、または標準形式の巻番号が2件未満のシリーズは判定を諦める。押すとタイトル＋巻番号で楽天を検索し（`GET /api/volume-candidates`）、実在の書影付き候補から選べる。選んだ巻は `POST /api/series/:id/corrections` で `series_correction` テーブルに保存され、以降 `/api/series/:id/volumes` がマージして返す（＝全員向けのキャッシュ）。補正は特定の C-id に紐づくため SPARQL 補完のような同名別シリーズの曖昧性は無い。アカウント無しの公開書き込みなので軽い悪用対策として、**受け取るのは isbn と volume_number のみ**（タイトル・著者はシリーズ行から、書影はサーバ側で再解決し、実書影が取れない ISBN は拒否）、巻番号は標準形式（`巻N`/`N`）のみ、シリーズあたり上限 20 件（`src/corrections.ts` の `MAX_CORRECTIONS` で調整）。検索カードの「全N巻」にも補正件数を加算する。
+- **同名の版違いの見分け**: MADB は同じ作品の版違い（新装版・完全版・愛蔵版・大判…）を**同じ `schema:name` の別 C-id** として持つ。横山光輝「三国志」は潮出版社だけで 8 シリーズあり、マスタの名前はどれも「三国志」なので、検索すると同じカードが並んで見える。同名＋同著者のシリーズは実測で **8,513 組 / 21,233 シリーズ**。区別は次の順で行う:
+  1. **版表示**（`series.version` = MADB `schema:version`）。13.9 万シリーズ中 3,923 件が持つ（新装版 859 / コミック版 442 / 完全版 408 / 愛蔵版 274 / 新版 152 / 改訂版 125 / 大判 15 …）。あれば書名に添えて「三国志（大判）」と出す（`public/app.js` `editionTitle`）。外国語の版表示（`1st ed.` 等 205 件）と、既に書名・レーベルに入っている値（286 件）は取り込みで落とす（`scripts/ingest.mjs` `editionVersion`）。
+  2. **レーベルと初版年**（`series.label` / `first_year`）。版表示を足してもなお同じ「書名＋作者」のカードが並ぶときだけ、メタ行に「希望コミックス / 1974年」のように足す（`public/app.js` `ambiguousEditionKeys`）。1 件しか出ていないカードには出さない。
+
+  リスト・ランキング・編集画面の本のタイトル（`src/listItems.ts` `resolveBooks`）にも同じ規則で入る（「ドラゴンボール（完全版） 第1巻」）。これが無いと 100 冊リストの中で版違いが同じ名前に潰れる。管理者のシリーズ名の上書き（`series_name_override`）が既にその版を名乗っているときは足さない。
+  この 2 段で 8,513 組中 8,040 組（94%）が区別できる。版表示は**表示専用**で、検索の照合は今までどおり `name_norm` / `name_kana_norm` に対して行う。楽天ブックス・openBD には版表示が無く（実測）、`schema:version` が唯一の自動ソースなので、それを持たない版（例: 2007 年の「三国志」愛蔵版）は初版年での区別にとどまる。
 - **書影（ISBN 一致・楽天優先）**: `src/covers.ts` / `src/rakuten.ts` が以下の順で書影を解決し、`covers` テーブルにキャッシュする。
   1. **楽天ブックス ISBN一致**（`isbn=` 検索）。旧刊の多くは品切れ/絶版で、楽天 API は既定でそれらを除外する（サイトには表示されるのに API では 0 件になる）。書影さえ取れればよいので全リクエストに `outOfStockFlag=1` を付け、品切れ・絶版も含めて取得する。楽天ゲートウェイは ~1 req/s で 429 を返すため、デプロイ全体で 1 本の予約列（Durable Object `RakutenRateLimiter`, `src/ratelimiter.ts`）に枠を取ってから叩く（1.1 秒間隔・429 は枠を取り直して 1 回だけ再試行）。予約列は利用者の操作（高優先）と背景の一括取得（低優先）で共有し、(1) 同じレーンは 2 枠までしか連続して取れない、(2) レーンごとに予約できる先（高 4 秒 / 低 2.2 秒）を区切る、の 2 点でどちらも相手を飢えさせない（もう片方はいつ来ても 3 枠＝約 3.3 秒以内に枠を取れる）。並列数は `RAKUTEN_CONCURRENCY=2`（それ以上に同時に求めても枠が無く断られるだけで、1 秒あたりの解決数は変わらない）。書影URLは `covers` にキャッシュするので、楽天へのプローブは各 ISBN 初回のみ（月次で再チェック）。
   2. **Google Books**（`books.google.com/books/content?vid=ISBN...`、APIキー不要）。楽天で取れなかった ISBN を補完する。書影が無い ISBN でもグレーの「画像なし」プレースホルダ（約10KB）を返すため、サーバ側で書影バイト数を検査する（実書影は約12KB以上）。

@@ -92,7 +92,7 @@ DB 側に記録されないので、この表で管理する。
 - ユーザデータの書き出し: `backups/prod-20261004-0303.sql`（`lists` ほか。マスタは含めない）
 - 同じ 4 ファイルを同じ順で適用 → `circulation` 200 行 / `circulation_link` 199 行（うち `manual` 3）/
   `idx_series_num_items` 作成（`series` 13.3 万行）。`lists` / `users` は適用前後とも 1 行で無傷。
-- `npm run deploy` → Version ID `21ebe2f8-5086-45ad-99e8-d231b9af18d4`。
+- `npm run deploy:prod` → Version ID `21ebe2f8-5086-45ad-99e8-d231b9af18d4`。
 
 ## バックアップ（リモートの migration / ingest の前に毎回）
 

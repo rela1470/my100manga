@@ -6,11 +6,16 @@
 
 **対象の操作**（dev / 本番どちらも）
 
-- `npm run deploy` / `npm run deploy:dev`（`wrangler deploy`）
+- `npm run deploy:prod` / `npm run deploy:dev`（`wrangler deploy`）
 - `wrangler d1 execute ... --remote`（`db/*.sql` の適用、`db:init:remote*` を含む）
 - `scripts/ingest.mjs --remote`（`ingest:remote*`）
 
 ローカル（`--local` / `wrangler dev`）は対象外。
+
+**npm script の名前で向き先を見分ける**。本番を踏むものは必ず `:prod` で終わる（`deploy:prod` /
+`db:init:remote:prod` / `ingest:remote:prod`、R18版は `deploy:r18:prod` など）。環境を書かない素の名前
+（`npm run deploy` 等）は `scripts/require-target.mjs` が候補を出して止めるので、本番を引き当てることは
+無い。`npx wrangler deploy` のように wrangler を直接叩くと環境なし＝本番になるので、npm script を使うこと。
 
 **手順**
 

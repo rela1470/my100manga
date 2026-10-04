@@ -44,7 +44,7 @@ npx wrangler d1 create my100manga-dev    # 開発
 # ローカル
 npm run db:init:local
 # 本番
-npm run db:init:remote
+npm run db:init:remote:prod
 # 開発（dev 環境）
 npm run db:init:remote:dev
 ```
@@ -57,7 +57,7 @@ npm run db:init:remote:dev
 # ローカル D1 へ（初回・動作確認用）
 npm run ingest:local
 # 本番 D1 へ
-npm run ingest:remote
+npm run ingest:remote:prod
 # 開発 D1 へ（dev 環境）
 npm run ingest:remote:dev
 ```
@@ -185,7 +185,7 @@ npx wrangler secret put AMAZON_ASSOCIATE_TAG --env dev
    npx wrangler secret put ACCESS_TEAM_DOMAIN --env dev
    ```
    1アプリ構成なので本番・dev で同じ値を入れる。**未設定なら admin は fail-closed で 403**。
-3. `npm run deploy` / `npm run deploy:dev` で反映。
+3. `npm run deploy:prod` / `npm run deploy:dev` で反映。
 
 ### workers.dev バイパス封鎖
 
@@ -275,8 +275,12 @@ npm run dev
 
 | 環境 | Worker 名 | ドメイン | D1 | デプロイ |
 |---|---|---|---|---|
-| 本番 | `my100manga` | `example.com` | `my100manga` | `npm run deploy` |
+| 本番 | `my100manga` | `example.com` | `my100manga` | `npm run deploy:prod` |
 | 開発 | `my100manga-dev` | `dev.example.com` | `my100manga-dev` | `npm run deploy:dev` |
+
+本番を踏む npm script は必ず `:prod` で終わる（`deploy:prod` / `db:init:remote:prod` / `ingest:remote:prod`）。
+環境を書かない素の名前（`npm run deploy` 等）は `scripts/require-target.mjs` が候補を並べて止める
+（wrangler も以前の package.json も、環境を省くと本番を指す作りだったため）。
 
 ### 前提（カスタムドメイン）
 
@@ -288,9 +292,9 @@ npm run dev
 npx wrangler login          # 初回のみ
 
 # 本番
-npm run db:init:remote      # スキーマ
-npm run ingest:remote       # MADB マスタ投入
-npm run deploy              # example.com へ公開
+npm run db:init:remote:prod      # スキーマ
+npm run ingest:remote:prod       # MADB マスタ投入
+npm run deploy:prod              # example.com へ公開
 
 # 開発
 npm run db:init:remote:dev
@@ -351,7 +355,7 @@ CF_AUTHORIZATION=xxxxx node scripts/warm-cache.mjs --base https://my100manga.com
 ```bash
 wrangler d1 execute DB --remote --file db/add-name-search.sql          # 本番
 wrangler d1 execute DB --env dev --remote --file db/add-name-search.sql # 開発
-npm run ingest:remote        # 本番（列を埋めるには取り込み直しが必要）
+npm run ingest:remote:prod        # 本番（列を埋めるには取り込み直しが必要）
 ```
 
 検索カード・シリーズ表示の作者を役割付きで全員出す（「原作：丸戸史明、作画：守姫武士」）ための表示用列
@@ -361,7 +365,7 @@ npm run ingest:remote        # 本番（列を埋めるには取り込み直し�
 ```bash
 wrangler d1 execute DB --remote --file db/add-creators.sql          # 本番
 wrangler d1 execute DB --env dev --remote --file db/add-creators.sql # 開発
-npm run ingest:remote        # 本番（列を埋めるには取り込み直しが必要）
+npm run ingest:remote:prod        # 本番（列を埋めるには取り込み直しが必要）
 ```
 
 公開前の索引見直し（`db/add-indexes-2026-10.sql`: 公開リスト一覧・巻一覧・リスト表示の全表スキャン解消と、

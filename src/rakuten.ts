@@ -1,6 +1,6 @@
 import { commerceEnabled, excludeAdult } from "./site";
 import { Env } from "./types";
-import { isValidIsbn } from "./util";
+import { isValidIsbn, plainVolumeNumber } from "./util";
 
 // The 2026 Rakuten OpenAPI gateway rejects server-side calls unless they look
 // like a browser XHR from the app's registered site: a matching Referer/Origin
@@ -252,4 +252,74 @@ export async function rakutenBestsellers(env: Env, page: number, hits = 30): Pro
       sales_date: String(it.salesDate ?? ""),
       cover_url: /noimage/i.test(String(it.largeImageUrl ?? "")) ? "" : upsize(String(it.largeImageUrl ?? "")),
     }));
+}
+
+
+// ── シリーズの穴埋め用の検索（src/gapFill.ts）────────────────────────────────
+// MADB に巻としては載っているが ISBN が無い巻を、タイトル＋著者＋出版社の書籍検索で
+// 引き当てるための薄いラッパ。1 ページ 30 件でページ送りする。
+
+export interface RakutenCandidate {
+  isbn: string;
+  title: string;
+  volume: number | null; // タイトルから読んだ巻数。読めなければ null
+  seriesName: string; // 「希望コミックス　48」。レーベル照合に使う
+  publisher: string;
+  pubdate: string; // salesDate（重版だと初版と年がずれる。順位付けにだけ使う）
+  cover_url: string;
+}
+
+/** 楽天の書籍タイトルから巻数を読む。「三国志（11）」→ 11、「三国志（第27巻）」→ 27。
+ *  末尾の括弧の中身（無ければ末尾のトークン）を util.plainVolumeNumber に渡すので、
+ *  「第N巻」「巻N」「v.N」等はそちらの判定に乗る。parseVolume() は候補ピッカーが
+ *  生の数字表記を欲しがるので触らずに残してある。 */
+export function rakutenVolumeNumber(title: string): number | null {
+  const s = (title ?? "").normalize("NFKC").trim();
+  const paren = /[(]([^()]*)[)]\s*$/.exec(s);
+  if (paren) {
+    const n = plainVolumeNumber(paren[1].trim());
+    if (n !== null) return n;
+  }
+  const tail = /[\s　]([^\s　]{1,8})$/.exec(s);
+  return tail ? plainVolumeNumber(tail[1]) : null;
+}
+
+/** タイトル（＋著者・出版社）検索の 1 ページ。呼び出せなかったとき（レート制限の枠が
+ *  取れない / タイムアウト / HTTP エラー）は null を返すので、呼び手はページ送りを
+ *  打ち切れる。絶版が主な対象なので outOfStockFlag は call() 側で既に立っている。 */
+export async function rakutenSeriesPage(
+  env: Env,
+  q: { title: string; author?: string; publisher?: string },
+  page: number,
+  priority: Priority = "high",
+): Promise<{ items: RakutenCandidate[]; pageCount: number } | null> {
+  if (!rakutenReady(env) || !q.title) return null;
+  const params: Record<string, string> = {
+    title: q.title,
+    booksGenreId: COMICS_GENRE,
+    hits: "30",
+    page: String(page),
+    // 古い順。穴埋めの対象（MADB に schema:isbn が無い巻）は刊行が古い巻に強く偏るので、
+    // 既定の関連度順（セット商品や文庫版が先に来る）より目当ての巻が早く出る。1 回の押下で
+    // 引けるのは数ページだけ（src/gapFill.ts MAX_PAGES の注記）なので、並び順が効く。
+    sort: "+releaseDate",
+  };
+  if (q.author) params.author = q.author;
+  if (q.publisher) params.publisherName = q.publisher;
+  const data = await call(env, params, priority);
+  if (data === null) return null;
+  const items: RakutenCandidate[] = (data?.Items ?? []).map((x: any) => {
+    const it = x?.Item ?? {};
+    const title = String(it.title ?? "");
+    return {
+      isbn: String(it.isbn ?? ""),
+      title,
+      volume: rakutenVolumeNumber(title),
+      seriesName: String(it.seriesName ?? ""),
+      publisher: String(it.publisherName ?? ""),
+      pubdate: String(it.salesDate ?? ""),
+      cover_url: upsize(String(it.largeImageUrl ?? "")),
+    };
+  });
+  return { items, pageCount: Number(data?.pageCount ?? 1) || 1 };
 }

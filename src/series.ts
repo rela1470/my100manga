@@ -18,10 +18,12 @@ import {
   getSupplementVolumes,
   readCachedSupplement,
   markSupplementProbed,
+  writeSupplement,
   seriesFormat,
   NumFmt,
   SupplementVolume,
 } from "./madbLive";
+import { findGapFillVolumes } from "./gapFill";
 import { getCorrectionVolumes } from "./corrections";
 import { resolveMergeTarget, mergeMembers } from "./merge";
 import { isCustomSeriesId, NAME_NORM_PREFIX } from "./groups";
@@ -97,7 +99,7 @@ export async function getSeriesVolumes(
   const members = await mergeMembers(env, targetId);
   const inMembers = members.map(() => "?").join(",");
   const meta = await env.DB.prepare(
-    `SELECT s.id, s.name, s.creator, s.creators, s.publisher, s.label, o.name AS override_name
+    `SELECT s.id, s.name, s.creator, s.creators, s.publisher, s.label, s.version, o.name AS override_name
        FROM series s LEFT JOIN series_name_override o ON o.series_id = s.id
       WHERE s.id = ?`
   )
@@ -109,6 +111,7 @@ export async function getSeriesVolumes(
       creators: string | null;
       publisher: string | null;
       label: string | null;
+      version: string | null;
       override_name: string | null;
     }>();
   if (!meta) return notFound("シリーズが見つかりません");
@@ -293,6 +296,13 @@ export async function getSeriesVolumes(
   // a single standard numbering format (巻N / N) AND is the only same-name+creator
   // series using it — otherwise same-titled editions (新装版・総集編・アーク別) would
   // steal each other's loose volumes.
+  // マスタが今持っている ISBN と巻番号。補完の重複除去と、抜け巻の穴埋め（下）が使う。
+  const masterIsbns = new Set<string>();
+  const masterSorts = new Set<number>();
+  for (const e of entries) {
+    for (const i of e.isbns) masterIsbns.add(i);
+    if (e.volume_number && e.vol_sort > 0) masterSorts.add(e.vol_sort);
+  }
   const existingNumbers = new Set(entries.map((e) => e.volume_number).filter(Boolean));
   const maxSort = entries.reduce((m, e) => Math.max(m, e.vol_sort), 0);
   const fmt = seriesFormat([...existingNumbers]);
@@ -309,6 +319,10 @@ export async function getSeriesVolumes(
   let probed: boolean;
   let checkedAt = 0;
   if (probe) {
+    // 前回までに貯まっている補完。穴埋めは楽天のレート制限（高優先の待ち上限 4 秒 ＝
+    // 1 回の押下で引けるのは数ページ）で 1 回では全部埋まらないので、押すたびに積み上がる
+    // よう先に読んでおく。getSupplementVolumes は行ごと置き換えるため、後でここに合流する。
+    const prior = await readCachedSupplement(env, meta.id);
     if (eligible) {
       supplement = await getSupplementVolumes(
         env,
@@ -323,6 +337,33 @@ export async function getSeriesVolumes(
     } else {
       await markSupplementProbed(env, meta.id);
     }
+    // マスタに ISBN が無いせいで取り込みから落ちた巻（シリーズ途中の抜け）を楽天から
+    // 引き当てて足す（src/gapFill.ts）。上の eligible とは独立に走らせる: あちらが
+    // 書名一致で同名別シリーズを恐れて末尾追加しかできないのに対し、こちらの穴の確定は
+    // schema:isPartOf による C-id の厳密結合なので取り違えが起きない。
+    const filled = await findGapFillVolumes(env, {
+      seriesId: meta.id,
+      name: meta.name,
+      creator: meta.creator ?? "",
+      publisher: meta.publisher ?? "",
+      label: meta.label ?? "",
+      knownIsbns: [...masterIsbns],
+      knownSorts: masterSorts,
+    });
+    // 前回ぶん → 今回の SPARQL 補完（末尾の新刊。こちらが新しければ勝たせる）→ 今回の穴埋め
+    // （空いている巻にだけ入れる）の順に合流する。穴埋めが既にある巻を上書きしないのは、
+    // 押すたびに同じ巻の ISBN が入れ替わってちらつくのを避けるため。
+    const merged = new Map<string, SupplementVolume>();
+    const key = (v: SupplementVolume) => (v.vol_sort > 0 ? `n${v.vol_sort}` : `i${v.isbn}`);
+    for (const v of prior?.volumes ?? []) merged.set(key(v), v);
+    for (const v of supplement) merged.set(key(v), v);
+    for (const v of filled) if (!merged.has(key(v))) merged.set(key(v), v);
+    const next = [...merged.values()].sort((a, b) => a.vol_sort - b.vol_sort);
+    // 中身が変わったときだけ書く（押しても何も増えないシリーズで無駄に書かない）。
+    if (filled.length || next.length !== supplement.length) {
+      await writeSupplement(env, meta.id, next);
+    }
+    supplement = next;
     probed = true;
     checkedAt = Date.now();
   } else {
@@ -334,12 +375,6 @@ export async function getSeriesVolumes(
   // The cache survives ingests (only entries the new master carries are pruned, see
   // scripts/ingest.mjs), so still skip anything already present by ISBN or by volume
   // number in case the master caught up between ingest and this read.
-  const masterIsbns = new Set<string>();
-  const masterSorts = new Set<number>();
-  for (const e of entries) {
-    for (const i of e.isbns) masterIsbns.add(i);
-    if (e.volume_number && e.vol_sort > 0) masterSorts.add(e.vol_sort);
-  }
   for (const s of supplement) {
     if ((s.isbns ?? [s.isbn]).some((i) => masterIsbns.has(i)) || masterSorts.has(s.vol_sort)) continue;
     entries.push({
@@ -500,6 +535,10 @@ export async function getSeriesVolumes(
     {
       series_id: meta.id,
       title: displayName,
+      // 版表示（schema:version）。検索カードと同じく書名に添える（src/search.ts SERIES_COLS）。
+      // 巻一覧は検索を経由せずに開けるので（/s/:id の直リンク・リストからの遷移）、カードが
+      // 持っている値に頼らずここでも返す。管理者が名前を直していても版は版なので併記する。
+      version: meta.version ?? "",
       creator: meta.creator ?? "",
       // 役割付きの全作者表記（"原作：A、作画：B"）。検索カード（search.ts SERIES_COLS）と同じく
       // 先頭巻のものを優先し、無ければシリーズ側。

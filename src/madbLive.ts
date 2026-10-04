@@ -116,6 +116,64 @@ SELECT ?isbn ?vol ?creator ?publisher ?date WHERE {
 } LIMIT 2000`);
 }
 
+// MADB のシリーズノードの URI。巻→シリーズの厳密結合に使う。
+const ID_BASE = "https://mediaarts-db.artmuseums.go.jp/id/";
+
+export interface SeriesMemberVolume {
+  volume_number: string; // MADB の巻ラベルそのまま（"12" / "第12巻"）
+  isbn: string; // MADB が持っていなければ ""
+  pubdate: string;
+}
+
+/** MADB がこのシリーズ C-id 配下（schema:isPartOf）に置いている単行本を全部返す。ISBN の
+ *  無い巻も返すのが queryTankobonByName との違いで、そこが要点になる。
+ *
+ *  ダンプ側は ISBN をキーにしているので ISBN の無い巻は丸ごと落ちる（scripts/ingest.mjs の
+ *  `if (!isbn ...) return`）。横山光輝『三国志』希望コミックス（C276805）は MADB に 60 巻
+ *  あるが ISBN を持つのは 32 巻だけで、残り 28 巻がこれで消える。実測で全 MangaBook の
+ *  11%（46,017 件）が ISBN 無し、うち 85% がシリーズに紐付いている。
+ *
+ *  名前一致の補完（queryTankobonByName）と違い、これはシリーズノードへの厳密結合なので
+ *  同名別シリーズの取り違えが起きない。巻の途中に挿し込んでよいのはそのため（名前一致の
+ *  補完が末尾追加しかしないのと対照的）。*/
+export async function queryVolumesInSeries(
+  seriesId: string,
+  exclude: boolean
+): Promise<SeriesMemberVolume[]> {
+  // C-id は自前のマスタ由来だが、SPARQL に素で埋めるので念のため形を縛る。
+  if (!/^C\d+$/.test(seriesId)) return [];
+  const rows = await runSparql(`PREFIX schema: <https://schema.org/>
+SELECT ?vol ?isbn ?date WHERE {
+  ?book schema:isPartOf <${ID_BASE}${seriesId}> ;
+        schema:volumeNumber ?vol .
+  ${sparqlNotAdult("?book", exclude)}
+  OPTIONAL { ?book schema:isbn ?isbn }
+  OPTIONAL { ?book schema:datePublished ?date }
+} LIMIT 2000`);
+  return rows
+    .map((b) => ({
+      volume_number: b.vol?.value ?? "",
+      isbn: liveIsbn(b.isbn?.value),
+      pubdate: b.date?.value ?? "",
+    }))
+    .filter((v) => v.volume_number);
+}
+
+/** 補完リストを丸ごと差し替える。SPARQL 由来（末尾追加）と楽天由来の穴埋め
+ *  （src/gapFill.ts）を 1 本にまとめて持たせるため、series.ts が合算後に呼ぶ。
+ *  series_supplement_isbn はトリガが追随する（db/schema.sql）。*/
+export async function writeSupplement(
+  env: Env,
+  seriesId: string,
+  vols: SupplementVolume[]
+): Promise<void> {
+  await env.DB.prepare(
+    `INSERT OR REPLACE INTO series_supplement (series_id, volumes_json, checked_at) VALUES (?, ?, ?)`
+  )
+    .bind(seriesId, JSON.stringify(vols), Date.now())
+    .run();
+}
+
 export interface LiveSeries {
   title: string;
   creator: string;

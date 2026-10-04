@@ -1,0 +1,13 @@
+-- volumes.subtitle: 巻の副題（MADB の schema:alternateName の、読み仮名でない方）。
+--
+-- MADB は巻の schema:name をシリーズ名の繰り返しにして、事件名などの副題を alternateName に
+-- 分けて持つ（例: ISBN 9784063637564 = M197032 → schema:name「金田一少年の事件簿」、
+-- alternateName「獄門塾殺人事件」、volumeNumber「下」）。取り込みがこれを捨てていたので、
+-- 同じシリーズに「上」「下」しか巻番号を持たない別作品が並ぶと（金田一少年の事件簿の各事件、
+-- まぼろし探偵の各編、大問題の各年版）全部 1 冊に畳まれ、巻一覧からも ISBN 検索の導線からも
+-- 消えていた。see src/util.ts workKey。
+--
+-- 中身は取り込み直し（scripts/ingest.mjs）で埋まる。この ALTER は、取り込みが volumes を
+-- 作り直すまでのあいだ、列を参照するクエリ（src/series.ts / src/groups.ts / src/search.ts）が
+-- 動くようにするためのもの。デプロイの前に流す。
+ALTER TABLE volumes ADD COLUMN subtitle TEXT;

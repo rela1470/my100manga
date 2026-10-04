@@ -1085,7 +1085,7 @@ function applyBookMeta(data, p = "e", opts = {}) {
   if (data.publisher || p !== "v") setMetaRow(p + "PublisherRow", p + "Publisher", data.publisher || "");
   if (data.pubdate || p !== "v") setMetaRow(p + "PubdateRow", p + "Pubdate", data.pubdate || "");
   if (data.label) setMetaRow(p + "LabelRow", p + "Label", data.label);
-  if (data.volume_number) setMetaRow(p + "VolRow", p + "Vol", data.volume_number);
+  if (data.volume_number) setMetaRow(p + "VolRow", p + "Vol", withSubtitle(data.volume_number, data.subtitle));
   if ($(p + "EditionsRow") && Array.isArray(data.editions) && data.editions.length) {
     setMetaRow(p + "EditionsRow", p + "Editions", data.editions.join("、"));
   }
@@ -2305,8 +2305,17 @@ function buildSeriesIdLine(id) {
   return line;
 }
 
+// 巻の副題（MADB の schema:alternateName）。同じシリーズに「上」「下」しか巻番号を持たない
+// 別作品が並ぶとき（金田一少年の事件簿の事件ごとの上下巻）、書名＋巻番号だけでは全部同じ
+// 表示になるので足す。書名側に畳み込み済みのときは重ねない。
+function withSubtitle(base, subtitle) {
+  if (!subtitle) return base;
+  if (!base) return subtitle;
+  return base.includes(subtitle) ? base : `${base} ${subtitle}`;
+}
+
 function volLabel(v) {
-  return v.volume_number ? `${v.title} ${v.volume_number}` : v.title;
+  return withSubtitle(v.volume_number ? `${v.title} ${v.volume_number}` : v.title, v.subtitle);
 }
 
 // Gaps in a series' volume numbering. Tolerates oddly-labeled volumes (e.g. ゴルゴ13
@@ -3427,7 +3436,7 @@ function openVolumeDetail(v, opts) {
   const author = v.creators || v.author || "";
   $("vAuthor").textContent = author;
   $("vAuthor").style.display = author ? "" : "none";
-  setMetaRow("vVolRow", "vVol", v.volume_number || "");
+  setMetaRow("vVolRow", "vVol", withSubtitle(v.volume_number || "", v.subtitle));
   setMetaRow("vPublisherRow", "vPublisher", v.publisher || "");
   setMetaRow("vLabelRow", "vLabel", v.label || "");
   setMetaRow("vPubdateRow", "vPubdate", v.pubdate || "");

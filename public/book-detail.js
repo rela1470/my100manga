@@ -14,6 +14,14 @@
 //               検索へのリンク（売上ランキングの寄せ先）。省略可。
 //   noSeries: 「巻一覧を開く」を出さない（巻一覧から開いたとき）。
 (function () {
+  // 巻の副題（MADB の schema:alternateName）。同じシリーズに「上」「下」しか巻番号を持たない
+  // 別作品が並ぶとき、巻番号だけでは全部同じ表示になるので足す（public/app.js と同じ）。
+  function withSubtitle(base, subtitle) {
+    if (!subtitle) return base;
+    if (!base) return subtitle;
+    return base.includes(subtitle) ? base : `${base} ${subtitle}`;
+  }
+
   const MODAL_HTML = `
     <div class="modal">
       <h2 id="bdTitle"></h2>
@@ -184,7 +192,7 @@
     if (data.publisher) setRow("bdPublisherRow", "bdPublisher", data.publisher);
     if (data.pubdate) setRow("bdPubdateRow", "bdPubdate", data.pubdate);
     if (data.label) setRow("bdLabelRow", "bdLabel", data.label);
-    if (data.volume_number) setRow("bdVolRow", "bdVol", data.volume_number);
+    if (data.volume_number) setRow("bdVolRow", "bdVol", withSubtitle(data.volume_number, data.subtitle));
     if (Array.isArray(data.editions) && data.editions.length) {
       setRow("bdEditionsRow", "bdEditions", data.editions.join("、"));
     }
@@ -208,7 +216,7 @@
     const author = book.creators || book.author || "";
     $("bdAuthor").textContent = author;
     $("bdAuthor").style.display = author ? "" : "none";
-    setRow("bdVolRow", "bdVol", book.volume_number || "");
+    setRow("bdVolRow", "bdVol", withSubtitle(book.volume_number || "", book.subtitle));
     setRow("bdPublisherRow", "bdPublisher", book.publisher || "");
     setRow("bdLabelRow", "bdLabel", book.label || "");
     setRow("bdPubdateRow", "bdPubdate", book.pubdate || "");

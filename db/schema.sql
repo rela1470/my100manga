@@ -178,6 +178,7 @@ CREATE TABLE IF NOT EXISTS volumes (
   volume_number TEXT,              -- schema:volumeNumber (kept as text: "1","上",...)
   vol_sort      INTEGER,           -- numeric sort key derived from volume_number
   title         TEXT NOT NULL,     -- schema:name (series title on the volume)
+  subtitle      TEXT,              -- schema:name に入らない副題 (schema:alternateName。「獄門塾殺人事件」)
   title_search  TEXT,              -- searchKey(title) (search only; NULL → normalized title)
   creator       TEXT,              -- representative author (display / grouping)
   creators      TEXT,              -- display credit line, all authors with roles ("原作：A、作画：B")

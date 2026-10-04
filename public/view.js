@@ -2,6 +2,14 @@
 
 const $ = (id) => document.getElementById(id);
 
+// 巻の副題（MADB の schema:alternateName）。同じシリーズに「上」「下」しか巻番号を持たない
+// 別作品が並ぶとき、巻番号だけでは全部同じ表示になるので足す（public/app.js と同じ）。
+function withSubtitle(base, subtitle) {
+  if (!subtitle) return base;
+  if (!base) return subtitle;
+  return base.includes(subtitle) ? base : `${base} ${subtitle}`;
+}
+
 let currentSlug = null;
 // Ordered items currently on screen + which one the detail modal is showing,
 // so swipe/navigation can step to the neighbouring book.
@@ -325,7 +333,7 @@ async function loadBookMeta(it, seq) {
   }
   setMetaRow("dPublisherRow", "dPublisher", data.publisher || "");
   setMetaRow("dPubdateRow", "dPubdate", data.pubdate || "");
-  setMetaRow("dVolRow", "dVol", data.volume_number || "");
+  setMetaRow("dVolRow", "dVol", withSubtitle(data.volume_number || "", data.subtitle));
   setMetaRow("dLabelRow", "dLabel", data.label || "");
   // シリーズの巻一覧へ。巻一覧はトップ（編集画面）の検索モーダルにしか無いので、
   // そこを ?series= 付きで開く（public/app.js openSeriesFromUrl）。

@@ -3,7 +3,7 @@ import { badRequest, json } from "./util";
 import { rakutenResolveFull, RakutenBookFull } from "./rakuten";
 import { redactedCoverUrls } from "./covers";
 import { resolveBooks } from "./listItems";
-import { isValidIsbn, toIsbn13 } from "./util";
+import { isValidIsbn, toIsbn13, workKeySql } from "./util";
 import { attributeTitles } from "./groups";
 import { resolveMergeTarget } from "./merge";
 
@@ -127,28 +127,32 @@ export async function handleBook(request: Request, env: Env): Promise<Response> 
 interface BookMaster {
   label: string;
   volume_number: string;
-  editions: string[]; // 同じシリーズ・同じ巻番号の別 ISBN（通常版/特装版/重版など）
+  subtitle: string; // 巻の副題（「獄門塾殺人事件」）。巻番号が「上」「下」だけの作品の区別になる
+  editions: string[]; // 同じシリーズ・同じ巻番号・同じ作品の別 ISBN（通常版/特装版/重版など）
 }
 
 async function bookMaster(env: Env, isbn: string): Promise<BookMaster> {
   const isbn13 = toIsbn13(isbn);
   const v = await env.DB.prepare(
-    `SELECT series_id, volume_number, label FROM volumes WHERE isbn = ? LIMIT 1`
+    `SELECT series_id, volume_number, subtitle, label FROM volumes WHERE isbn = ? LIMIT 1`
   )
     .bind(isbn13)
-    .first<{ series_id: string | null; volume_number: string | null; label: string | null }>();
-  if (!v) return { label: "", volume_number: "", editions: [] };
+    .first<{ series_id: string | null; volume_number: string | null; subtitle: string | null; label: string | null }>();
+  if (!v) return { label: "", volume_number: "", subtitle: "", editions: [] };
   let editions: string[] = [];
   if (v.series_id && v.volume_number) {
     const res = await env.DB.prepare(
-      `SELECT isbn FROM volumes WHERE series_id = ? AND volume_number = ? AND isbn != ?
-        ORDER BY pubdate, isbn LIMIT 10`
+      // 同じ巻番号でも別の作品のことがある（金田一少年の事件簿の「下」は事件ごとに 5 冊）ので、
+      // 書名＋副題（util.ts workKeySql）まで一致するものだけを「同じ巻の別 ISBN」とする。
+      `SELECT isbn FROM volumes v WHERE v.series_id = ? AND v.volume_number = ? AND v.isbn != ?
+         AND ${workKeySql("v.")} = (SELECT ${workKeySql("w.")} FROM volumes w WHERE w.isbn = ?)
+        ORDER BY v.pubdate, v.isbn LIMIT 10`
     )
-      .bind(v.series_id, v.volume_number, isbn13)
+      .bind(v.series_id, v.volume_number, isbn13, isbn13)
       .all<{ isbn: string }>();
     editions = (res.results ?? []).map((r) => r.isbn);
   }
-  return { label: v.label || "", volume_number: v.volume_number || "", editions };
+  return { label: v.label || "", volume_number: v.volume_number || "", subtitle: v.subtitle || "", editions };
 }
 
 async function bookSeries(env: Env, isbn: string): Promise<{ id: string; title: string } | null> {

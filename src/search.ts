@@ -1,5 +1,5 @@
 import { Env } from "./types";
-import { badRequest, json, normTitle, searchKey, hiraToKata, vuFold, escapeLikeClamped, LIKE_MAX_BYTES, toIsbn13 } from "./util";
+import { badRequest, json, normTitle, searchKey, hiraToKata, vuFold, escapeLikeClamped, LIKE_MAX_BYTES, toIsbn13, workKeySql, titleKeySql } from "./util";
 import { readCachedCovers } from "./covers";
 import { liveSearchByKeyword, SupplementVolume } from "./madbLive";
 import { rakutenComicByIsbn } from "./rakuten";
@@ -53,9 +53,21 @@ interface SeriesRow {
 const MEMBERS = `(SELECT s.id UNION ALL SELECT m.absorbed_id FROM series_merge m WHERE m.target_id = s.id)`;
 // 巻数（カードの「全N巻」で、キーワード検索の並び順のキーでもある）。キーワード検索の 1 段目は
 // これだけを計算して並べるので、SERIES_COLS と同じ式を共有する（s.id だけを参照する）。
-const VOL_COUNT = `((SELECT COUNT(DISTINCT CASE WHEN v.volume_number IS NULL OR v.volume_number = ''
-                   THEN v.isbn ELSE v.volume_number END)
-           FROM volumes v WHERE v.series_id IN ${MEMBERS})
+// 数え方は巻一覧のまとめ方（src/series.ts addToGroup）に合わせる: 巻番号だけで数えると
+// 「上」「下」しか巻番号を持たない別作品（金田一少年の事件簿の事件ごとの上下巻）が 1 冊に
+// 潰れて「全2巻」になり、逆に副題だけで数えると、同じ巻の刷りによって副題が付いたり付かなかったり
+// するシリーズ（七つの大罪の「the seven deadly sins」）が二重に数えられる。そこで
+// （巻番号, 副題抜きの書名）ごとに、副題の種類数（0 なら 1）を足す。副題を書名に畳み込んだ行
+// （「世界一初恋 : 小野寺律の場合」）と分けて持つ行が同じ巻に同居するときだけ、巻一覧より 1 多く
+// 数える（書名が違うので別のまとまりになる）。実測で 11 万シリーズ中 5 件。
+const VOL_COUNT = `((SELECT COALESCE(SUM(MAX(nsub, 1)), 0) FROM (
+             SELECT COUNT(DISTINCT CASE WHEN COALESCE(v.subtitle, '') <> ''
+                                        THEN ${workKeySql("v.")} END) AS nsub
+               FROM volumes v WHERE v.series_id IN ${MEMBERS}
+              GROUP BY CASE WHEN COALESCE(v.volume_number, '') = '' THEN 'i' || v.isbn
+                            ELSE 'n' || v.volume_number END,
+                       CASE WHEN COALESCE(v.volume_number, '') = '' THEN ''
+                            ELSE ${titleKeySql("v.")} END))
          + COALESCE((SELECT json_array_length(sp.volumes_json)
                       FROM series_supplement sp WHERE sp.series_id = s.id), 0)
          + COALESCE((SELECT COUNT(*) FROM series_correction sc
@@ -463,7 +475,7 @@ async function discoverUnlinked(
   // Cap the scan so a prolific unlinked author can't pull unbounded rows; a single
   // work rarely exceeds ~100 volumes, so 2000 comfortably covers the cards we keep.
   const res = await env.DB.prepare(
-    `SELECT isbn, volume_number, vol_sort, title, creator, creators, publisher, label, pubdate
+    `SELECT isbn, volume_number, vol_sort, title, subtitle, creator, creators, publisher, label, pubdate
      FROM volumes
      WHERE series_id IS NULL
        AND (${norm("title")} LIKE ? ESCAPE '\\' OR COALESCE(title_search, ${norm("title")}) LIKE ? ESCAPE '\\'

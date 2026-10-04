@@ -9,6 +9,7 @@ import {
   plainVolumeNumber,
   unifyVolumeLabel,
   volumeLabelTemplate,
+  workKey,
 } from "./util";
 import { readCachedCovers } from "./covers";
 
@@ -71,6 +72,7 @@ export interface GroupRow {
   volume_number: string | null;
   vol_sort: number | null;
   title: string;
+  subtitle?: string | null; // 巻の副題（db/add-volume-subtitle.sql）
   creator: string | null;
   creators?: string | null; // display credit line (see db/add-creators.sql); not every query selects it
   publisher: string | null;
@@ -84,6 +86,7 @@ export interface GroupVolume {
   volume_number: string;
   vol_sort: number;
   title: string;
+  subtitle: string; // 巻の副題。同じ巻番号の別作品はこれでしか見分けられない
   author: string;
   creators: string; // 役割付きの全作者（巻一覧の表示用）。無ければ author と同じ
   publisher: string;
@@ -107,12 +110,28 @@ export interface UnlinkedGroup {
 /** 同じグループの行（groupKey が同じ）を巻番号単位にまとめてグループにする。
  *  `rows` は全て同じグループのもの。cover は呼び出し側で読んだキャッシュから引く。 */
 export function buildGroup(rows: GroupRow[], covers: Map<string, string>): UnlinkedGroup {
-  const vols = new Map<string, { rep: GroupRow; isbns: string[] }>();
+  // まとめる単位は巻番号＋作品（書名＋副題）。巻番号だけで畳むと「上」「下」しか巻番号を
+  // 持たない別作品が 1 冊に潰れる。副題の無い行はどの副題とも矛盾しない行として同じ書名の巻に
+  // 寄せる（同じ巻でも刷りによって副題が付かないことがある）。src/series.ts addToGroup と同じ規則。
+  const vols = new Map<string, { rep: GroupRow; isbns: string[]; subtitle: string; titleKey: string; work: string }[]>();
   for (const v of rows) {
-    const key = v.volume_number ? `n:${v.volume_number}` : `i:${v.isbn}`;
-    const slot = vols.get(key);
+    const bucket = v.volume_number ? `n:${v.volume_number}` : `i:${v.isbn}`;
+    let list = vols.get(bucket);
+    if (!list) vols.set(bucket, (list = []));
+    const sub = (v.subtitle ?? "").trim();
+    const titleKey = workKey(v.title, "");
+    const work = workKey(v.title, sub);
+    let slot = list.find((x) => x.work === work);
+    if (!slot && !sub) slot = list.find((x) => x.titleKey === titleKey);
+    if (!slot && sub) {
+      slot = list.find((x) => x.titleKey === titleKey && !x.subtitle);
+      if (slot) {
+        slot.subtitle = sub;
+        slot.work = work;
+      }
+    }
     if (slot) slot.isbns.push(v.isbn);
-    else vols.set(key, { rep: v, isbns: [v.isbn] });
+    else list.push({ rep: v, isbns: [v.isbn], subtitle: sub, titleKey, work });
   }
   const first = rows[0];
   const creator = first?.creator ?? "";
@@ -125,12 +144,14 @@ export function buildGroup(rows: GroupRow[], covers: Map<string, string>): Unlin
     return "";
   };
   const volumes: GroupVolume[] = [...vols.values()]
-    .map(({ rep, isbns }) => ({
+    .flat()
+    .map(({ rep, isbns, subtitle }) => ({
       isbn: rep.isbn,
       isbns,
       volume_number: rep.volume_number ?? "",
       vol_sort: rep.vol_sort ?? 0,
       title: rep.title,
+      subtitle,
       author: rep.creator ?? creator,
       creators: rep.creators || rep.creator || creators,
       publisher: rep.publisher ?? "",
@@ -168,7 +189,7 @@ export async function loadGroup(env: Env, isbn: string): Promise<UnlinkedGroup |
   if (!seed) return null;
   const key = groupKey(seed);
   const res = await env.DB.prepare(
-    `SELECT isbn, volume_number, vol_sort, title, creator, creators, publisher, label, pubdate
+    `SELECT isbn, volume_number, vol_sort, title, subtitle, creator, creators, publisher, label, pubdate
        FROM volumes
       WHERE series_id IS NULL
         AND REPLACE(REPLACE(title, ' ', ''), '　', '') LIKE ? ESCAPE '\\'
@@ -194,7 +215,7 @@ export async function unattributedGroupsFor(env: Env, name: string): Promise<Unl
   const base = baseTitle(name);
   if (!base) return [];
   const res = await env.DB.prepare(
-    `SELECT isbn, volume_number, vol_sort, title, creator, creators, publisher, label, pubdate
+    `SELECT isbn, volume_number, vol_sort, title, subtitle, creator, creators, publisher, label, pubdate
        FROM volumes
       WHERE series_id IS NULL
         AND REPLACE(REPLACE(LOWER(title), ' ', ''), '　', '') LIKE ? ESCAPE '\\'
@@ -370,6 +391,7 @@ async function withGroupCorrections(env: Env, g: UnlinkedGroup): Promise<GroupVo
       volume_number: unifyVolumeLabel(template, c.volume_number),
       vol_sort: c.vol_sort,
       title: g.title,
+      subtitle: "", // 利用者のデータ修正に副題の欄は無い
       author: g.creator,
       creators: g.creators,
       publisher: "",

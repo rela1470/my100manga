@@ -57,7 +57,7 @@ const SERIES_COLS =
   "is_adult INTEGER NOT NULL DEFAULT 0";
 const VOLUMES_COLS =
   "isbn TEXT PRIMARY KEY, series_id TEXT, volume_number TEXT, vol_sort INTEGER, " +
-  "title TEXT NOT NULL, title_search TEXT, creator TEXT, creators TEXT, creators_norm TEXT, publisher TEXT, label TEXT, pubdate TEXT, " +
+  "title TEXT NOT NULL, subtitle TEXT, title_search TEXT, creator TEXT, creators TEXT, creators_norm TEXT, publisher TEXT, label TEXT, pubdate TEXT, " +
   "is_adult INTEGER NOT NULL DEFAULT 0";
 
 // 成年向けとして取り込みから外した巻（db/schema.sql adult_volumes と揃える）。title_norm は
@@ -253,6 +253,20 @@ function kanaReadings(v) {
     }
   }
   return out;
+}
+
+// 巻の副題（schema:alternateName の、読み仮名でない方）。MADB は「金田一少年の事件簿」のように
+// schema:name をシリーズ名の繰り返しにして、事件名「獄門塾殺人事件」を alternateName に分けて持つ。
+// これが無いと、巻番号が「上」「下」しか無い別作品が同じ巻として 1 冊に畳まれる（src/util.ts
+// workKey）。読み（@language: "ja-hrkt"）は落とし、1 冊に複数ある（2 話収録の合本）ときは
+// 「：」で繋ぐ — 書名側に「書名 : 副題 : 副題」と畳み込んである別の行と workKey で一致させるため。
+function subtitle(v) {
+  const arr = Array.isArray(v) ? v : [v];
+  const all = [...new Set(arr.filter((x) => typeof x === "string").map((x) => x.trim()).filter(Boolean))];
+  // 同じ副題を巻番号付きでも持っている行がある（「雪霊伝説殺人事件」と「雪霊伝説殺人事件 上」）。
+  // 他の値を丸ごと含む値は重複なので落とし、短い方（作品名そのもの）を残す。
+  const kept = all.filter((x) => !all.some((y) => y !== x && x.includes(y)));
+  return kept.join("：");
 }
 
 function cid(node, prop) {
@@ -698,7 +712,7 @@ async function main() {
   const volumesWriter = new SqlChunkWriter(
     a.out,
     "volumes_new",
-    ["isbn", "series_id", "volume_number", "vol_sort", "title", "title_search", "creator", "creators", "creators_norm", "publisher", "label", "pubdate", "is_adult"],
+    ["isbn", "series_id", "volume_number", "vol_sort", "title", "subtitle", "title_search", "creator", "creators", "creators_norm", "publisher", "label", "pubdate", "is_adult"],
     a.chunk
   );
   const seen = new Set();
@@ -740,6 +754,7 @@ async function main() {
       sqlStr(vnum),
       sqlInt(volSort(vnum)),
       sqlStr(title),
+      sqlStr(subtitle(node["schema:alternateName"])),
       sqlStr(searchKey(title)),
       sqlStr(cleanCreator(pickCreator(node["schema:creator"]))),
       sqlStr(creatorsDisplay(node["schema:creator"])),

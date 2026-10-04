@@ -1,5 +1,5 @@
 import { Env, ListItem, StoredListItem } from "./types";
-import { toIsbn13, unifyVolumeLabel, volumeLabelTemplate } from "./util";
+import { toIsbn13, unifyVolumeLabel, volumeLabelTemplate, workKeySql } from "./util";
 import { isCustomSeriesId } from "./groups";
 
 // One round-trip for any number of ISBNs. They go in as a single JSON-array parameter
@@ -24,16 +24,16 @@ import { isCustomSeriesId } from "./groups";
 const RESOLVE_SQL = `
 WITH want(isbn) AS (SELECT DISTINCT value FROM json_each(?1)),
 src AS (
-  SELECT w.isbn, v.series_id, v.volume_number, v.vol_sort, v.title, v.creator AS author,
+  SELECT w.isbn, v.series_id, v.volume_number, v.vol_sort, v.title, v.subtitle, v.creator AS author,
          NULL AS sibs, 1 AS pri
     FROM want w JOIN volumes v ON v.isbn = w.isbn
   UNION ALL
-  SELECT w.isbn, c.series_id, c.volume_number, c.vol_sort, COALESCE(g.title, ''), g.creator, NULL, 2
+  SELECT w.isbn, c.series_id, c.volume_number, c.vol_sort, COALESCE(g.title, ''), NULL, g.creator, NULL, 2
     FROM want w CROSS JOIN series_correction c ON c.isbn = w.isbn
     LEFT JOIN volumes g ON c.series_id GLOB 'G*' AND g.isbn = substr(c.series_id, 2)
   UNION ALL
   SELECT w.isbn, sp.series_id, json_extract(j.value, '$.volume_number'),
-         json_extract(j.value, '$.vol_sort'), json_extract(j.value, '$.title'),
+         json_extract(j.value, '$.vol_sort'), json_extract(j.value, '$.title'), NULL,
          json_extract(j.value, '$.author'), json_extract(j.value, '$.isbns'), 3
     FROM want w
     CROSS JOIN series_supplement_isbn si ON si.isbn = w.isbn
@@ -43,7 +43,7 @@ src AS (
    WHERE NOT EXISTS (SELECT 1 FROM volumes v WHERE v.isbn = w.isbn)
      AND NOT EXISTS (SELECT 1 FROM series_correction c WHERE c.isbn = w.isbn)
   UNION ALL
-  SELECT w.isbn, NULL, lv.volume_number, 0, lv.title, lv.author, NULL, 4
+  SELECT w.isbn, NULL, lv.volume_number, 0, lv.title, NULL, lv.author, NULL, 4
     FROM want w JOIN live_volumes lv ON lv.isbn = w.isbn
 ),
 best AS (
@@ -75,7 +75,7 @@ labs AS (
    WHERE v.volume_number IS NOT NULL
    GROUP BY serm.series_id
 )
-SELECT w.isbn, b.isbn AS found, b.tid AS series_id, b.volume_number, b.title, b.author,
+SELECT w.isbn, b.isbn AS found, b.tid AS series_id, b.volume_number, b.title, b.subtitle, b.author,
        vto.title AS title_override, sno.name AS series_override,
        canon.title AS canonical, labs.labels, s.creator AS series_creator, s.name AS series_name,
        bm.authors AS meta_authors,
@@ -83,7 +83,8 @@ SELECT w.isbn, b.isbn AS found, b.tid AS series_id, b.volume_number, b.title, b.
          NULLIF(cv.cover_url, ''),
          (SELECT cv2.cover_url FROM volumes v2 JOIN covers cv2 ON cv2.isbn = v2.isbn
            WHERE b.pri = 1 AND v2.series_id = b.series_id AND v2.vol_sort = b.vol_sort
-             AND v2.volume_number = b.volume_number AND cv2.cover_url <> ''
+             AND v2.volume_number = b.volume_number AND ${workKeySql("v2.")} = ${workKeySql("b.")}
+             AND cv2.cover_url <> ''
            ORDER BY v2.pubdate, v2.isbn LIMIT 1),
          (SELECT cv3.cover_url FROM json_each(b.sibs) sb JOIN covers cv3 ON cv3.isbn = sb.value
            WHERE cv3.cover_url <> '' LIMIT 1),
@@ -105,6 +106,7 @@ interface Row {
   series_id: string | null;
   volume_number: string | null;
   title: string | null;
+  subtitle: string | null; // 巻の副題（db/add-volume-subtitle.sql）。マスタ巻以外は NULL
   author: string | null;
   title_override: string | null;
   series_override: string | null;
@@ -174,6 +176,10 @@ export async function resolveBooks(env: Env, isbns: string[]): Promise<Map<strin
       const raw = r.volume_number ?? "";
       const label = sid ? unifyVolumeLabel(template, raw) : raw;
       title = base && label ? `${base} ${label}` : base;
+      // 副題（「獄門塾殺人事件」）。同じシリーズに「上」「下」しか巻番号を持たない別作品が
+      // 並ぶとき、書名＋巻番号だけでは同じ表示になってしまうので足す（src/series.ts と同じ）。
+      // 書名側に畳み込み済み（「世界一初恋 : 小野寺律の場合」）なら足さない。
+      if (r.subtitle && !base.includes(r.subtitle)) title = title ? `${title} ${r.subtitle}` : r.subtitle;
       author = r.author || r.series_creator || author;
     }
     out.set(r.isbn, {

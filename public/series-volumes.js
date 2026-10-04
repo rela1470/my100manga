@@ -59,6 +59,14 @@
     if (modal) modal.classList.remove("open");
   }
 
+  // 巻の副題（MADB の schema:alternateName）。同じシリーズに「上」「下」しか巻番号を持たない
+  // 別作品が並ぶとき、巻番号だけでは全部同じ表示になるので足す（public/app.js と同じ）。
+  function withSubtitle(base, subtitle) {
+    if (!subtitle) return base;
+    if (!base) return subtitle;
+    return base.includes(subtitle) ? base : `${base} ${subtitle}`;
+  }
+
   function render(data) {
     const volumes = data.volumes || [];
     $("svTitle").textContent = data.title || "";
@@ -71,7 +79,8 @@
       const slot = document.createElement("button");
       slot.type = "button";
       slot.className = "slot view sv-slot";
-      slot.title = v.volume_number ? `${v.title}（${v.volume_number}）` : v.title;
+      const vol = withSubtitle(v.volume_number || "", v.subtitle);
+      slot.title = vol ? `${v.title}（${vol}）` : v.title;
       // 巻一覧から開いた詳細では「巻一覧を開く」を出さない（開いているのがそれなので）。
       slot.addEventListener("click", () => window.openBookDetail(v, { noSeries: true }));
 
@@ -81,9 +90,9 @@
       meta.className = "meta";
       const t = document.createElement("div");
       t.className = "t";
-      // 作品名は見出しに出ているので、ここは巻番号。独自シリーズのように巻番号が無く書名そのものが
-      // 巻の区別になっているもの（ルフィ / ゾロ …）は書名を出す。
-      t.textContent = v.volume_number || v.title;
+      // 作品名は見出しに出ているので、ここは巻番号（＋副題）。独自シリーズのように巻番号が無く
+      // 書名そのものが巻の区別になっているもの（ルフィ / ゾロ …）は書名を出す。
+      t.textContent = vol || v.title;
       meta.appendChild(t);
       if (v.pubdate) {
         const c = document.createElement("div");

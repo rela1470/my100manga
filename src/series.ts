@@ -9,6 +9,7 @@ import {
   volumeLabelTemplate,
   plainVolumeNumber,
   unifyVolumeLabel,
+  workKey,
 } from "./util";
 import { readCachedCovers, firstCover } from "./covers";
 import { edgeCacheKey, purgeEdgeCache, withEdgeCache } from "./edgeCache";
@@ -30,6 +31,7 @@ interface VolumeRow {
   volume_number: string | null;
   vol_sort: number | null;
   title: string;
+  subtitle?: string | null; // 巻の副題（db/add-volume-subtitle.sql）。補完・修正の巻には無い
   creator: string | null;
   creators?: string | null; // display credit line (see db/add-creators.sql)
   publisher: string | null;
@@ -43,6 +45,7 @@ interface OutVolume {
   volume_number: string;
   vol_sort: number;
   title: string;
+  subtitle: string; // 巻の副題（「獄門塾殺人事件」）。同じ巻番号の別作品はこれでしか見分けられない
   author: string;
   creators: string; // 役割付きの全作者（巻一覧の表示用）。無ければ author と同じ
   publisher: string;
@@ -116,7 +119,7 @@ export async function getSeriesVolumes(
   const displayName = meta.override_name || meta.name;
 
   const res = await env.DB.prepare(
-    `SELECT isbn, volume_number, vol_sort, title, creator, creators, publisher, label, pubdate
+    `SELECT isbn, volume_number, vol_sort, title, subtitle, creator, creators, publisher, label, pubdate
      FROM volumes WHERE series_id IN (${inMembers}) ORDER BY vol_sort, pubdate, isbn`
   )
     .bind(...members)
@@ -127,21 +130,50 @@ export async function getSeriesVolumes(
   // works are never collapsed) so each volume appears once. Keep every sibling
   // ISBN so we can pick whichever one has a cover. Plain labels key on their number,
   // so one volume spelled "volume 84" / "Volume84" (名探偵コナン) still groups.
-  // 独自シリーズは別々の本を束ねたものなので、同じ巻番号でも書名が違えば別の巻にする。
+  // 巻番号だけでは足りない: 同じシリーズに「上」「下」しか巻番号を持たない別作品が並ぶことが
+  // あり（金田一少年の事件簿は事件ごとに上下巻、まぼろし探偵は各編が上中下）、巻番号だけで
+  // 畳むと 1 冊を残して巻一覧から消える。作品の区別は書名＋副題（volumes.subtitle、MADB の
+  // schema:alternateName）。独自シリーズも元から書名で分けているので同じ扱いでよい。
   const custom = isCustomSeriesId(targetId);
-  const groupKey = (v: VolumeRow): string => {
+  const volBucket = (v: VolumeRow): string => {
     if (!v.volume_number) return `i:${v.isbn}`;
     const p = plainVolumeNumber(v.volume_number);
-    const k = p !== null ? `p:${p}` : `n:${v.volume_number}`;
-    return custom ? `${normTitle(v.title)}|${k}` : k;
+    return p !== null ? `p:${p}` : `n:${v.volume_number}`;
   };
-  const groups = new Map<string, { rep: VolumeRow; isbns: string[] }>();
-  for (const v of res.results ?? []) {
-    const key = groupKey(v);
-    const g = groups.get(key);
-    if (g) g.isbns.push(v.isbn);
-    else groups.set(key, { rep: v, isbns: [v.isbn] });
+  interface VolGroup {
+    rep: VolumeRow;
+    isbns: string[];
+    subtitle: string;
+    titleKey: string; // 書名だけの正規形
+    work: string; // 書名＋副題の正規形（util.ts workKey）
   }
+  // 同じ巻番号の中で「同じ本か」を決める。書名＋副題が一致すれば同じ本（通常版/重版/特装版）。
+  // 副題が無い行はどの副題とも矛盾しない行として扱い、書名が同じ既存の巻に寄せる: MADB は
+  // 同じ巻の刷りによって副題を落としたり、作品ごとの副題ではなくシリーズの別名を
+  // alternateName に入れたりする（七つの大罪の「the seven deadly sins」は一部の刷りだけ）。
+  // これを別の巻にすると、同じ巻が 2 行に割れてしまう。
+  const buckets = new Map<string, VolGroup[]>();
+  const addToGroup = (v: VolumeRow) => {
+    const bucket = volBucket(v);
+    let list = buckets.get(bucket);
+    if (!list) buckets.set(bucket, (list = []));
+    const sub = (v.subtitle ?? "").trim();
+    const titleKey = workKey(v.title, "");
+    const work = workKey(v.title, sub);
+    let g = list.find((x) => x.work === work);
+    if (!g && !sub) g = list.find((x) => x.titleKey === titleKey);
+    if (!g && sub) {
+      // 先に入った副題無しの行が、この行の副題で正体の分かる巻だった場合。
+      g = list.find((x) => x.titleKey === titleKey && !x.subtitle);
+      if (g) {
+        g.subtitle = sub;
+        g.work = work;
+      }
+    }
+    if (g) g.isbns.push(v.isbn);
+    else list.push({ rep: v, isbns: [v.isbn], subtitle: sub, titleKey, work });
+  };
+  for (const v of res.results ?? []) addToGroup(v);
 
   // Fold in volumes that belong to this work but lost their schema:isPartOf in the dump
   // (series_id NULL). They carry the identical schema:name, so match on exact title —
@@ -152,12 +184,7 @@ export async function getSeriesVolumes(
   // master creator would drop one half. Duplicate volume_numbers just collapse into
   // sibling ISBNs of the volume already present, so no volume is double-counted.
   const foldUnlinked = (rows: VolumeRow[]) => {
-    for (const v of rows) {
-      const key = groupKey(v);
-      const g = groups.get(key);
-      if (g) g.isbns.push(v.isbn);
-      else groups.set(key, { rep: v, isbns: [v.isbn] });
-    }
+    for (const v of rows) addToGroup(v);
   };
 
   // 結合済みなら member ごとに名前・レーベルが違う（例: C451211「One piece」/ C336558
@@ -181,7 +208,7 @@ export async function getSeriesVolumes(
   for (const [name, labels] of nameLabels) {
     if (await isSoleSeriesForName(env, members, name)) {
       const unlinked = await env.DB.prepare(
-        `SELECT isbn, volume_number, vol_sort, title, creator, creators, publisher, label, pubdate
+        `SELECT isbn, volume_number, vol_sort, title, subtitle, creator, creators, publisher, label, pubdate
          FROM volumes WHERE series_id IS NULL AND title = ? ORDER BY vol_sort, pubdate, isbn`
       )
         .bind(name)
@@ -192,7 +219,7 @@ export async function getSeriesVolumes(
     for (const label of labels) {
       if (!(await isSoleSeriesForNameLabel(env, members, name, label))) continue;
       const unlinked = await env.DB.prepare(
-        `SELECT isbn, volume_number, vol_sort, title, creator, creators, publisher, label, pubdate
+        `SELECT isbn, volume_number, vol_sort, title, subtitle, creator, creators, publisher, label, pubdate
          FROM volumes WHERE series_id IS NULL AND title = ? AND label = ?
          ORDER BY vol_sort, pubdate, isbn`
       )
@@ -219,7 +246,7 @@ export async function getSeriesVolumes(
   for (const base of bases) {
     if (!(await isSoleSeriesForBase(env, members, base))) continue;
     const variants = await env.DB.prepare(
-      `SELECT isbn, volume_number, vol_sort, title, creator, creators, publisher, label, pubdate
+      `SELECT isbn, volume_number, vol_sort, title, subtitle, creator, creators, publisher, label, pubdate
        FROM volumes
        WHERE series_id IS NULL
          AND REPLACE(REPLACE(LOWER(title), ' ', ''), '　', '') LIKE ? ESCAPE '\\'
@@ -236,6 +263,7 @@ export async function getSeriesVolumes(
     volume_number: string;
     vol_sort: number;
     title: string;
+    subtitle: string;
     author: string;
     creators?: string; // 補完（SPARQL）の巻には無い
     publisher: string;
@@ -244,12 +272,13 @@ export async function getSeriesVolumes(
     correction: boolean;
   }
 
-  const entries: Entry[] = [...groups.values()].map(({ rep, isbns }) => ({
+  const entries: Entry[] = [...buckets.values()].flat().map(({ rep, isbns, subtitle }) => ({
     isbn: rep.isbn,
     isbns,
     volume_number: rep.volume_number ?? "",
     vol_sort: rep.vol_sort ?? 0,
     title: rep.title,
+    subtitle,
     author: rep.creator ?? meta.creator ?? "",
     creators: rep.creators || (rep.creator ? "" : meta.creators) || "",
     publisher: rep.publisher ?? "",
@@ -319,6 +348,7 @@ export async function getSeriesVolumes(
       volume_number: s.volume_number,
       vol_sort: s.vol_sort,
       title: s.title,
+      subtitle: "", // 補完（SPARQL）は副題を引いていない
       author: s.author,
       publisher: s.publisher,
       label: "",
@@ -369,6 +399,7 @@ export async function getSeriesVolumes(
       volume_number: c.volume_number,
       vol_sort: c.vol_sort,
       title: displayName,
+      subtitle: "", // 利用者のデータ修正に副題の欄は無い
       author: meta.creator ?? "",
       creators: meta.creators ?? "",
       publisher: "",
@@ -435,7 +466,13 @@ export async function getSeriesVolumes(
       if (ov) return ov;
     }
     // 独自シリーズの巻は書名そのものが本の区別（ルフィ / ゾロ …）なので揃えない。
-    return custom || !e.volume_number ? e.title : seriesTitle || e.title;
+    if (custom || !e.volume_number) return e.title;
+    // 揃えるのは、その巻の書名が最多タイトルの表記ゆれ（「ONE PIECE = ワンピース」と
+    // 「ONE PIECE」、「世界一初恋 : 小野寺律の場合」と「世界一初恋」）のときだけ。MADB の
+    // シリーズには作品ごとに別の書名を持つ巻が並ぶことがあり（楳図かずおこわい本の 虫 / 影 /
+    // 闇 …、日帰りクエストの各話の前後編）、それを揃えると全部同じ名前になって見分けが付かない。
+    const variant = !canonicalTitle || baseTitle(e.title) === baseTitle(canonicalTitle);
+    return variant ? seriesTitle || e.title : e.title;
   };
 
   const volumes: OutVolume[] = shown.map((e) => ({
@@ -444,6 +481,7 @@ export async function getSeriesVolumes(
     volume_number: unifyVolumeLabel(labelTemplate, e.volume_number),
     vol_sort: e.vol_sort,
     title: titleFor(e),
+    subtitle: e.subtitle,
     author: e.author,
     creators: e.creators || e.author,
     publisher: e.publisher,

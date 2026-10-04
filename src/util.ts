@@ -38,6 +38,32 @@ export function vuFold(s: string): string {
   );
 }
 
+/** 同じシリーズの同じ巻番号に並んだ行が「同じ本か」を見分けるキー。MADB は巻の副題を
+ *  schema:alternateName に分けて持つ行（書名「金田一少年の事件簿」＋副題「獄門塾殺人事件」）と、
+ *  書名に「書名 : 副題」と畳み込んだ行（「世界一初恋 : 小野寺律の場合」）が混在するので、
+ *  書名と副題を繋いでから区切りのコロンを落として比べる。これをしないと、巻番号が「上」「下」
+ *  しか無い別作品（金田一少年の事件簿の各事件、まぼろし探偵の各編）が 1 冊に畳まれて巻一覧から
+ *  消える。SQL 版は src/search.ts の WORK_KEY_SQL。 */
+export function workKey(title: string, subtitle?: string | null): string {
+  return normTitle(`${title}${subtitle ?? ""}`).replace(/[:：]/g, "");
+}
+
+/** workKey の SQL 版（volumes の列に対して使う。`p` は列の接頭辞、例 "v."）。SQLite の LOWER は
+ *  ASCII しか落とさないので全角英字では TS 版とずれるが、同じ表の行どうしを比べる用途なので
+ *  問題にならない（既存の creatorsMatchCol も同じ近似）。 */
+export function workKeySql(p: string): string {
+  return sqlFold(`${p}title || COALESCE(${p}subtitle, '')`);
+}
+
+/** workKey(title, "") の SQL 版 — 副題を抜いた書名だけの正規形。 */
+export function titleKeySql(p: string): string {
+  return sqlFold(`${p}title`);
+}
+
+function sqlFold(expr: string): string {
+  return `REPLACE(REPLACE(REPLACE(REPLACE(LOWER(${expr}), ' ', ''), '　', ''), ':', ''), '：', '')`;
+}
+
 /** Escape LIKE wildcards so a value containing % or _ matches literally (ESCAPE '\'). */
 export function escapeLike(s: string): string {
   return s.replace(/[\\%_]/g, (m) => "\\" + m);

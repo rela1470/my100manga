@@ -23,6 +23,12 @@ import { resolveUnit } from "./merge";
 // 改変の明示を出す。/terms の無断複製の禁止からもこの表の内容を適用除外にしてある。
 
 const META_JSON_KEY = "circulation_ranking_json";
+// materialize した集計の形（CirculationEntry / CirculationPayload）のバージョン。**この形を
+// 変えたら必ず上げること**。TTL で作り直さない作りなので、上げないと古い形の JSON を返し続ける
+// （管理画面で再集計するまで気付けない）。上げると次のアクセスで作り直す。
+//   1: 初版
+//   2: cover_isbn（表紙が無いときだけ入る）を isbn（常に寄せ先の最新巻）に変更
+const PAYLOAD_VERSION = 2;
 const CHUNK = 90; // D1 の bind 上限よけ（salesRanking と同じ）
 const META_SOURCE_KEY = "circulation_source";
 
@@ -37,7 +43,9 @@ export interface CirculationEntry {
   series_id: string | null; // 巻一覧を開く先（C-id / U-id / G-id）。寄せ先が無ければ null
   search_q: string; // 寄せ先が無いときの検索語。寄せ先があれば ""
   cover_url: string; // 寄せ先の最新巻の表紙。キャッシュに無ければ ""
-  cover_isbn: string; // cover_url が "" のとき /api/covers で引く巻
+  // 寄せ先の最新巻。本の詳細（public/book-detail.js）を開くのと、cover_url が "" のときに
+  // /api/covers で表紙を引くのに使う。寄せ先が無ければ ""（クリックは検索へ落ちる）。
+  isbn: string;
 }
 
 /** 取り込み元（db/circulation-data.sql が meta に入れる）。表示の出典表記に使う。 */
@@ -171,7 +179,7 @@ export async function computeCirculation(env: Env): Promise<CirculationPayload> 
       series_id: id,
       search_q: id ? "" : headWord(row.title_ja).normalize("NFKC"),
       cover_url: cover?.url ?? "",
-      cover_isbn: cover?.url ? "" : (cover?.isbn ?? ""),
+      isbn: cover?.isbn ?? "",
     };
   });
 
@@ -182,7 +190,7 @@ async function storePayload(env: Env, payload: CirculationPayload): Promise<void
   await env.DB.prepare(
     `INSERT INTO meta (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value`
   )
-    .bind(META_JSON_KEY, JSON.stringify(payload))
+    .bind(META_JSON_KEY, JSON.stringify({ ...payload, v: PAYLOAD_VERSION }))
     .run();
 }
 
@@ -192,7 +200,10 @@ async function readPayload(env: Env): Promise<CirculationPayload | null> {
     .first<{ value: string }>();
   if (!row) return null;
   try {
-    return JSON.parse(row.value) as CirculationPayload;
+    const stored = JSON.parse(row.value) as CirculationPayload & { v?: number };
+    // 形が変わっていたら捨てて作り直す（バージョン無し = PAYLOAD_VERSION 1 の頃のもの）。
+    if ((stored.v ?? 1) !== PAYLOAD_VERSION) return null;
+    return stored;
   } catch {
     return null;
   }

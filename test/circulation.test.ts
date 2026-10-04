@@ -106,14 +106,33 @@ describe("発行部数ランキングの集計", () => {
 
     const payload = await computeCirculation(env);
     expect(payload.entries[0].cover_url).toBe("");
-    expect(payload.entries[0].cover_isbn).toBe(isbns[2]); // 最新巻
+    expect(payload.entries[0].isbn).toBe(isbns[2]); // 最新巻
 
     await env.DB.prepare(`INSERT INTO covers (isbn, cover_url, checked_at) VALUES (?, 'https://example.com/c.jpg', 1)`)
       .bind(isbns[2])
       .run();
     const again = await computeCirculation(env);
     expect(again.entries[0].cover_url).toBe("https://example.com/c.jpg");
-    expect(again.entries[0].cover_isbn).toBe("");
+    // 表紙がキャッシュにあっても、本の詳細を開けるよう代表の巻は返し続ける。
+    expect(again.entries[0].isbn).toBe(isbns[2]);
+  });
+
+  it("materialize 済みの集計は形が古ければ捨てて作り直す", async () => {
+    await seedSeries("C1", "テスト作品A", 1);
+    await seedCirculation([{ title: "テスト作品A", copies: 100_000_000 }]);
+    // 古い形（PAYLOAD_VERSION 1 = v 無し・isbn 無し）を meta に直接入れておく。TTL で作り直さない
+    // 作りなので、バージョンを見ていないと古い形をいつまでも返してしまう。
+    const stale = { entries: [{ rank: 1, title: "古い形", cover_isbn: "x" }], source: null, computed_at: 1 };
+    await env.DB.prepare(
+      `INSERT INTO meta (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value`
+    )
+      .bind("circulation_ranking_json", JSON.stringify(stale))
+      .run();
+
+    const res = await SELF.fetch("https://example.com/api/circulation");
+    const body = (await res.json()) as { entries: CirculationEntry[] };
+    expect(titles(body.entries)).toEqual(["テスト作品A"]);
+    expect(body.entries[0]).toHaveProperty("isbn");
   });
 
   it("GET /api/circulation は集計と出典を返す", async () => {

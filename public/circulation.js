@@ -50,8 +50,18 @@ function render() {
     slot.href = e.series_id
       ? `/?series=${encodeURIComponent(e.series_id)}&st=${encodeURIComponent(e.title)}`
       : `/?q=${encodeURIComponent(e.search_q || e.title)}`;
-    slot.dataset.coverIsbn = e.cover_url ? "" : e.cover_isbn || "";
+    slot.dataset.coverIsbn = e.cover_url ? "" : e.isbn || "";
     slot.title = `${e.title}（${copiesLabel(e.copies)}・${asOfLabel(e.as_of)}）`;
+    // タップはページに残って本の詳細（book-detail.js）を開く。Ctrl/⌘ クリック等は通常のリンク。
+    // /ranking・/sales-ranking と同じ挙動。寄せ先が無い作品は開く本が決まらないので、
+    // 従来どおり検索結果へ遷移させる。著者は Wikipedia のローマ字表記なので渡さず、
+    // /api/book が返すマスタの表記に任せる。
+    slot.addEventListener("click", (ev) => {
+      if (ev.metaKey || ev.ctrlKey || ev.shiftKey || ev.button !== 0) return;
+      if (!e.isbn) return;
+      ev.preventDefault();
+      openBookDetail({ isbn: e.isbn, title: e.title, cover_url: e.cover_url }, { seriesHref: slot.href });
+    });
 
     const num = document.createElement("span");
     num.className = "num" + (e.rank <= 3 ? ` top${e.rank}` : "");
@@ -109,10 +119,10 @@ function renderAttribution() {
   );
 }
 
-// 表紙の無い作品は、寄せ先の最新巻（cover_isbn）の表紙を /api/covers で引いて差し込む。
+// 表紙の無い作品は、寄せ先の最新巻（isbn）の表紙を /api/covers で引いて差し込む。
 async function fillMissingCovers() {
   const entries = data.entries || [];
-  const covers = await lookupCovers(entries.filter((e) => !e.cover_url && e.cover_isbn).map((e) => e.cover_isbn));
+  const covers = await lookupCovers(entries.filter((e) => !e.cover_url && e.isbn).map((e) => e.isbn));
   for (const slot of document.querySelectorAll(".rank-slot")) {
     const url = covers[slot.dataset.coverIsbn];
     const ph = slot.querySelector(".cover.placeholder");

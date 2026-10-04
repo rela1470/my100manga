@@ -1523,6 +1523,11 @@ html:has(.modal-backdrop.open) { overflow: hidden; }
 /* 検索モーダルのフッター左側。表示中の画面の「表紙を取得」を入れる（閉じるの左に左寄せ）。 */
 .search-actions { flex: 1; display: flex; align-items: center; flex-wrap: wrap; gap: 8px; min-width: 0; }
 .search-actions .cover-status { margin: 0; }
+/* R18版の検索モーダルに出る「全年齢の作品も含める」（public/app.js initAllAges）。
+   既定は成年向けだけを引くので、外せることが分かる位置（タイトルのすぐ下）に置く。 */
+.all-ages { display: flex; align-items: center; gap: 6px; margin: 2px 0 8px; font-size: 13px; color: var(--muted); cursor: pointer; }
+.all-ages[hidden] { display: none; }
+.all-ages input { margin: 0; }
 .hint { color: var(--muted); font-size: 13px; }
 /* 成年向けで追加できない ISBN を検索したときの結果欄（src/adult.ts）。「見つからない」と見分けがつくよう枠付き。 */
 .adult-block {

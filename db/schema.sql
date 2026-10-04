@@ -158,7 +158,11 @@ CREATE TABLE IF NOT EXISTS series (
   creators_norm  TEXT,           -- every credited name, normalized and "|"-joined (search only)
   publisher      TEXT,
   label          TEXT,           -- schema:brand (レーベル)
-  num_items      INTEGER         -- schema:numberOfItems
+  num_items      INTEGER,        -- schema:numberOfItems
+  -- 成年向けの巻を 1 冊でも持つシリーズ。R18版 (SITE_VARIANT="adult") の検索が既定でこれだけを
+  -- 出し、「全年齢も含める」で外す (src/site.ts adultOnly, src/search.ts)。本家の DB には成年
+  -- 向けの行が 1 行も入らない (ingest が adult_volumes へ落とす) ので常に 0。see docs/r18.md
+  is_adult       INTEGER NOT NULL DEFAULT 0
 );
 CREATE INDEX IF NOT EXISTS idx_series_name_norm ON series (name_norm);
 CREATE INDEX IF NOT EXISTS idx_series_kana_norm ON series (name_kana_norm);
@@ -180,7 +184,8 @@ CREATE TABLE IF NOT EXISTS volumes (
   creators_norm TEXT,              -- every credited name, normalized and "|"-joined (search only)
   publisher     TEXT,
   label         TEXT,
-  pubdate       TEXT
+  pubdate       TEXT,
+  is_adult      INTEGER NOT NULL DEFAULT 0  -- 成年向けの巻。series.is_adult と同じ扱い
 );
 CREATE INDEX IF NOT EXISTS idx_volumes_series ON volumes (series_id, vol_sort);
 -- シリーズ無しの巻を書名（＋レーベル）で引く巻一覧の取り込み (src/series.ts getSeriesVolumes)。

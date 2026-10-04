@@ -3,7 +3,7 @@ import { badRequest, json, normTitle, searchKey, hiraToKata, vuFold, escapeLikeC
 import { readCachedCovers } from "./covers";
 import { liveSearchByKeyword, SupplementVolume } from "./madbLive";
 import { rakutenComicByIsbn } from "./rakuten";
-import { excludeAdult } from "./site";
+import { adultOnlySearch, excludeAdult } from "./site";
 import { mergeTargetsFor } from "./merge";
 import { attributeTitles, buildGroup, groupKey, resolveGroup, GroupRow, GroupVolume, UnlinkedGroup } from "./groups";
 import { edgeCacheKey, withEdgeCache } from "./edgeCache";
@@ -125,20 +125,32 @@ export async function handleSearch(request: Request, env: Env): Promise<Response
   // ISBN 検索は索引 1 本で引けて軽く、マスタに無いときの楽天の結果（レート制限で取れなかった
   // 「無し」を含む）を固定したくないのでキャッシュしない。
   const isbn = isbnQuery(q);
+  // ISBN は 1 冊を名指しで引く操作なので、成年向けの既定の絞り込みは掛けない（R18版では
+  // どちらの巻も収録していて、ISBN を知っているなら出していい）。
   if (isbn) return searchByIsbn(env, isbn);
+
+  // R18版は既定で成年向けだけを出す（src/site.ts adultOnlySearch）。検索フォームの
+  // 「全年齢の作品も含める」が all=1 を付けてきたら外す。本家は常に false。
+  const adultOnly = adultOnlySearch(env) && url.searchParams.get("all") !== "1";
 
   // キーは正規化した検索語（normTitle: 空白除去・小文字化）と offset、それに表示データの世代
   // （src/viewSnapshot.ts）。検索の照合は全部 normTitle / searchKey 後の文字列で行うので、空白や
   // 大文字小文字だけ違う検索語は同じ結果になる。世代を混ぜてあるので、管理者が結合・名前修正を
   // したら SEARCH_CACHE_SEC を待たずに鍵が変わる（長く持たせても反映は遅れない）。
   return withEdgeCache(
-    edgeCacheKey(env, "/api/search", { q: normTitle(q), offset, e: await getViewEpoch(env) }),
+    edgeCacheKey(env, "/api/search", {
+      q: normTitle(q),
+      offset,
+      // 絞り込みの有無で結果が変わるので鍵に混ぜる（本家は常に 0 なので今までと同じ鍵）。
+      a: adultOnly ? 1 : 0,
+      e: await getViewEpoch(env),
+    }),
     SEARCH_CACHE_SEC,
-    () => searchByKeyword(env, q, offset)
+    () => searchByKeyword(env, q, offset, adultOnly)
   );
 }
 
-async function searchByKeyword(env: Env, q: string, offset: number): Promise<Response> {
+async function searchByKeyword(env: Env, q: string, offset: number, adultOnly: boolean): Promise<Response> {
   const nq = normTitle(q);
   // Clamp below the D1 LIKE byte cap; the "%|…|%" kana wrappers add up to 4 bytes.
   // The exact tier below still binds full nq (= ? has no pattern-length limit).
@@ -208,7 +220,8 @@ async function searchByKeyword(env: Env, q: string, offset: number): Promise<Res
        FROM series s
        WHERE (s.name_norm LIKE ? ESCAPE '\\' OR ${nameSearch} LIKE ? ESCAPE '\\' OR s.name_kana_norm LIKE ? ESCAPE '\\'
               OR ${creatorNorm} LIKE ? ESCAPE '\\')
-         AND EXISTS (SELECT 1 FROM volumes v WHERE v.series_id = s.id)),
+         AND EXISTS (SELECT 1 FROM volumes v WHERE v.series_id = s.id)
+         ${adultOnly ? "AND s.is_adult = 1" : ""}),
      tier AS (
        SELECT mt, COUNT(*) AS n, SUM(COUNT(*)) OVER (ORDER BY mt DESC) - COUNT(*) AS before
        FROM hit GROUP BY mt),
@@ -257,7 +270,8 @@ async function searchByKeyword(env: Env, q: string, offset: number): Promise<Res
     seriesTitles,
     existingIds,
     // Only the last page has room for them: series cards always come first.
-    hasMore ? 0 : PAGE - rows.length - mergedTargets.length
+    hasMore ? 0 : PAGE - rows.length - mergedTargets.length,
+    adultOnly
   );
   const discoveredTo = await mergeTargetsFor(env, discovered);
   const promoteIds = [
@@ -440,7 +454,8 @@ async function discoverUnlinked(
   likeS: string,
   seriesTitles: Set<string>,
   existingIds: Set<string>,
-  limit: number
+  limit: number,
+  adultOnly: boolean
 ): Promise<{ promoteIds: string[]; standalone: UnlinkedCard[] }> {
   if (limit <= 0) return { promoteIds: [], standalone: [] };
 
@@ -453,6 +468,7 @@ async function discoverUnlinked(
      WHERE series_id IS NULL
        AND (${norm("title")} LIKE ? ESCAPE '\\' OR COALESCE(title_search, ${norm("title")}) LIKE ? ESCAPE '\\'
             OR ${creatorsMatchCol("")} LIKE ? ESCAPE '\\')
+       ${adultOnly ? "AND is_adult = 1" : ""}
      ORDER BY vol_sort, pubdate, isbn
      LIMIT 2000`
   )

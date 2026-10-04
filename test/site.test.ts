@@ -113,7 +113,7 @@ describe("サイト種別", () => {
     const html = await (await SELF.fetch("https://example.com/about")).text();
     expect(html).toContain(`<html data-site="general"`);
     expect(html).toContain(
-      `window.__SITE__={"variant":"general","name":"My 100 Manga","hashtag":"my100manga","commerce":true}`
+      `window.__SITE__={"variant":"general","name":"My 100 Manga","hashtag":"my100manga","commerce":true,"adultOnlySearch":false}`
     );
   });
 });

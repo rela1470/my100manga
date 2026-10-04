@@ -9,6 +9,8 @@
 // 成年コミック（schema:contentRating / description）は取り込まない（isAdult, src/adult.ts）。
 // 落とした巻（ISBN あり）は adult_volumes に記録し、検索・追加で「成年向けは追加できない」と
 // 明示するのに使う（src/adult.ts findAdultIsbns）。
+// R18版（my100shunga, SITE_VARIANT="adult"）は成年向けも収録する上位互換なので、--include-adult
+// で同じダンプから別の出力を作る。see docs/r18.md 2 節
 //
 // Usage:
 //   node scripts/ingest.mjs --local            # apply to local D1
@@ -19,6 +21,8 @@
 //
 // Flags:
 //   --local | --remote   target D1 (default: --local)
+//   --include-adult      成年向けも本体表（volumes_new）へ入れる。R18版（--env r18 / r18dev）専用。
+//                        adult_volumes_new は空で作る（src/adult.ts が表の存在を前提にするため）
 //   --tag <tag>          release tag (default: latest)
 //   --work <dir>         working dir for downloads/unzip (default: /tmp/madb)
 //   --skip-download      reuse already-extracted metadata10{1,4}.json under work
@@ -49,10 +53,12 @@ const ID_PREFIX = "https://mediaarts-db.artmuseums.go.jp/id/";
 // tables deliberately omit indexes — they're added post-swap (see SWAP_SQL).
 const SERIES_COLS =
   "id TEXT PRIMARY KEY, name TEXT NOT NULL, name_norm TEXT NOT NULL, name_kana TEXT, " +
-  "name_kana_norm TEXT, name_search TEXT, creator TEXT, creators TEXT, creators_norm TEXT, publisher TEXT, label TEXT, num_items INTEGER";
+  "name_kana_norm TEXT, name_search TEXT, creator TEXT, creators TEXT, creators_norm TEXT, publisher TEXT, label TEXT, num_items INTEGER, " +
+  "is_adult INTEGER NOT NULL DEFAULT 0";
 const VOLUMES_COLS =
   "isbn TEXT PRIMARY KEY, series_id TEXT, volume_number TEXT, vol_sort INTEGER, " +
-  "title TEXT NOT NULL, title_search TEXT, creator TEXT, creators TEXT, creators_norm TEXT, publisher TEXT, label TEXT, pubdate TEXT";
+  "title TEXT NOT NULL, title_search TEXT, creator TEXT, creators TEXT, creators_norm TEXT, publisher TEXT, label TEXT, pubdate TEXT, " +
+  "is_adult INTEGER NOT NULL DEFAULT 0";
 
 // 成年向けとして取り込みから外した巻（db/schema.sql adult_volumes と揃える）。title_norm は
 // searchKey(title)（src/search.ts のキーワード照合と同じ正規化）。
@@ -135,6 +141,7 @@ function parseArgs(argv) {
     skipDownload: false,
     apply: true,
     env: "",
+    includeAdult: false,
   };
   for (let i = 2; i < argv.length; i++) {
     const v = argv[i];
@@ -142,6 +149,7 @@ function parseArgs(argv) {
     else if (v === "--remote") a.target = "remote";
     else if (v === "--skip-download") a.skipDownload = true;
     else if (v === "--no-apply") a.apply = false;
+    else if (v === "--include-adult") a.includeAdult = true;
     else if (v === "--tag") a.tag = argv[++i];
     else if (v === "--work") a.work = argv[++i];
     else if (v === "--out") a.out = argv[++i];
@@ -151,6 +159,18 @@ function parseArgs(argv) {
     else throw new Error(`unknown flag: ${v}`);
   }
   if (!a.out) a.out = path.join(a.work, "seed");
+  // 本家の D1 に成年向けを流し込む / R18版の D1 に成年向け抜きを流し込む、という取り違えは
+  // どちらも master の作り直しでしか戻せないので、リモートに触るときだけ env と突き合わせる。
+  // ローカル（--local）は試し取り込みの場なので縛らない。
+  if (a.target === "remote") {
+    const r18 = a.env.startsWith("r18");
+    if (a.includeAdult && !r18) {
+      throw new Error(`--include-adult は R18版の env でのみ使えます（--env r18 / r18dev）。今の --env は ${a.env || "（未指定＝本家の本番）"}`);
+    }
+    if (r18 && !a.includeAdult) {
+      throw new Error(`--env ${a.env}（R18版）への取り込みには --include-adult が要ります（R18版は成年向けも収録する）`);
+    }
+  }
   return a;
 }
 
@@ -678,7 +698,7 @@ async function main() {
   const volumesWriter = new SqlChunkWriter(
     a.out,
     "volumes_new",
-    ["isbn", "series_id", "volume_number", "vol_sort", "title", "title_search", "creator", "creators", "creators_norm", "publisher", "label", "pubdate"],
+    ["isbn", "series_id", "volume_number", "vol_sort", "title", "title_search", "creator", "creators", "creators_norm", "publisher", "label", "pubdate", "is_adult"],
     a.chunk
   );
   const seen = new Set();
@@ -698,12 +718,19 @@ async function main() {
     if (!title) return;
     seen.add(isbn); // 成年向けで落とす巻も seen に入れ、同じ ISBN の重複ノードから入り込ませない
     const seriesId = cid(node, "schema:isPartOf");
-    if (isAdult(node)) {
+    // R18版（--include-adult）は成年向けも本体表に入れる。adult_volumes は空のままにして、
+    // 「成年向けなので追加できません」を出す側（src/adult.ts findAdultIsbns）を無効にする。
+    if (isAdult(node) && !a.includeAdult) {
       adultCount++;
       if (seriesId) adultSeries.add(seriesId);
       // 検索・追加で「成年向けは追加できません」と明示するために記録する（src/adult.ts）。
       adultWriter.add([sqlStr(isbn), sqlStr(title), sqlStr(searchKey(title) || normTitle(title) || title), sqlStr(seriesNames.get(seriesId) ?? null)]);
       return;
+    }
+    const adult = isAdult(node);
+    if (adult) {
+      adultCount++;
+      if (seriesId) adultSeries.add(seriesId); // 下で series_new に印を付ける
     }
     if (seriesId) keptSeries.add(seriesId);
     const vnum = primary(node["schema:volumeNumber"]);
@@ -720,17 +747,25 @@ async function main() {
       sqlStr(firstVariant(primary(node["schema:publisher"]))),
       sqlStr(firstVariant(primary(node["schema:brand"]))),
       sqlStr(primary(node["schema:datePublished"])),
+      sqlInt(adult ? 1 : 0),
     ]);
     volCount++;
   });
   const volumeFiles = volumesWriter.finish();
   const adultFiles = adultWriter.finish();
-  log(`volumes: ${volCount} rows → ${volumeFiles.length} files (成年向け ${adultCount} 巻を除外し adult_volumes へ)`);
+  log(
+    a.includeAdult
+      ? `volumes: ${volCount} rows → ${volumeFiles.length} files (成年向け ${adultCount} 巻を含む。adult_volumes は空)`
+      : `volumes: ${volCount} rows → ${volumeFiles.length} files (成年向け ${adultCount} 巻を除外し adult_volumes へ)`
+  );
 
-  // 成年向けの巻しか持たないシリーズは series_new から消す（巻が 0 になったシリーズを検索・収録数に
-  // 残さない）。一般向けの巻も持つシリーズは残す。volumes_new の読み込み後に流す。
-  const pruneIds = [...adultSeries].filter((id) => !keptSeries.has(id));
-  const pruneFile = path.join(a.out, "series_new_prune_adult.sql");
+  // 本家: 成年向けの巻しか持たないシリーズは series_new から消す（巻が 0 になったシリーズを検索・
+  // 収録数に残さない）。一般向けの巻も持つシリーズは残す。volumes_new の読み込み後に流す。
+  // R18版 (--include-adult): 消さずに is_adult の印を付ける。検索の既定の絞り込みに使う
+  // （src/search.ts）。シリーズは巻より先に書き出し済みなので、あとから UPDATE で立てる。
+  const pruneIds = a.includeAdult ? [] : [...adultSeries].filter((id) => !keptSeries.has(id));
+  const markIds = a.includeAdult ? [...adultSeries] : [];
+  const pruneFile = path.join(a.out, a.includeAdult ? "series_new_mark_adult.sql" : "series_new_prune_adult.sql");
   const pruneStmts = [];
   // keptSeries（一般向けの巻を 1 冊でも残したシリーズ）を除いた後なので、ここで volumes_new を
   // 見直す必要はない。NOT EXISTS で volumes_new を引くと、取り込み中の volumes_new には
@@ -738,8 +773,17 @@ async function main() {
   for (let i = 0; i < pruneIds.length; i += 500) {
     pruneStmts.push(`DELETE FROM series_new WHERE id IN (${pruneIds.slice(i, i + 500).map(sqlStr).join(",")});\n`);
   }
+  for (let i = 0; i < markIds.length; i += 500) {
+    pruneStmts.push(
+      `UPDATE series_new SET is_adult = 1 WHERE id IN (${markIds.slice(i, i + 500).map(sqlStr).join(",")});\n`
+    );
+  }
   fs.writeFileSync(pruneFile, pruneStmts.join(""));
-  log(`series: 成年向けの巻だけのシリーズ ${pruneIds.length} 件を除外予定`);
+  log(
+    a.includeAdult
+      ? `series: 成年向けの巻を持つシリーズ ${markIds.length} 件に is_adult を立てる（除外はしない）`
+      : `series: 成年向けの巻だけのシリーズ ${pruneIds.length} 件を除外予定`
+  );
 
   // Emit a manifest so a resumable per-day loader (scripts/seed-daily.mjs) can
   // budget exactly how many rows each file writes, in apply order.
@@ -752,7 +796,11 @@ async function main() {
       ...volumeFiles.map((f) => ({ file: path.basename(f.path), table: "volumes", rows: f.rows })),
       ...adultFiles.map((f) => ({ file: path.basename(f.path), table: "adult_volumes", rows: f.rows })),
       // 書き込みではなく削除。volumes の後に流す。
-      { file: path.basename(pruneFile), table: "series_prune", rows: pruneIds.length },
+      {
+        file: path.basename(pruneFile),
+        table: a.includeAdult ? "series_mark_adult" : "series_prune",
+        rows: a.includeAdult ? markIds.length : pruneIds.length,
+      },
     ],
   };
   fs.writeFileSync(path.join(a.out, "manifest.json"), JSON.stringify(manifest, null, 2));

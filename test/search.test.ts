@@ -2,6 +2,8 @@ import { SELF } from "cloudflare:test";
 import { env } from "cloudflare:workers";
 import { beforeAll, describe, expect, it } from "vitest";
 import { BROWSER_UA, makeIsbns } from "./helpers";
+import { handleSearch } from "../src/search";
+import type { Env } from "../src/types";
 
 // キーワード検索の並びとページ送り。クエリは「当たった行の段（mt）を数える → このページに
 // かかる段の行だけ巻数を出して切り出す」の段階構成（src/search.ts）なので、段をまたぐ
@@ -95,5 +97,53 @@ describe("GET /api/search（キーワード）", () => {
   it("結果の件数より先の offset は空", async () => {
     const data = await search(60);
     expect(data.results).toEqual([]);
+  });
+});
+
+// R18版（SITE_VARIANT="adult"）の検索は、既定で成年向け（is_adult = 1）だけを出す。
+// テストの Worker は本家で動くので、env を差し替えて handleSearch を直接呼ぶ。
+describe("R18版の検索は既定で成年向けだけ", () => {
+  const adult = { ...(env as unknown as Env), SITE_VARIANT: "adult" } as Env;
+  const general = env as unknown as Env;
+  const ADULT_NAME = "テストセイネンムケ";
+
+  beforeAll(async () => {
+    const isbn = makeIsbns(1, 990000)[0];
+    await env.DB.batch([
+      env.DB.prepare(
+        `INSERT OR REPLACE INTO series (id, name, name_norm, name_search, creator, num_items, is_adult)
+         VALUES ('CA001', ?, ?, ?, 'テスト作者', 1, 1)`
+      ).bind(ADULT_NAME, ADULT_NAME, ADULT_NAME),
+      env.DB.prepare(
+        `INSERT OR REPLACE INTO volumes (isbn, series_id, volume_number, vol_sort, title, title_search, creator, is_adult)
+         VALUES (?, 'CA001', '1', 1, ?, ?, 'テスト作者', 1)`
+      ).bind(isbn, ADULT_NAME, ADULT_NAME),
+    ]);
+  });
+
+  const ids = async (e: Env, qs: string) => {
+    const res = await handleSearch(new Request(`https://example.com/api/search?${qs}`, {
+      headers: { "user-agent": BROWSER_UA },
+    }), e);
+    const data = (await res.json()) as { results: { series_id: string }[] };
+    return data.results.map((r) => r.series_id);
+  };
+
+  it("成年向けの作品は本家の検索に出ない（is_adult の行がそもそも入らないため）", async () => {
+    // 本家は絞り込まないので、テスト用に入れた is_adult=1 の行も素直に出る。
+    expect(await ids(general, `q=${encodeURIComponent(ADULT_NAME)}`)).toContain("CA001");
+  });
+
+  it("R18版は既定で成年向けだけ", async () => {
+    // 全年齢の作品（is_adult=0）は出ない。
+    expect(await ids(adult, `q=${encodeURIComponent(NAME)}`)).toEqual([]);
+    // 成年向けは出る。
+    expect(await ids(adult, `q=${encodeURIComponent(ADULT_NAME)}`)).toContain("CA001");
+  });
+
+  it("all=1 で全年齢も混ぜる", async () => {
+    const all = await ids(adult, `q=${encodeURIComponent(NAME)}&all=1`);
+    expect(all.length).toBeGreaterThan(0);
+    expect(all).toContain("CX000");
   });
 });

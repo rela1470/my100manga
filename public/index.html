@@ -105,6 +105,11 @@
         <button id="cancelSearch">閉じる</button>
       </div>
       <div class="search-subtitle" id="searchSubtitle" hidden></div>
+      <!-- R18版だけに出る絞り込み（app.js initAllAges が window.__SITE__.adultOnlySearch で表示）。
+           既定は成年向けだけを検索し、ここをオンにすると全年齢の作品も混ぜる。 -->
+      <label class="all-ages" id="allAgesBar" hidden>
+        <input type="checkbox" id="allAges"> 全年齢の作品も含める
+      </label>
       <div class="vol-bar search-bar" id="searchBar" hidden></div>
       <div class="spinner" id="searchSpinner" style="display:none">検索中...</div>
       <div class="results" id="results"></div>

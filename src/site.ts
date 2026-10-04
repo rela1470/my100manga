@@ -25,6 +25,11 @@ export interface SiteConfig {
    *  マスタ）を出すか。R18版では中身が全年齢作品なので出さない（ヘッダーのボタンと sitemap）。
    *  ページ自体は残る（URL を知っていれば見られる）。 */
   allAgesRankings: boolean;
+  /** 検索の既定を成年向けだけにするか。R18版の収録は「成年向け＋全年齢」の上位互換だが、
+   *  既定で全部出すと全年齢の作品に埋もれる（成年向け 7.6 千巻に対して全年齢は 35 万巻）。
+   *  既定は成年向けだけにして、検索フォームの「全年齢の作品も含める」で外す。
+   *  絞り込みは series.is_adult / volumes.is_adult（db/add-is-adult.sql）。see src/search.ts */
+  adultOnlySearch: boolean;
   /** 外部ストアの API とアフィリエイトを使うか。表紙の取得（楽天ブックス・Yahoo!ショッピング・
    *  楽天市場）、購入リンク（Amazon・楽天・Yahoo・メルカリ）、売上ランキング（楽天ブックス）、
    *  フッターの楽天 / Yahoo 公式クレジットがまとめてこれで切れる。R18版が false なのは、
@@ -49,6 +54,7 @@ const SITES: Record<SiteVariant, SiteConfig> = {
     hashtag: "my100manga",
     excludeAdult: true,
     allAgesRankings: true,
+    adultOnlySearch: false,
     commerce: true,
     mailDomain: GENERAL_MAIL_DOMAIN,
   },
@@ -61,6 +67,7 @@ const SITES: Record<SiteVariant, SiteConfig> = {
     hashtag: "my100shunga",
     excludeAdult: false,
     allAgesRankings: false,
+    adultOnlySearch: true,
     commerce: false,
     mailDomain: "my100shunga.com",
   },
@@ -84,6 +91,12 @@ export function siteVariant(env: Pick<Env, "SITE_VARIANT">): SiteVariant {
 
 export function site(env: Pick<Env, "SITE_VARIANT">): SiteConfig {
   return SITES[siteVariant(env)];
+}
+
+/** 検索で既定として成年向けだけを出すか。クライアントが all=1 を付けたときは外す
+ *  （src/search.ts handleSearch）。 */
+export function adultOnlySearch(env: Pick<Env, "SITE_VARIANT">): boolean {
+  return site(env).adultOnlySearch;
 }
 
 /** 外部ストアの API・アフィリエイトを使うか。rakutenReady / yahooReady（＝表紙 Tier1–3 と

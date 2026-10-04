@@ -13,7 +13,7 @@ import { escapeHtml } from "./util";
 // サイト種別（src/site.ts）も window.__SITE__ で渡す（public/share-x.js 等が読む）。
 export function analyticsTags(env: Env): string {
   const s = site(env);
-  let out = `<script>window.__SITE__=${JSON.stringify({ variant: s.variant, name: s.name, hashtag: s.hashtag, commerce: s.commerce }).replace(/</g, "\\u003c")};</script>`;
+  let out = `<script>window.__SITE__=${JSON.stringify({ variant: s.variant, name: s.name, hashtag: s.hashtag, commerce: s.commerce, adultOnlySearch: s.adultOnlySearch }).replace(/</g, "\\u003c")};</script>`;
   const sitekey = (env.TURNSTILE_SITE_KEY ?? "").trim();
   if (sitekey) {
     out += `<meta name="turnstile-sitekey" content="${escapeHtml(sitekey)}">`;

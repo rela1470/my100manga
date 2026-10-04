@@ -57,6 +57,7 @@ async function init() {
   document.addEventListener("my100manga:account-lists", () => renderMyLists());
   loadSiteStats();
   wireEvents();
+  initAllAges();
   openSeriesFromUrl(params);
   openSearchFromUrl(params);
   // /l/:slug が見つからなかったときはサーバがここへリダイレクトしてくる。
@@ -1392,6 +1393,28 @@ function topSearch() {
   doSearch(q);
 }
 
+// R18版の検索は既定で成年向けだけ（src/site.ts adultOnlySearch）。「全年齢の作品も含める」を
+// オンにすると all=1 を付けて絞り込みを外す。本家ではトグル自体を出さないので常に素の URL。
+let searchAllAges = false;
+
+function searchUrl(q, offset) {
+  let u = `/api/search?q=${encodeURIComponent(q)}`;
+  if (offset != null) u += `&offset=${offset}`;
+  if (searchAllAges) u += "&all=1";
+  return u;
+}
+
+function initAllAges() {
+  const bar = document.getElementById("allAgesBar");
+  const box = document.getElementById("allAges");
+  if (!bar || !box || !(window.__SITE__ && window.__SITE__.adultOnlySearch)) return;
+  bar.hidden = false;
+  box.addEventListener("change", () => {
+    searchAllAges = box.checked;
+    if (lastQuery) doSearch(lastQuery); // 同じ語で引き直す
+  });
+}
+
 async function doSearch(q) {
   lastQuery = q;
   liveFetchedQuery = "";
@@ -1400,7 +1423,7 @@ async function doSearch(q) {
   $("searchSpinner").style.display = "";
   clearResults();
   try {
-    const data = await apiFetch(`/api/search?q=${encodeURIComponent(q)}`);
+    const data = await apiFetch(searchUrl(q));
     searchNextOffset = data.next_offset ?? null;
     // 成年向けの作品（サーバの adult_volumes）: ISBN 検索で当たれば blocked、書名検索で当たれば
     // adult_hits。「見つからない」と区別して、追加できない理由を結果欄に出す（src/adult.ts）。
@@ -1525,7 +1548,7 @@ function buildMoreButton() {
     btn.disabled = true;
     btn.textContent = "読み込み中…";
     try {
-      const data = await apiFetch(`/api/search?q=${encodeURIComponent(q)}&offset=${searchNextOffset}`);
+      const data = await apiFetch(searchUrl(q, searchNextOffset));
       if (q !== lastQuery) return; // 待っている間に別の語で検索し直した
       searchNextOffset = data.next_offset ?? null;
       const shown = new Set(lastResults.map((r) => r.series_id));

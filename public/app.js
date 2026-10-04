@@ -1966,6 +1966,8 @@ async function fetchSupplement(series, btn) {
       probed: true,
       checkedAt: data.supplement_checked_at || Date.now(),
       masterAt: data.master_updated_at || 0,
+      // 抜け巻が別シリーズ・どのシリーズにも属さない巻として DB に在るもの（取得時のみ）。
+      elsewhere: data.volumes_elsewhere || [],
     });
   } catch (e) {
     btn.disabled = false;
@@ -2167,6 +2169,35 @@ function renderVolumes(series, volumes, opts) {
       gapBox.appendChild(btn);
     }
     box.appendChild(gapBox);
+  }
+
+  // 抜け巻が「別のシリーズに紛れている」「どのシリーズにも入っていない」形で DB に既に在る
+  // とき、その巻を名指しして結合依頼の導線に送る（src/siblingVolumes.ts が判定）。
+  // ここで巻を足すことはしない: 足すと同じ本が 2 つのシリーズに重複して並ぶ。直し方は結合か
+  // 分離で、確定は管理者（src/merge.ts）。取得ボタンを押したときだけ出る。
+  const elsewhere = (opts.elsewhere || []).filter((v) => v && v.vol_sort > 0);
+  if (elsewhere.length) {
+    const elseBox = document.createElement("div");
+    elseBox.className = "gap-box";
+    const elseLabel = document.createElement("span");
+    elseLabel.className = "gap-label";
+    const loose = elsewhere.filter((v) => !v.series_id).length;
+    const inOther = elsewhere.length - loose;
+    const where =
+      inOther && loose
+        ? `${inOther}冊が別のシリーズ、${loose}冊がどこにも入っていません`
+        : inOther
+          ? "別のシリーズに入っています"
+          : "どのシリーズにも入っていません";
+    elseLabel.textContent = `この作品の ${elsewhere.map((v) => v.vol_sort + "巻").join("・")} はDBにありますが、${where}:`;
+    elseBox.appendChild(elseLabel);
+    const mergeBtn = document.createElement("button");
+    mergeBtn.type = "button";
+    mergeBtn.className = "linkbtn gap-btn";
+    mergeBtn.textContent = "シリーズの結合を依頼";
+    mergeBtn.addEventListener("click", () => openMergeRequest(series, volumes, opts));
+    elseBox.appendChild(mergeBtn);
+    box.appendChild(elseBox);
   }
 
   // マスタ(月次ダンプ)に未リンクの新刊を、このボタンを押したときだけ取得する（閲覧を SPARQL

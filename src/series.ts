@@ -24,6 +24,7 @@ import {
   SupplementVolume,
 } from "./madbLive";
 import { findGapFillVolumes } from "./gapFill";
+import { findSiblingVolumes, SiblingVolume } from "./siblingVolumes";
 import { getCorrectionVolumes } from "./corrections";
 import { resolveMergeTarget, mergeMembers } from "./merge";
 import { isCustomSeriesId, NAME_NORM_PREFIX } from "./groups";
@@ -99,7 +100,7 @@ export async function getSeriesVolumes(
   const members = await mergeMembers(env, targetId);
   const inMembers = members.map(() => "?").join(",");
   const meta = await env.DB.prepare(
-    `SELECT s.id, s.name, s.creator, s.creators, s.publisher, s.label, s.version, o.name AS override_name
+    `SELECT s.id, s.name, s.name_norm, s.creator, s.creators, s.publisher, s.label, s.version, o.name AS override_name
        FROM series s LEFT JOIN series_name_override o ON o.series_id = s.id
       WHERE s.id = ?`
   )
@@ -107,6 +108,7 @@ export async function getSeriesVolumes(
     .first<{
       id: string;
       name: string;
+      name_norm: string;
       creator: string | null;
       creators: string | null;
       publisher: string | null;
@@ -460,6 +462,23 @@ export async function getSeriesVolumes(
     (a, b) => a.vol_sort - b.vol_sort || a.pubdate.localeCompare(b.pubdate) || a.isbn.localeCompare(b.isbn)
   );
 
+  // 残った抜け巻が「別のシリーズ」「どのシリーズにも属さない迷子」に在るなら名指しする
+  // （src/siblingVolumes.ts）。穴埋めと訂正を混ぜたあとの shown を渡すので、いま埋まった巻は
+  // 対象にならない。取得ボタン（probe=true）のときだけ走らせる: D1 を数本増やすので、
+  // 一番重い閲覧系（probe=false）は変えない。独自シリーズ（U-id）は別々の本の寄せ集めで
+  // 巻番号が比較できないので外す。
+  const elsewhere: SiblingVolume[] =
+    probe && !isCustomSeriesId(meta.id)
+      ? await findSiblingVolumes(env, {
+          seriesId: meta.id,
+          members,
+          name: meta.name,
+          nameNorm: meta.name_norm ?? "",
+          creator: meta.creator ?? "",
+          present: shown.map((e) => ({ vol_sort: e.vol_sort, isbns: e.isbns, pubdate: e.pubdate })),
+        })
+      : [];
+
   const allIsbns: string[] = [];
   for (const e of shown) allIsbns.push(...e.isbns);
   // Cache-only read: this endpoint must return instantly. Uncached covers come
@@ -545,6 +564,9 @@ export async function getSeriesVolumes(
       creators: (res.results ?? []).find((v) => v.creators)?.creators || meta.creators || meta.creator || "",
       supplement_probed: probed,
       supplement_checked_at: checkedAt,
+      // 抜け巻のうち、別シリーズ・迷子に在ると分かったもの。結合／分離依頼の導線に使う。
+      // データは書き換えていない（確定は管理者）。取得ボタンのときだけ中身が入る。
+      volumes_elsewhere: elsewhere,
       master_updated_at: await getMasterUpdatedAt(env),
       volumes,
     },

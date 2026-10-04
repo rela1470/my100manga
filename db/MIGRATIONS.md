@@ -144,8 +144,20 @@ DB 側に記録されないので、この表で管理する。
 - 結果: `series` 139,130 行（うち `is_adult=1` が 5,586）/ `volumes` 356,644 行（うち 7,624）/ `adult_volumes` 0 行。
 - 確認: `/api/search?q=ONE PIECE` が 0 件、`&all=1` で 30 件。成年向けのタイトルは既定で出る。
 
-**本番（my100shunga）**: 未適用。dev で通し確認してから同じ順で流す
-（`db/add-is-adult.sql` → `npm run ingest:remote:r18:prod`）。
+**dev 2 回目（2026-10-04、副題対応）**
+
+- ブックマーク `00000007-00000000-000050fa-f297a2cd22458ff71a2a7e68f23bbfcb`
+- `db/add-volume-subtitle.sql` → `npm run deploy:r18:dev`（`e162f93f`）→ `npm run ingest:remote:r18:dev`
+- 結果: `series` 139,130（`is_adult` 5,586）/ `volumes` 356,644（`is_adult` 7,624・`subtitle` あり 71,746）/ `adult_volumes` 0
+
+**本番（2026-10-04）**
+
+- ブックマーク `00000009-00000000-000050fa-7590cae23b380f54f983bc9c52c339cc`（`lists` 0 / `users` 0 の空 DB なので `d1 export` は取らず）
+- `db/add-is-adult.sql` → `db/add-volume-subtitle.sql` → `npm run deploy:r18:prod`（`73257fb7`）→ `npm run ingest:remote:r18:prod`
+- 結果: dev と同数（`series` 139,130 / `volumes` 356,644 / `subtitle` 71,746 / `adult_volumes` 0）
+- 確認: 年齢確認ゲート、`/api/search?q=ONE PIECE` が 0 件・`&all=1` で 30 件、成年向けのタイトルは既定で 1 件、C318330 が 13 巻で副題付き
+
+**本家と R18版の ingest を並行で流すときは `--work` を分けること**。既定の `/tmp/madb/seed` を共有すると、同名の `volumes_new_*.sql` を書き合って本家に成年向けが混入しうる。`npm run ingest:remote:r18:*` は `--work /tmp/madb-r18` を固定済み。
 
 ## バックアップ（リモートの migration / ingest の前に毎回）
 

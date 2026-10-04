@@ -1,0 +1,131 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>利用ソースについて | My 100 Manga</title>
+  <meta name="description" content="My 100 Manga が利用しているデータソース（メディア芸術データベース）についての説明ページです。広告・アフィリエイトは掲載していません。">
+  <link rel="canonical" href="https://my100manga.com/about">
+  <meta property="og:type" content="website">
+  <meta property="og:site_name" content="My 100 Manga">
+  <meta property="og:title" content="利用ソースについて | My 100 Manga">
+  <meta property="og:description" content="My 100 Manga が利用しているデータソース（メディア芸術データベース）についての説明ページです。広告・アフィリエイトは掲載していません。">
+  <meta property="og:url" content="https://my100manga.com/about">
+  <meta property="og:image" content="https://my100manga.com/og-default.png">
+  <meta name="twitter:card" content="summary_large_image">
+  <link rel="icon" href="/favicon.ico" sizes="32x32">
+  <link rel="icon" href="/favicon.svg" type="image/svg+xml">
+  <link rel="apple-touch-icon" href="/apple-touch-icon.png">
+  <meta name="theme-color" content="#3b82f6">
+  <!--ANALYTICS-->
+  <link rel="stylesheet" href="/styles.css">
+</head>
+<body>
+  <!--GTM_BODY-->
+  <header class="site">
+    <h1><a class="site-logo" href="/">My <span class="accent">100</span> Manga</a></h1>
+    <p class="tagline">利用ソースについて</p>
+    <!--HEADER_LINKS-->
+  </header>
+
+  <div class="wrap">
+    <article class="prose">
+      <p class="lead">
+        My 100 Manga は「自分を構成する100の漫画」を選んでカードにし、URLで共有できるサイトです。
+        成年向け（18禁）のマンガも全年齢のマンガも登録できます。作品データは公開データベースから取得しています。
+        <strong>当サイトは広告・アフィリエイト広告を一切掲載していません。</strong>
+        このページでは利用しているデータソースについて説明します。
+      </p>
+
+      <h2>利用しているデータソース</h2>
+
+      <h3>作品データ（検索・シリーズ・巻・ISBN）</h3>
+      <p>
+        <span class="src-name">メディア芸術データベース（MADB）</span> のマンガ単行本 LOD を取り込んで、
+        作品の検索、シリーズ→巻→ISBN の一覧に利用しています。
+      </p>
+      <ul>
+        <li>提供: 独立行政法人国立美術館 国立アートリサーチセンター「メディア芸術データベース」</li>
+        <li>サイト: <a href="https://mediaarts-db.artmuseums.go.jp/" target="_blank" rel="noopener">https://mediaarts-db.artmuseums.go.jp/</a></li>
+        <li>データセット: <a href="https://github.com/mediaarts-db/dataset" target="_blank" rel="noopener">mediaarts-db/dataset</a>（マンガ単行本・シリーズの JSON-LD）</li>
+        <li id="madb-meta" class="src-meta" hidden></li>
+      </ul>
+      <p>
+        また、月次ダンプに未収録の新しい巻は、MADB のライブ SPARQL エンドポイント
+        （<a href="https://mediaarts-db.artmuseums.go.jp/sparql" target="_blank" rel="noopener">https://mediaarts-db.artmuseums.go.jp/sparql</a>）
+        へ問い合わせて補完しています。
+      </p>
+      <p>
+        当サイトに表示される作品データは、MADB のデータをもとに、当サイトでシリーズの結合・分離、著者名の正規化、巻の補完などの加工をしたものです。
+        加工後のデータの内容について、国立アートリサーチセンターおよびメディア芸術データベースは責任を負いません。
+      </p>
+      <p>リストに追加できる本・できない本は「<a href="/books-guide">追加できる本について</a>」をご覧ください。</p>
+
+      <h3>表紙画像（書影）について</h3>
+      <p>
+        <strong>当サイトは表紙画像（書影）を表示していません。</strong>
+        書影は書店・EC サイトが提供する API から取得するものですが、成人向けの作品を扱うサイトでの利用を各社の規約が認めているか
+        確認できていないため、使用していません。作品名・著者・巻数・出版社は MADB のデータから表示しています。
+      </p>
+      <p>
+        表紙を表示していないため、リストの共有画像（SNS 投稿用の画像）にも表紙は含まれません。
+      </p>
+
+      <p class="note">
+        各データの権利は、それぞれの提供元に帰属します。My 100 Manga はこれらを検索・表示の目的で参照しており、
+        内容の正確性・完全性を保証するものではありません。データの誤りは、サイト内の修正機能や提供元の情報に基づいて随時見直しています。
+      </p>
+
+      <h2>広告・アフィリエイトについて</h2>
+      <p>
+        <strong>当サイトは現在、広告・アフィリエイト広告を一切掲載していません。</strong>
+        作品の購入リンク、第三者配信の広告（Google AdSense 等）、アフィリエイトプログラムのリンクはいずれもありません。
+        アクセス解析ツールも使用していません。
+      </p>
+      <p class="note">
+        将来これらを掲載する場合は、<a href="/terms">利用規約</a>と<a href="/privacy">プライバシーポリシー</a>を改定したうえで、
+        景品表示法（ステルスマーケティング規制）に基づき広告であることが分かる表示とともに掲載します。
+      </p>
+
+      <h2>お問い合わせ</h2>
+      <p>
+        データの誤りは各ページにある修正ボタンよりお願いいたします。
+      </p>
+      <p>ご意見・ご要望などは当サイトの運営者までご連絡ください（連絡先は<a href="/operator">運営者ページ</a>をご覧ください）。
+      </p>
+    </article>
+
+    <div class="publish-bar">
+      <a class="button primary" href="/">トップにもどる</a>
+    </div>
+  </div>
+
+  <!--FOOTER-->
+
+  <script>
+    // Show the MADB dump version + when this site last imported it.
+    (function () {
+      var el = document.getElementById("madb-meta");
+      if (!el) return;
+      var fmt = function (ms) {
+        var d = new Date(ms);
+        if (isNaN(d)) return "";
+        return d.getFullYear() + "年" + (d.getMonth() + 1) + "月" + d.getDate() + "日";
+      };
+      fetch("/api/master-info")
+        .then(function (r) { return r.ok ? r.json() : null; })
+        .then(function (m) {
+          if (!m) return;
+          var parts = [];
+          if (m.released_at) parts.push("データ版: " + fmt(m.released_at) + " 公開分");
+          if (m.tag) parts.push("バージョン " + m.tag);
+          if (m.imported_at) parts.push("当サイト取込: " + fmt(m.imported_at));
+          if (!parts.length) return;
+          el.textContent = parts.join("／");
+          el.hidden = false;
+        })
+        .catch(function () {});
+    })();
+  </script>
+</body>
+</html>

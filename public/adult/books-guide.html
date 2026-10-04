@@ -1,0 +1,105 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>追加できる本について | My 100 Manga</title>
+  <meta name="description" content="My 100 Manga のリストに追加できる本・追加できない本と、検索で見つからないときの探し方の説明ページです。">
+  <link rel="canonical" href="https://my100manga.com/books-guide">
+  <meta property="og:type" content="website">
+  <meta property="og:site_name" content="My 100 Manga">
+  <meta property="og:title" content="追加できる本について | My 100 Manga">
+  <meta property="og:description" content="My 100 Manga のリストに追加できる本・追加できない本と、検索で見つからないときの探し方の説明ページです。">
+  <meta property="og:url" content="https://my100manga.com/books-guide">
+  <meta property="og:image" content="https://my100manga.com/og-default.png">
+  <meta name="twitter:card" content="summary_large_image">
+  <link rel="icon" href="/favicon.ico" sizes="32x32">
+  <link rel="icon" href="/favicon.svg" type="image/svg+xml">
+  <link rel="apple-touch-icon" href="/apple-touch-icon.png">
+  <meta name="theme-color" content="#3b82f6">
+  <!--ANALYTICS-->
+  <link rel="stylesheet" href="/styles.css">
+</head>
+<body>
+  <!--GTM_BODY-->
+  <header class="site">
+    <h1><a class="site-logo" href="/">My <span class="accent">100</span> Manga</a></h1>
+    <p class="tagline">追加できる本について</p>
+    <!--HEADER_LINKS-->
+  </header>
+
+  <div class="wrap">
+    <article class="prose">
+      <p class="lead">
+        My 100 Manga のリストには、1冊ごとに付いている ISBN（本の番号）で本を登録しています。
+        そのため、ISBN で1冊を特定できる本だけを追加できます。このページでは、追加できる本・できない本と、見つからないときの探し方を説明します。
+      </p>
+
+      <h2>追加できる本</h2>
+      <p>
+        <span class="src-name">ISBN の付いた紙のマンガ単行本</span> が対象です。
+        作品・巻のデータは国立アートリサーチセンター「メディア芸術データベース（MADB）」のマンガ単行本データを元にしています（詳しくは<a href="/about">利用ソースについて</a>）。
+      </p>
+      <ul>
+        <li><strong>成年向け（成人向け）のマンガ単行本も対象です。</strong>全年齢の作品もあわせて登録できます。</li>
+        <li>MADB のデータは月に1回取り込んでいます。</li>
+        <li>取り込み後に出た新刊や、取り込みデータで漏れている作品は、MADB の最新データに問い合わせて補えます（下の「見つからないとき」）。</li>
+        <li>MADB に無い本は追加できません（他の書誌データベースや書店の在庫からは探しません）。</li>
+      </ul>
+
+      <p class="note">
+        <strong>表紙画像について:</strong> 当サイトは現在、表紙（書影）を表示していません。
+        書影は書店・ECサイトの API から取得するものですが、成人向けサイトでの利用可否が確認できていないため使用していません。
+        作品名・著者・巻数・出版社は MADB のデータから表示されます。
+      </p>
+
+      <h2>追加できない本</h2>
+      <ul>
+        <li>
+          <span class="src-name">ISBN が無い本</span><br>
+          ISBN が普及する前（1980年ごろより前）の古い本、同人誌、自費出版の本などは、1冊を特定できないため追加できません。
+        </li>
+        <li>
+          <span class="src-name">電子書籍だけで出ている作品</span><br>
+          紙の単行本が出ていない作品は ISBN が無いことが多く、追加できません。
+        </li>
+        <li>
+          <span class="src-name">BOX・セットの同梱本や付録の本</span><br>
+          復刻版BOX に入っている特別な巻など、単品で売られていない本は、BOX 全体で1つの ISBN（セット ISBN）しか持っていません。
+          同じ ISBN を BOX 内の何冊もが共有していて1冊を特定できないため、追加の対象から外しています。
+          そのため、巻一覧に「最新の巻」として出てくることもありません。
+        </li>
+      </ul>
+
+      <h2>見つからないとき</h2>
+      <h3>作品が見つからない</h3>
+      <p>
+        書名で検索すると、結果の下に「<strong>最新DBから取得</strong>」ボタンが出ます。
+        月1回の取り込みにまだ入っていない作品を、MADB の最新データから探します。
+        書名の一部や作者名でも試してみてください。
+      </p>
+      <h3>新しい巻が無い</h3>
+      <p>
+        シリーズの巻一覧の下にある「<strong>最新巻を取得</strong>」を押すと、取り込み後に出た巻を MADB の最新データから探して追加します。
+        MADB にまだ登録されていない新刊は、登録されるまで出てきません。
+      </p>
+      <h3>途中の巻が抜けている</h3>
+      <p>
+        巻一覧に「<strong>DBから抜けていそうな巻</strong>」が出ることがあります。
+        当サイトでは現在、抜けている巻を手動で追加することはできません（追加された ISBN が実在するかの確認に書影を使っており、
+        上記のとおり書影を取得していないためです）。MADB に登録されれば、月1回の取り込みか「最新巻を取得」で出てきます。
+      </p>
+
+      <p class="note">
+        データの誤り（巻の取り違え・作品名の間違いなど）を見つけたときは、各ページにある修正・通報ボタンからお知らせください。
+      </p>
+    </article>
+
+    <div class="publish-bar">
+      <a class="button primary" href="/">トップにもどる</a>
+    </div>
+  </div>
+
+  <!--FOOTER-->
+</body>
+</html>

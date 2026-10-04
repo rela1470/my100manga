@@ -2458,7 +2458,9 @@ async function openGapPicker(series, gap, volumes, opts) {
   back.type = "button";
   back.className = "linkbtn";
   back.textContent = "‹ 巻一覧へ戻る";
-  back.addEventListener("click", () => renderVolumes(series, volumes));
+  // opts をそのまま戻す。捨てると取得バーの状態（「取得しました」・最終確認日）と、
+  // 別シリーズ・迷子巻の名指し（opts.elsewhere）が巻一覧に戻った時点で消えてしまう。
+  back.addEventListener("click", () => renderVolumes(series, volumes, opts));
   bar.appendChild(back);
   box.appendChild(bar);
 

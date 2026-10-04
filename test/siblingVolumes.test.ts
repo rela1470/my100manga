@@ -61,6 +61,7 @@ const input = () => ({
   name: NAME,
   nameNorm: NAME,
   creator: CREATOR,
+  titles: [NAME],
   present: present(),
 });
 
@@ -108,6 +109,28 @@ describe("findSiblingVolumes", () => {
       present: present().slice(0, 3), // 1,2,3 で間が無い
     });
     expect(dense).toEqual([]);
+  });
+
+  it("シリーズ名と違う書名を名乗る迷子巻も、巻が名乗っている書名で拾う", async () => {
+    // 大判『三国志』（C367640）と同じ形。シリーズ名は「三国志」なのに巻の書名が
+    // 「大判三国志 = Three Kingdoms」で、同じ書名の迷子巻が取り残されている。
+    const VARIANT = `大判${NAME} = Variant`;
+    const looseV4 = "9784900000084";
+    await env.DB.prepare(`DELETE FROM volumes WHERE isbn = ?`).bind(SIB_V4).run();
+    await addVolume(looseV4, null, "4", "2017-04");
+    await env.DB.prepare(`UPDATE volumes SET title = ? WHERE isbn = ?`).bind(VARIANT, looseV4).run();
+
+    // シリーズ名だけを鍵にすると拾えない。
+    const nameOnly = await findSiblingVolumes(env as never, input());
+    expect(nameOnly.map((v) => v.vol_sort)).toEqual([5]);
+
+    // 自分の巻が名乗っている書名を渡すと拾える。
+    const withTitles = await findSiblingVolumes(env as never, { ...input(), titles: [NAME, VARIANT] });
+    expect(withTitles.map((v) => v.vol_sort)).toEqual([4, 5]);
+    expect(withTitles[0].isbn).toBe(looseV4);
+
+    await env.DB.prepare(`DELETE FROM volumes WHERE isbn = ?`).bind(looseV4).run();
+    await addVolume(SIB_V4, SIB, "4", "2017-04");
   });
 
   it("著者が分からないシリーズでは判定しない（同名他作品と区別できない）", async () => {

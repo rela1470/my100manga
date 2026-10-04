@@ -48,6 +48,9 @@ const SLACK_MONTHS = 18;
 const MAX_SUGGESTIONS = 30;
 // 候補を引くときの 1 クエリあたりの上限。長期連載でも応答を膨らませない。
 const CAND_LIMIT = 500;
+// 迷子巻を引くときに使う書名の数の上限（シリーズ名 + 巻が名乗っている書名）。表記ゆれで
+// 書名が割れているシリーズでも、バインド数と索引の引き回数を抑える。
+const MAX_TITLES = 5;
 
 export interface SiblingVolume {
   isbn: string;
@@ -104,6 +107,13 @@ export async function findSiblingVolumes(
     name: string;
     nameNorm: string;
     creator: string;
+    /** このシリーズの巻がマスタ上で実際に名乗っている書名（重複除去済み）。迷子巻の
+     *  引き当てに使う。シリーズ名だけだと取りこぼす: 大判『三国志』（C367640）は
+     *  シリーズ名が「三国志」なのに 19〜21 巻の書名が「大判三国志 = Three Kingdoms」で、
+     *  同じ書名を持つ 18 巻（9784267906589）が迷子になっている。巻が名乗っている書名を
+     *  そのまま鍵にすれば、schema:version（13.9 万シリーズ中 3,923 件しか持たない）に
+     *  頼らずに拾える。 */
+    titles: string[];
     present: PresentVolume[];
   }
 ): Promise<SiblingVolume[]> {
@@ -153,16 +163,22 @@ export async function findSiblingVolumes(
   }
 
   // (b) どのシリーズにも属していない巻（idx_volumes_unlinked_title の部分索引で引く）。
-  const un = await env.DB.prepare(
-    `SELECT isbn, volume_number, vol_sort, title, publisher, label, pubdate, series_id
-       FROM volumes
-      WHERE series_id IS NULL AND title = ? AND COALESCE(creator, '') = ?
-        AND vol_sort > ? AND vol_sort < ?
-      LIMIT ${CAND_LIMIT}`
-  )
-    .bind(opts.name, opts.creator, lo, hi)
-    .all<CandRow>();
-  rows.push(...(un.results ?? []));
+  //     シリーズ名だけでなく、このシリーズの巻が実際に名乗っている書名でも引く。
+  const titles = [...new Set([opts.name, ...opts.titles].map((t) => (t ?? "").trim()).filter(Boolean))]
+    .slice(0, MAX_TITLES);
+  if (titles.length) {
+    const tph = titles.map(() => "?").join(",");
+    const un = await env.DB.prepare(
+      `SELECT isbn, volume_number, vol_sort, title, publisher, label, pubdate, series_id
+         FROM volumes
+        WHERE series_id IS NULL AND title IN (${tph}) AND COALESCE(creator, '') = ?
+          AND vol_sort > ? AND vol_sort < ?
+        LIMIT ${CAND_LIMIT}`
+    )
+      .bind(...titles, opts.creator, lo, hi)
+      .all<CandRow>();
+    rows.push(...(un.results ?? []));
+  }
 
   const out: SiblingVolume[] = [];
   const seenSort = new Set<number>();

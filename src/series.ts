@@ -475,6 +475,9 @@ export async function getSeriesVolumes(
           name: meta.name,
           nameNorm: meta.name_norm ?? "",
           creator: meta.creator ?? "",
+          // 迷子巻の引き当ては、シリーズ名だけでなくマスタ上の巻が実際に名乗っている書名でも
+          // 行う（titleFor で揃えたあとの表示名ではなく、生の巻タイトル）。
+          titles: [...new Set((res.results ?? []).map((v) => (v.title ?? "").trim()).filter(Boolean))],
           present: shown.map((e) => ({ vol_sort: e.vol_sort, isbns: e.isbns, pubdate: e.pubdate })),
         })
       : [];

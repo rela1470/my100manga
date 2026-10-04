@@ -406,6 +406,10 @@ button.danger:hover { background: rgba(239, 68, 68, .12); filter: none; }
   box-shadow: var(--shadow-pop);
 }
 .admin-page[hidden] { display: none; }
+/* 開発環境だけに出す UI（DB 初期化・各キャッシュの全削除）。admin.js の initDevTools が
+   /api/admin/stats の dev=true のときだけ hidden を外す。.cover-actions のように自前の
+   display を持つ要素でも確実に消えるよう !important で潰す。 */
+.dev-only[hidden] { display: none !important; }
 .pager {
   display: flex;
   align-items: center;

@@ -130,8 +130,9 @@ export async function adminStats(request: Request, env: Env): Promise<Response> 
 
   return json(
     {
-    // dev=true のとき管理 UI が開発用の「DB初期化」を表示する。DEV_TOOLS を立てた本番でも
-    // true になる（認証は別途 requireAdmin が担保）。無効環境では false で UI にも出さない。
+    // dev=true のとき管理 UI が「DB初期化」と全削除系ボタン（.dev-only）を表示する。
+    // DEV_TOOLS を立てた本番でも true になる（認証は別途 requireAdmin が担保）。
+    // 無効環境では false で UI にも出さない。
     dev: devToolsEnabled(request, env),
     stats: {
       lists,
@@ -197,11 +198,11 @@ export async function adminTodo(env: Env): Promise<Response> {
   );
 }
 
-// 開発ツールが有効か。DEV_TOOLS="true"（開発期間中は本番 vars にも置ける）か、ローカル
-// dev の ADMIN_DEV_BYPASS="true" のどちらかで有効。ADMIN_DEV_BYPASS と違い DEV_TOOLS は
-// 認証をバイパスしない（この関数は requireAdmin の配下）ので、本番でも管理者だけが使える。
-// ADMIN_DEV_BYPASS はローカルからのアクセスのときだけ数える（devBypassActive）。誤って本番に
-// 入っても DB初期化が有効にならないように。
+// 開発ツール（DB初期化と各キャッシュの「全削除」）が有効か。DEV_TOOLS="true"（開発期間中は
+// 本番 vars にも置ける）か、ローカル dev の ADMIN_DEV_BYPASS="true" のどちらかで有効。
+// ADMIN_DEV_BYPASS と違い DEV_TOOLS は認証をバイパスしない（この関数は requireAdmin の配下）
+// ので、本番で立てても管理者だけが使える。ADMIN_DEV_BYPASS はローカルからのアクセスのときだけ
+// 数える（devBypassActive）。誤って本番に入っても全削除系が有効にならないように。
 function devToolsEnabled(request: Request, env: Env): boolean {
   return env.DEV_TOOLS === "true" || devBypassActive(request, env);
 }
@@ -255,6 +256,14 @@ async function purgeCoverStore(env: Env): Promise<number> {
     cursor = listed.truncated ? listed.cursor : undefined;
   } while (cursor);
   return removed;
+}
+
+// 「全削除」系（各キャッシュの全消去・R2 の全消去）は DB 初期化と同じく開発ツール扱い。
+// 管理 UI では .dev-only で隠すが、エンドポイントは隠れないのでここでも fail-closed にする。
+// 条件を絞った削除（empty / 指定 ISBN・シリーズ）は本番でも運用で使うので対象外。
+function denyPurgeAll(request: Request, env: Env): Response | null {
+  if (devToolsEnabled(request, env)) return null;
+  return json({ error: "全削除はこの環境では無効です" }, 403, { "cache-control": "no-store" });
 }
 
 export async function adminDevReset(request: Request, env: Env): Promise<Response> {
@@ -874,7 +883,9 @@ export async function adminCoverR2Summary(env: Env): Promise<Response> {
 // R2 のトリム済み表紙だけを全消去（D1 の covers キャッシュは残す）。covers を消さず
 // R2 だけ消すと、次回アクセス時に同じ元 URL を再トリムして R2 に入れ直す挙動の確認に
 // 使える。全キャッシュ削除（D1+R2）とは別の、R2 単独のクリーン操作。
-export async function adminPurgeCoverR2(env: Env): Promise<Response> {
+export async function adminPurgeCoverR2(request: Request, env: Env): Promise<Response> {
+  const denied = denyPurgeAll(request, env);
+  if (denied) return denied;
   if (!env.COVERS) {
     return json({ error: "R2 バケット（COVERS）がこの環境では未設定です" }, 400, {
       "cache-control": "no-store",
@@ -896,6 +907,10 @@ export async function adminPurgeCovers(request: Request, env: Env): Promise<Resp
   const mode = body.mode;
   if (mode !== "empty" && mode !== "all") {
     return json({ error: "mode は 'empty' か 'all' を指定してください" }, 400);
+  }
+  if (mode === "all") {
+    const denied = denyPurgeAll(request, env);
+    if (denied) return denied;
   }
   const sql = mode === "empty" ? `DELETE FROM covers WHERE cover_url = ''` : `DELETE FROM covers`;
   const res = await env.DB.prepare(sql).run();
@@ -1101,6 +1116,10 @@ export async function adminPurgeSupplements(request: Request, env: Env): Promise
   if (mode !== "empty" && mode !== "all") {
     return json({ error: "mode は 'empty' か 'all' を指定してください" }, 400);
   }
+  if (mode === "all") {
+    const denied = denyPurgeAll(request, env);
+    if (denied) return denied;
+  }
   const sql =
     mode === "empty"
       ? `DELETE FROM series_supplement WHERE volumes_json = '[]'`
@@ -1207,6 +1226,10 @@ export async function adminPurgeBookMeta(request: Request, env: Env): Promise<Re
   const mode = body.mode;
   if (mode !== "empty" && mode !== "all") {
     return json({ error: "mode は 'empty' か 'all' を指定してください" }, 400);
+  }
+  if (mode === "all") {
+    const denied = denyPurgeAll(request, env);
+    if (denied) return denied;
   }
   const sql =
     mode === "empty" ? `DELETE FROM book_meta WHERE caption = ''` : `DELETE FROM book_meta`;

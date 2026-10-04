@@ -2783,8 +2783,10 @@ async function deleteBookMeta(btn) {
 }
 
 // --- 開発ツール（ローカル dev 限定: ADMIN_DEV_BYPASS）------------------------
-// マスターデータ以外を全削除して DB を初期化する破壊的操作。本番では /api/admin/stats の
-// dev=false でナビ自体を隠し、サーバ側でも 403 で fail-closed する。
+// DB 初期化（マスターデータ以外を全削除）と、各キャッシュの「全削除」系ボタン。どちらも
+// 一撃で全件消える破壊的操作なので本番からは隠す。/api/admin/stats の dev=false で
+// ナビと .dev-only 要素を隠し、サーバ側でも 403 で fail-closed する。
+// HTML 側は hidden 付きで書いてあるので、stats が取れなかった時も出てこない。
 let devEnabled = false;
 
 async function initDevTools() {
@@ -2796,6 +2798,7 @@ async function initDevTools() {
     devEnabled = false;
   }
   $("navDevTools").hidden = !devEnabled;
+  for (const el of document.querySelectorAll(".dev-only")) el.hidden = !devEnabled;
   // dev 無効環境で #dev-tools に直接来ていたら概要へ戻す。
   if (!devEnabled && currentPageName() === "dev-tools") location.hash = "#dashboard";
 }

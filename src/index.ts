@@ -655,7 +655,7 @@ const worker = {
         return await adminCoverR2Summary(env);
       }
       if (path === "/api/admin/covers/r2/purge" && request.method === "POST") {
-        return await adminPurgeCoverR2(env);
+        return await adminPurgeCoverR2(request, env);
       }
       const adminCoverMatch = path.match(/^\/api\/admin\/covers\/([0-9Xx]+)$/);
       if (adminCoverMatch && request.method === "DELETE") {

@@ -62,9 +62,10 @@
     // 対になる TURNSTILE_SECRET は `wrangler secret put TURNSTILE_SECRET` で注入する。
     // 両方空なら無効（リスト公開・通報・データ修正をボット確認なしで受け付ける）。
     "TURNSTILE_SITE_KEY": "",
-    // 開発ツール（admin 画面の「DB初期化」= マスターデータ以外を全削除）を有効化。"true" で
-    // 表示・実行可能。認証は requireAdmin（Cloudflare Access）が担保するので管理者だけが使える
-    // （ADMIN_DEV_BYPASS と違い認証はバイパスしない）。正式リリース時は外す/"false" にする。
+    // 開発ツール（admin 画面の「DB初期化」= マスターデータ以外を全削除、および表紙 / 補完 /
+    // 楽天データの「全キャッシュ削除」と R2 トリム画像の全削除）を有効化。"true" で表示・実行可能、
+    // "false" なら UI から隠れ API も 403。認証は requireAdmin（Cloudflare Access）が担保するので
+    // 管理者だけが使える（ADMIN_DEV_BYPASS と違い認証はバイパスしない）。本番は "false"。
     "DEV_TOOLS": "false",
     // サイトの種別（src/site.ts）。"general"＝本家（全年齢）、"adult"＝R18版。R18版は別の Worker
     // （別ドメイン・別 D1/R2/キュー）として env を足し、そちらで "adult" にする（docs/r18.md）。

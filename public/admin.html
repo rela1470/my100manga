@@ -446,12 +446,12 @@
       </div>
       <p class="hint">
         「No Image」は書影が見つからず確定キャッシュした本です。削除すると次回アクセス時に再探索されます
-        （新しく書影が追加された本の拾い直しに有効）。「全キャッシュ削除」は R2 のトリム済み表紙画像も消すので、
-        次回アクセス時に再探索・再トリムされます（表紙トリムのクリーン再テスト用）。
+        （新しく書影が追加された本の拾い直しに有効）。<span class="dev-only" hidden>「全キャッシュ削除」は R2 のトリム済み表紙画像も消すので、
+        次回アクセス時に再探索・再トリムされます（表紙トリムのクリーン再テスト用）。</span>
       </p>
       <div class="cover-actions">
         <button id="purgeEmpty">No Image を削除して再探索</button>
-        <button class="danger" id="purgeAll">全キャッシュ削除</button>
+        <button class="danger dev-only" id="purgeAll" hidden>全キャッシュ削除</button>
         <div class="cover-single">
           <input type="text" id="coverIsbn" placeholder="ISBN13（数字13桁）" inputmode="numeric">
           <button id="delCover">指定ISBNを削除</button>
@@ -467,11 +467,11 @@
           <button id="reloadCoverR2">再読み込み</button>
         </div>
         <p class="hint">
-          Yahoo!ショッピングの正方形表紙を白帯トリムして R2 に保存した画像です。ここで削除すると、
+          Yahoo!ショッピングの正方形表紙を白帯トリムして R2 に保存した画像です。<span class="dev-only" hidden>ここで削除すると、
           D1 の表紙キャッシュは残したまま R2 の実体だけを消します（次回アクセス時に同じ元画像から
-          再トリムして入れ直されます）。表紙トリム処理そのものの再テストに使います。
+          再トリムして入れ直されます）。表紙トリム処理そのものの再テストに使います。</span>
         </p>
-        <div class="cover-actions">
+        <div class="cover-actions dev-only" hidden>
           <button class="danger" id="purgeCoverR2">R2 のトリム画像を全削除</button>
         </div>
       </div>
@@ -508,7 +508,7 @@
       <div class="pager" id="supPager" style="display:none"></div>
       <div class="cover-actions" style="margin-top:16px">
         <button id="purgeSupEmpty">「該当なし」を削除して再取得</button>
-        <button class="danger" id="purgeSupAll">全キャッシュ削除</button>
+        <button class="danger dev-only" id="purgeSupAll" hidden>全キャッシュ削除</button>
         <div class="cover-single">
           <input type="text" id="supSeriesId" placeholder="series_id（例: C268196）">
           <button id="delSup">指定シリーズを削除</button>
@@ -698,7 +698,7 @@
       <div class="pager" id="bookMetaPager" style="display:none"></div>
       <div class="cover-actions" style="margin-top:16px">
         <button id="purgeBookMetaEmpty">「あらすじ無し」を削除して再取得</button>
-        <button class="danger" id="purgeBookMetaAll">全キャッシュ削除</button>
+        <button class="danger dev-only" id="purgeBookMetaAll" hidden>全キャッシュ削除</button>
         <div class="cover-single">
           <input type="text" id="delBookMetaIsbn" placeholder="ISBN13（数字13桁）" inputmode="numeric">
           <button id="delBookMeta">指定ISBNを削除</button>

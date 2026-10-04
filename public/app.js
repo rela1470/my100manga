@@ -1642,15 +1642,20 @@ function buildResultCard(r, pending, ambiguous) {
   const a = document.createElement("div");
   a.className = "a";
   // creators = 役割付きの全作者（"原作：A、作画：B"）。最新DB検索など無いものは代表作者で。
-  a.textContent = [r.creators || r.creator, r.publisher].filter(Boolean).join(" / ");
+  // 版表示でも分かれない同名のカードが並んでいるときは、レーベルと初版年まで出して区別する。
+  const bits = [r.creators || r.creator, r.publisher];
+  if (ambiguous && ambiguous.has(normKey(editionTitle(r)) + "|" + normKey(r.creators || r.creator))) {
+    bits.push(r.label, r.first_year ? `${r.first_year}年` : "");
+  }
+  a.textContent = bits.filter(Boolean).join(" / ");
   info.appendChild(t);
   info.appendChild(a);
   if (r.volume_count) {
     const countDiv = document.createElement("div");
     countDiv.className = "a";
-    // "＋" = 最新巻が未取得（server: unconfirmed）。開いて「最新巻を取得」で確定する。
+    // "＋" = 最新巻が未取得（server: unconfirmed）。開いて「最新データを取得」で確定する。
     countDiv.textContent = r.unconfirmed ? `全${r.volume_count}巻＋` : `全${r.volume_count}巻`;
-    if (r.unconfirmed) countDiv.title = "最新巻は未取得です。開いて「最新巻を取得」で確認できます";
+    if (r.unconfirmed) countDiv.title = "最新巻は未取得です。開いて「最新データを取得」で確認できます";
     info.appendChild(countDiv);
   }
   row.appendChild(info);
@@ -1976,7 +1981,7 @@ async function probeSupplement(seriesId) {
 }
 
 // シリーズ詳細（巻一覧）画面の取得ボタン。probe 後に一覧を再描画する。
-// Series whose 最新巻 fetch already ran in this session. Their button renders as a
+// Series whose 最新データ fetch already ran in this session. Their button renders as a
 // disabled "取得しました" (no re-fetch); keyed by C-id, or title for live series.
 const supplementFetched = new Set();
 function supKey(series) {
@@ -2249,13 +2254,13 @@ function renderVolumes(series, volumes, opts) {
     fetchNew.textContent = "最新DBから取得";
     fetchNew.addEventListener("click", () => refetchLiveSeries(series, fetchNew));
   } else {
-    fetchNew.textContent = "最新巻を取得";
+    fetchNew.textContent = "最新データを取得";
     fetchNew.addEventListener("click", () => fetchSupplement(series, fetchNew));
   }
   if (!isGroupId(series.series_id)) supBar.appendChild(fetchNew);
-  // MADB にまだ載っていない新刊（最新巻を取得でも出てこない末尾の巻）を ISBN で足す入口。
+  // MADB にまだ載っていない新刊（最新データを取得でも出てこない末尾の巻）を ISBN で足す入口。
   // 欠番ボタンは既存の巻の間しか出さないので、末尾への追加はここから行う。先に最新DBを
-  // 見てもらうため「最新巻を取得」を押した後（このセッション中）だけ出す（取得ボタンの無い
+  // 見てもらうため「最新データを取得」を押した後（このセッション中）だけ出す（取得ボタンの無い
   // まとまり(G-id)は常に出す）。live は訂正の保存先が無いので出さない。
   if (
     !opts.live && series.series_id &&

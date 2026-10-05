@@ -215,6 +215,9 @@ textarea:focus {
 button {
   font: inherit;
   cursor: pointer;
+  /* 連続タップをダブルタップ拡大と解釈させない（ピンチ拡大は残る）。
+     スマホで × を続けてタップすると画面がズームしてしまうのを防ぐ。 */
+  touch-action: manipulation;
   border-radius: var(--radius-pill);
   border: 1.5px solid var(--border);
   background: var(--panel-2);
@@ -243,6 +246,7 @@ a.button {
   background: var(--panel-2);
   color: var(--text);
   text-decoration: none; line-height: inherit;
+  touch-action: manipulation;
   transition: transform var(--dur) var(--ease-bounce), box-shadow var(--dur) var(--ease), filter var(--dur) var(--ease), background var(--dur) var(--ease);
 }
 a.button:hover { filter: brightness(1.04); transform: translateY(-1px); box-shadow: var(--shadow-sm); }
@@ -264,6 +268,9 @@ button:disabled { opacity: .5; cursor: not-allowed; transform: none; box-shadow:
   display: grid;
   grid-template-columns: repeat(5, 1fr);
   gap: 12px;
+  /* × で 1 冊消すと後ろのカードが前に詰めるので、同じ場所を続けてタップしたとき 2 回目が
+     ボタン以外（カードの隙間）に落ちることがある。グリッド全体でダブルタップ拡大を切る。 */
+  touch-action: manipulation;
 }
 @media (max-width: 560px) {
   .grid { grid-template-columns: repeat(3, 1fr); gap: 8px; }
@@ -1245,15 +1252,28 @@ h3.mylists-title { margin-top: 24px; font-size: 14px; }
 }
 .slot.selected .slot-check { display: flex; }
 
-/* Insertion caret: a tappable strip on the card's leading edge that means
-   "move the selection to just before this card". Only rendered on unselected
-   cards once a selection exists. */
+/* 移動先フェーズ（.grid.placing）だけの表示。選択フェーズでは挿入先そのものを
+   描かないので、カードのタップが移動に化けることがない。 */
+.grid.placing .slot.drop-target { cursor: copy; }
+.grid.placing .slot.drop-target:hover,
+.grid.placing .slot.drop-target:focus-visible {
+  outline: 3px solid var(--accent);
+  outline-offset: -3px;
+}
+/* 移動する本そのもの。押せないことが見てわかるよう薄くする。 */
+.grid.placing .slot.moving {
+  opacity: .4;
+  cursor: default;
+}
+
+/* Insertion caret: the leading edge of a drop target, meaning "the selection
+   lands just before this card". Decoration only — the whole card is the hit area. */
 .ins-caret {
   position: absolute;
   top: 0; left: 0; bottom: 0;
   width: 30%;
   z-index: 5;
-  cursor: copy;
+  pointer-events: none;
   border-left: 4px solid var(--accent);
   background: linear-gradient(to right, rgba(var(--accent-rgb),.28), rgba(var(--accent-rgb),0));
 }
@@ -1265,10 +1285,6 @@ h3.mylists-title { margin-top: 24px; font-size: 14px; }
   color: var(--accent);
   font-size: 18px;
   font-weight: 700;
-}
-@media (hover: hover) {
-  .ins-caret { opacity: .55; }
-  .ins-caret:hover { opacity: 1; }
 }
 
 .reorder-controls {
@@ -1288,7 +1304,13 @@ h3.mylists-title { margin-top: 24px; font-size: 14px; }
 .reorder-spacer { flex: 1; }
 @media (max-width: 560px) {
   .reorder-count { flex-basis: 100%; }
+  /* 狭い画面でもボタンが 1 行に収まる大きさ（バーが高くなるとカードが隠れる）。 */
+  .reorder-controls { gap: 6px; padding: 8px 10px; }
+  .reorder-controls button { padding: 9px 12px; font-size: 13px; }
 }
+/* 固定バーの下にカードや「元に戻す」トーストが潜らないようにする。 */
+body.reordering { padding-bottom: 132px; }
+body.reordering .ui-toast { bottom: 140px; }
 
 /* modal */
 .modal-backdrop {

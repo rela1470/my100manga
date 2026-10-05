@@ -83,14 +83,17 @@
     <section id="myLists" class="mylists" style="display:none"></section>
   </div>
 
-  <!-- reorder controls: fixed bottom bar shown only while in reorder mode -->
+  <!-- reorder controls: fixed bottom bar shown only while in reorder mode.
+       前半（選択）と後半（移動先）でボタンを出し分ける。renderReorderBar を参照。 -->
   <div class="reorder-controls" id="reorderControls" style="display:none">
     <span class="reorder-count" id="reorderCount"></span>
     <span class="reorder-spacer"></span>
     <button id="sortName">名前順 ↓</button>
-    <button id="moveStart" disabled>先頭へ</button>
-    <button id="moveEnd" disabled>末尾へ</button>
     <button id="reorderClear" disabled>選択解除</button>
+    <button class="primary" id="movePick" disabled>移動先を選ぶ</button>
+    <button id="moveStart" style="display:none">先頭へ</button>
+    <button id="moveEnd" style="display:none">末尾へ</button>
+    <button id="placeCancel" style="display:none">選択にもどる</button>
     <button class="primary" id="reorderDone">完了</button>
   </div>
 

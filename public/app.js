@@ -33,6 +33,7 @@ const state = {
   fetchingCovers: false, // true while the "表紙を取得" bulk fill is running
   coverTried: new Set(), // isbns already fetched this session (miss or hit) — don't re-offer
   reorder: false, // true while in reorder mode (tap = select, not edit)
+  placing: false, // reorder mode phase 2: selection is fixed, now tap where it goes
   selected: new Set(), // indices of cards picked to move; valid only between renders
   sortAsc: true, // direction the "名前順" button will apply next
 };
@@ -624,6 +625,9 @@ function render() {
   const grid = $("grid");
   grid.innerHTML = "";
   grid.classList.toggle("reorder", state.reorder);
+  grid.classList.toggle("placing", state.reorder && state.placing);
+  // 固定の操作バーの下にカードが隠れないよう、並べ替え中だけ下に余白を足す。
+  document.body.classList.toggle("reordering", state.reorder);
   state.items.forEach((it, i) => grid.appendChild(filledSlot(it, i)));
   // No adding while reordering — the add slot would confuse the "tap = select" mode.
   if (!state.reorder && state.items.length < MAX_ITEMS) grid.appendChild(addSlot(state.items.length));
@@ -714,21 +718,28 @@ function filledSlot(it, i) {
     check.className = "slot-check";
     check.textContent = "✓";
     slot.appendChild(check);
-    // Insertion caret on the leading edge: appears only once something is selected,
-    // and never on a selected card (you can't drop a card before itself). Tapping it
-    // moves the whole selection to just before this card.
-    if (state.selected.size > 0 && !isSel) {
+    // Insertion caret: only in the 移動先 phase, and never on a selected card (you
+    // can't drop a card before itself). While picking cards there is no caret and no
+    // move target at all, so a tap can only ever mean "select" — that's what keeps a
+    // slightly-off tap from flinging the selection somewhere.
+    if (state.placing && !isSel) {
       const caret = document.createElement("span");
       caret.className = "ins-caret";
-      caret.title = "ここに挿入（この前に移動）";
-      caret.setAttribute("aria-label", `${i + 1}番目の前に移動`);
-      caret.addEventListener("click", (e) => {
-        e.stopPropagation();
-        moveSelectedBefore(i);
-      });
+      caret.setAttribute("aria-hidden", "true");
       slot.appendChild(caret);
     }
     appendCoverMeta(slot, it);
+    if (state.placing) {
+      slot.classList.add(isSel ? "moving" : "drop-target");
+      if (isSel) {
+        slot.disabled = true; // 移動する本そのものは移動先にならない
+      } else {
+        slot.setAttribute("aria-label", `${i + 1}番目「${it.title || ""}」の前に移動`);
+        slot.addEventListener("click", () => moveSelectedBefore(i));
+      }
+      return slot;
+    }
+    slot.setAttribute("aria-pressed", String(isSel));
     slot.addEventListener("click", () => toggleSelect(i));
     return slot;
   }
@@ -812,9 +823,28 @@ function offerUndoRemove(item, index) {
 }
 
 /* ---------- reorder mode ---------- */
+// 2 段階にしてある。(1) 選択フェーズ: カードのタップは選択だけ。移動のボタンは画面に出さない。
+// (2) 移動先フェーズ: 「移動先を選ぶ」を押して初めて挿入先が出て、カードのタップ＝そこへ移動。
+// 選択の途中に移動のトリガが画面上に存在しないので、タップがずれても誤爆しない。
 function toggleReorder() {
   state.reorder = !state.reorder;
+  state.placing = false;
   state.selected.clear();
+  render();
+}
+
+function startPlacing() {
+  if (state.selected.size === 0) return;
+  if (state.selected.size === state.items.length) {
+    uiToast("すべて選んでいるので移動先がありません。選択を減らしてください。");
+    return;
+  }
+  state.placing = true;
+  render();
+}
+
+function cancelPlacing() {
+  state.placing = false;
   render();
 }
 
@@ -836,7 +866,7 @@ function moveSelectedBefore(targetIndex) {
   let pos = rest.indexOf(target);
   if (pos < 0) pos = rest.length;
   rest.splice(pos, 0, ...picked);
-  finishMove(rest);
+  finishMove(rest, `${picked.length}件を移動しました`);
 }
 
 function moveSelectedToEnd(atStart) {
@@ -844,26 +874,50 @@ function moveSelectedToEnd(atStart) {
   const idx = [...state.selected].sort((a, b) => a - b);
   const picked = idx.map((i) => state.items[i]);
   const rest = state.items.filter((_, i) => !state.selected.has(i));
-  finishMove(atStart ? picked.concat(rest) : rest.concat(picked));
+  finishMove(
+    atStart ? picked.concat(rest) : rest.concat(picked),
+    `${picked.length}件を${atStart ? "先頭" : "末尾"}へ移動しました`,
+  );
 }
 
-function finishMove(next) {
+// 並びを差し替える唯一の口。label を渡すと数秒だけ「元に戻す」を出す（移動先の押し間違い対策）。
+function finishMove(next, label) {
+  const prev = state.items; // next は常に別の配列なので、prev はそのまま戻し先に使える
   state.items = next;
+  state.placing = false;
   state.selected.clear();
   render();
   saveDraft();
+  if (label) offerUndoMove(prev, label);
+}
+
+function offerUndoMove(prev, label) {
+  uiToast(label, {
+    actionLabel: "元に戻す",
+    duration: 6000,
+    onAction: () => {
+      // 戻すまでの間に本が増減していたら、古い並びで上書きしない。
+      if (state.items.length !== prev.length) return;
+      state.items = prev;
+      state.placing = false;
+      state.selected.clear();
+      render();
+      saveDraft();
+    },
+  });
 }
 
 // Bulk sort the whole list by title. Toggles direction each press. Confirms first,
-// since it discards any manual arrangement (which can't be recovered).
+// since it discards any manual arrangement; the undo toast is the second net.
 async function sortByName() {
   if (state.items.length < 2) return;
   if (!(await uiConfirm("現在の並び順を破棄して、作品名で並べ替えます。よろしいですか？"))) return;
   const dir = state.sortAsc ? 1 : -1;
   const coll = new Intl.Collator("ja", { numeric: true, sensitivity: "base" });
-  state.items.sort((a, b) => dir * coll.compare(a.title || "", b.title || ""));
+  // 元の配列は「元に戻す」用に残すので、コピーを並べ替える。
+  const sorted = state.items.slice().sort((a, b) => dir * coll.compare(a.title || "", b.title || ""));
   state.sortAsc = !state.sortAsc;
-  finishMove(state.items);
+  finishMove(sorted, "作品名で並べ替えました");
 }
 
 function renderReorderBar(filled) {
@@ -878,11 +932,22 @@ function renderReorderBar(filled) {
   if (!state.reorder) return;
 
   const n = state.selected.size;
-  const count = $("reorderCount");
-  count.textContent = n === 0
-    ? "動かしたい作品をタップで選択"
-    : `${n}件を選択中 ・ 挿入したい位置（カード左端）をタップ`;
-  for (const id of ["moveStart", "moveEnd", "reorderClear"]) $(id).disabled = n === 0;
+  const placing = state.placing;
+  $("reorderCount").textContent = placing
+    ? `${n}件をどこへ？ 入れたい位置のカードをタップ`
+    : n === 0
+      ? "動かしたい作品をタップで選択"
+      : `${n}件を選択中 ・「移動先を選ぶ」へ`;
+
+  // 選択フェーズには移動を実行するボタンを置かない。移動系は移動先フェーズにだけ出す。
+  const shown = placing
+    ? ["moveStart", "moveEnd", "placeCancel"]
+    : ["sortName", "reorderClear", "movePick", "reorderDone"];
+  for (const id of ["sortName", "reorderClear", "movePick", "reorderDone", "moveStart", "moveEnd", "placeCancel"]) {
+    $(id).style.display = shown.includes(id) ? "" : "none";
+  }
+  $("reorderClear").disabled = n === 0;
+  $("movePick").disabled = n === 0;
   $("sortName").textContent = state.sortAsc ? "名前順 ↓" : "名前順 ↑";
 }
 
@@ -4351,6 +4416,8 @@ function wireEvents() {
   $("clearAll").addEventListener("click", clearAll);
   $("revertPublished").addEventListener("click", revertToPublished);
   $("reorderToggle").addEventListener("click", toggleReorder);
+  $("movePick").addEventListener("click", startPlacing);
+  $("placeCancel").addEventListener("click", cancelPlacing);
   $("moveStart").addEventListener("click", () => moveSelectedToEnd(true));
   $("moveEnd").addEventListener("click", () => moveSelectedToEnd(false));
   $("reorderClear").addEventListener("click", () => { state.selected.clear(); render(); });

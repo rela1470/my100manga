@@ -33,7 +33,6 @@ const pageState = {
   corrReviewed: 1,
   nameOverrides: 1,
   merge: 1,
-  labels: 1,
   volTitleReports: 1,
   titleOverrides: 1,
   reportResolved: 1,
@@ -2832,25 +2831,26 @@ function updateLabelSelCount() {
   $("labelBulkApply").disabled = labelSelected.size === 0;
 }
 
-async function loadLabels(page = pageState.labels) {
+async function loadLabels() {
   const table = $("labelTable");
   const body = $("labelBody");
   const hint = $("labelHint");
   const filter = $("labelFilter").value;
+  const era = $("labelEra").value;
   body.textContent = "";
   hint.style.display = "none";
   table.style.display = "none";
-  $("labelPager").style.display = "none";
-  $("labelClear").style.display = labelQuery || filter ? "" : "none";
+  $("labelClear").style.display = labelQuery || filter || era ? "" : "none";
   $("labelCheckAll").checked = false;
   labelSelected.clear();
   updateLabelSelCount();
 
   let data;
   try {
-    const qs = new URLSearchParams({ page: String(page), per: String(PER) });
+    const qs = new URLSearchParams();
     if (labelQuery) qs.set("q", labelQuery);
     if (filter) qs.set("filter", filter);
+    if (era) qs.set("era", era);
     const res = await fetch(`/api/admin/labels?${qs}`);
     data = await res.json();
     if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
@@ -2863,11 +2863,6 @@ async function loadLabels(page = pageState.labels) {
 
   const labels = data.labels || [];
   const total = data.total ?? labels.length;
-  // 末尾ページの行が絞り込みから外れて空になったら 1 つ前へ戻る。
-  if (labels.length === 0 && page > 1 && total > 0) {
-    return loadLabels(Math.min(page - 1, Math.max(1, Math.ceil(total / PER))));
-  }
-  pageState.labels = page;
   labelCounts = { tagged: data.tagged ?? 0, by_tag: data.by_tag || {} };
   renderLabelCounts(total);
 
@@ -2878,6 +2873,14 @@ async function loadLabels(page = pageState.labels) {
     hint.style.display = "";
     return;
   }
+  // ページ送りをしないので、上限で切れたことは必ず知らせる（全選択が「全部」に見えてしまうため）。
+  if (data.truncated) {
+    hint.textContent =
+      `該当 ${total.toLocaleString("ja-JP")} 件のうち ${labels.length.toLocaleString("ja-JP")} 件だけ表示しています` +
+      `（1 回に出せるのは ${(data.limit ?? labels.length).toLocaleString("ja-JP")} 件まで）。` +
+      `検索語や絞り込みで狭めてください。「全選択」は表示中の分だけが対象です。`;
+    hint.style.display = "";
+  }
 
   for (const row of labels) {
     const cb = el("input", { type: "checkbox", title: `${row.label} を選択` });
@@ -2886,6 +2889,16 @@ async function loadLabels(page = pageState.labels) {
       else labelSelected.delete(row.label);
       updateLabelSelCount();
     });
+
+    // 出版社。1 レーベルに複数の表記がぶら下がることがあるので、一番多いものに「ほかN社」を添える。
+    const pubCell = row.publisher
+      ? el("td", { textContent: row.publisher + (row.publisher_n > 1 ? ` ほか${row.publisher_n - 1}社` : "") })
+      : el("td", { className: "muted", textContent: "-" });
+
+    // 発行年。空＝マスタに 1 冊も日付が無い＝昭和の貸本・児童書の線の可能性が高い（一括付与から外す）。
+    const yearCell = row.year_from
+      ? el("td", { textContent: row.year_from === row.year_to ? row.year_from : `${row.year_from}–${row.year_to}` })
+      : el("td", { className: "warn", textContent: "年なし", title: "マスタに発行年が 1 つもありません。判型ではなく叢書の意味の「〜文庫」（昭和の貸本・児童書）の可能性が高いので、一括付与から外してください" });
 
     const sel = tagSelect(row.tag);
     sel.addEventListener("change", async () => {
@@ -2914,6 +2927,8 @@ async function loadLabels(page = pageState.labels) {
         el("td", null, [cb]),
         el("td", { textContent: row.label }),
         el("td", { className: "num", textContent: (row.series_count ?? 0).toLocaleString("ja-JP") }),
+        pubCell,
+        yearCell,
         el("td", { className: "muted", textContent: row.samples || "-" }),
         el("td", null, [sel]),
       ])
@@ -2921,7 +2936,6 @@ async function loadLabels(page = pageState.labels) {
   }
 
   table.style.display = "";
-  renderPager("labelPager", page, total, loadLabels);
 }
 
 /** レーベルにタグを付ける / 外す（tag = "" が解除）。成功しなければ投げる。 */
@@ -2947,7 +2961,7 @@ async function applyLabelBulk(btn) {
   btn.textContent = "設定中…";
   try {
     await setLabelTags(labels, tag);
-    await loadLabels(pageState.labels);
+    await loadLabels();
   } catch (e) {
     uiAlert("設定に失敗しました: " + e.message);
   } finally {
@@ -2971,7 +2985,7 @@ async function applyLabelManual(btn) {
     await setLabelTags([label], tag);
     input.value = "";
     uiAlert(tag ? `「${label}」に「${tag}」を設定しました。` : `「${label}」のタグを解除しました。`);
-    await loadLabels(pageState.labels);
+    await loadLabels();
   } catch (e) {
     uiAlert("設定に失敗しました: " + e.message);
   } finally {
@@ -2982,21 +2996,24 @@ async function applyLabelManual(btn) {
 
 $("labelSearch").addEventListener("click", () => {
   labelQuery = $("labelQuery").value.trim();
-  loadLabels(1);
+  loadLabels();
 });
 $("labelQuery").addEventListener("keydown", (e) => {
   if (e.key !== "Enter") return;
   labelQuery = $("labelQuery").value.trim();
-  loadLabels(1);
+  loadLabels();
 });
 $("labelClear").addEventListener("click", () => {
   labelQuery = "";
   $("labelQuery").value = "";
   $("labelFilter").value = "";
-  loadLabels(1);
+  $("labelEra").value = "";
+  loadLabels();
 });
-$("labelFilter").addEventListener("change", () => loadLabels(1));
-$("reloadLabels").addEventListener("click", () => loadLabels(pageState.labels));
+$("labelFilter").addEventListener("change", () => loadLabels());
+$("labelEra").addEventListener("change", () => loadLabels());
+$("reloadLabels").addEventListener("click", () => loadLabels());
+// 表示中の全行が対象（上限で切れているときは hint がそう知らせている）。
 $("labelCheckAll").addEventListener("change", (e) => {
   for (const cb of $("labelBody").querySelectorAll('input[type="checkbox"]')) {
     if (cb.checked !== e.target.checked) {
@@ -3084,7 +3101,7 @@ const PAGES = {
     loadSeriesReports(1);
   },
   "series-merges": () => setMergeMode(mergeMode),
-  labels: () => loadLabels(1),
+  labels: () => loadLabels(),
   "volume-title-reports": () => {
     resetHistory("volumeTitleReports");
     loadVolumeTitleReports(1);

@@ -287,9 +287,14 @@
         <span class="count" id="labelCount"></span>
         <input type="text" id="labelQuery" placeholder="レーベル名で検索（空白区切りで AND。例: ジャンプ セレクション）" style="margin-left:8px;min-width:260px">
         <select id="labelFilter" aria-label="タグで絞り込む">
-          <option value="">すべて</option>
-          <option value="untagged">未設定</option>
-          <option value="tagged">設定済み</option>
+          <option value="">タグ: すべて</option>
+          <option value="untagged">タグ: 未設定</option>
+          <option value="tagged">タグ: 設定済み</option>
+        </select>
+        <select id="labelEra" aria-label="発行年の有無で絞り込む">
+          <option value="">発行年: すべて</option>
+          <option value="dated">発行年: あり</option>
+          <option value="undated">発行年: なし</option>
         </select>
         <button id="labelSearch">検索</button>
         <button id="labelClear" style="display:none">クリア</button>
@@ -304,8 +309,9 @@
         シリーズ全部の検索カードと巻一覧に「廉価版」「文庫版」と出ます。タグはレーベル名を鍵に
         別の表（<code>label_tag</code>）が持つので、毎月の取り込みで消えません。
         <br>
-        「文庫」などで検索 → 「未設定」で絞り込み → <strong>このページを全選択</strong> →
-        下のまとめて設定、の順が速いです。一覧はシリーズ数の多い順に並びます。
+        ページ送りはしません。絞り込んだ結果をまとめて出すので、
+        <strong>検索 → 絞り込み → 全選択 → 下のまとめて設定</strong>の順に進めます。
+        一覧はシリーズ数の多い順です。
         <strong>検索語を空白で区切ると AND になります</strong>（<code>ジャンプ セレクション</code> で
         <code>ジャンプコミックスセレクション</code> も <code>ジャンプ コミックス セレクション</code> も
         <code>ジャンプ・コミックス・セレクション</code> も一度に拾えます。マスタは同じレーベルを
@@ -316,14 +322,26 @@
         設定するたびに表示データの世代が上がり、サイト全体の閲覧キャッシュが作り直しになります。
         1 件ずつ変えるより<strong>まとめて設定</strong>のほうが（1 回で済むので）負荷が軽いです。
       </p>
+      <p class="hint">
+        <strong>発行年が「なし」の行は、一括付与の前に外してください。</strong>
+        「文庫」で引くと 426 レーベル出ますが、うち 188 レーベル（1,254 シリーズ）は
+        判型ではなく叢書の意味で「〜文庫」と名乗っていた昭和の貸本・児童書の線です
+        （<code>おもしろ漫画文庫</code>・<code>あり文庫</code>・<code>伝記漫画文庫</code>…、
+        社名がそのまま <code>太平洋文庫</code> のものもあります）。マスタに発行年が 1 つも
+        無いのが目印なので、<strong>発行年: あり</strong>で絞ってから全選択してください。
+        逆に <code>コロタン文庫</code>（小学館のポケット百科）や <code>岩波文庫</code>（画集・目録）は
+        発行年があっても漫画の文庫版ではないので、個別に外してください。
+      </p>
       <p class="hint" id="labelHint" style="display:none"></p>
       <div class="table-scroll">
         <table class="admin-table" id="labelTable" style="display:none">
           <thead>
             <tr>
-              <th><input type="checkbox" id="labelCheckAll" aria-label="このページを全選択"></th>
+              <th><input type="checkbox" id="labelCheckAll" aria-label="表示中を全選択"></th>
               <th>レーベル</th>
               <th>シリーズ数</th>
+              <th>出版社</th>
+              <th>発行年</th>
               <th>そのレーベルの主な作品</th>
               <th>タグ</th>
             </tr>
@@ -331,7 +349,6 @@
           <tbody id="labelBody"></tbody>
         </table>
       </div>
-      <div class="pager" id="labelPager" style="display:none"></div>
       <div class="cover-actions" style="margin-top:16px">
         <div class="cover-single">
           <span class="hint" id="labelSelCount">選択中 0 件</span>

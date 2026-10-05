@@ -22,7 +22,6 @@ const [A, B, C, LOOSE] = makeIsbns(4, 920000);
 const LOOSE_NAME = "テストマイゴレーベルサクヒン";
 
 const adminEnv = env as unknown as Env;
-const page = { page: 1, per: 50, offset: 0 };
 
 async function addSeries(id: string, label: string): Promise<void> {
   await env.DB.prepare(
@@ -48,8 +47,8 @@ interface Card {
   label_tag: string;
 }
 
-async function listLabels(q = "", filter = "") {
-  const res = await adminListLabels(adminEnv, page, q, filter);
+async function listLabels(q = "", filter = "", era = "") {
+  const res = await adminListLabels(adminEnv, q, filter, era);
   expect(res.status).toBe(200);
   return (await res.json()) as {
     tags: string[];
@@ -144,7 +143,13 @@ describe("管理画面のレーベル一覧", () => {
     const data = await listLabels();
     expect(data.tags).toEqual(["廉価版", "文庫版", "傑作選"]);
     const byLabel = new Map(data.labels.map((l) => [l.label, l]));
-    expect(byLabel.get("KPC")).toMatchObject({ series_count: 1, tag: "廉価版", samples: NAME });
+    expect(byLabel.get("KPC")).toMatchObject({
+      series_count: 1,
+      tag: "廉価版",
+      samples: NAME,
+      publisher: "レーベル社",
+      publisher_n: 1,
+    });
     expect(byLabel.get("テスト通常コミックス")?.tag).toBe("");
     expect(data.total).toBe(3);
     expect(data.tagged).toBe(2);
@@ -172,10 +177,68 @@ describe("管理画面のレーベル一覧", () => {
     await setTags({ label: "巻にしかないレーベル", tag: "廉価版" });
     const data = await listLabels("巻にしかない");
     expect(data.labels).toEqual([
-      { label: "巻にしかないレーベル", series_count: 0, tag: "廉価版", samples: "" },
+      {
+        label: "巻にしかないレーベル",
+        series_count: 0,
+        tag: "廉価版",
+        samples: "",
+        publisher: "",
+        publisher_n: 0,
+        year_from: "",
+        year_to: "",
+      },
     ]);
     await setTags({ label: "巻にしかないレーベル", tag: "" });
     expect((await listLabels("巻にしかない")).total).toBe(0);
+  });
+});
+
+// 「文庫」で引くと、判型ではなく叢書の意味で「〜文庫」と名乗っていた昭和の貸本・児童書の
+// 線（マスタに発行年が 1 つも無い）が混ざる。一括付与の前に外せるよう、発行年の範囲を列で
+// 出し、?era= で絞れるようにしてある。
+describe("発行年の範囲と ?era= の絞り込み", () => {
+  const DATED = "試験文庫あり";
+  const UNDATED = "試験文庫なし";
+
+  beforeAll(async () => {
+    await addSeries("CY001", DATED);
+    await addSeries("CY002", UNDATED);
+    const [d1, d2, u1] = makeIsbns(3, 930000);
+    await env.DB.prepare(
+      `INSERT OR REPLACE INTO volumes (isbn, series_id, volume_number, vol_sort, title, title_search, creator, label, pubdate)
+       VALUES (?, 'CY001', '1', 1, ?, ?, '作者', ?, '1994-12')`
+    ).bind(d1, NAME, NAME, DATED).run();
+    await env.DB.prepare(
+      `INSERT OR REPLACE INTO volumes (isbn, series_id, volume_number, vol_sort, title, title_search, creator, label, pubdate)
+       VALUES (?, 'CY001', '2', 2, ?, ?, '作者', ?, '2018-03')`
+    ).bind(d2, NAME, NAME, DATED).run();
+    // 発行年が空の巻だけを持つ＝貸本・児童書の線の形。
+    await env.DB.prepare(
+      `INSERT OR REPLACE INTO volumes (isbn, series_id, volume_number, vol_sort, title, title_search, creator, label, pubdate)
+       VALUES (?, 'CY002', '1', 1, ?, ?, '作者', ?, '')`
+    ).bind(u1, NAME, NAME, UNDATED).run();
+  });
+
+  it("発行年の最小・最大を年 4 桁で返す", async () => {
+    const byLabel = new Map((await listLabels("試験文庫")).labels.map((l) => [l.label, l]));
+    expect(byLabel.get(DATED)).toMatchObject({ year_from: "1994", year_to: "2018" });
+    // 1 冊も日付が無ければ空（画面は「年なし」と出す）。
+    expect(byLabel.get(UNDATED)).toMatchObject({ year_from: "", year_to: "" });
+  });
+
+  it("?era=dated / undated で分けられる", async () => {
+    expect((await listLabels("試験文庫", "", "dated")).labels.map((l) => l.label)).toEqual([DATED]);
+    expect((await listLabels("試験文庫", "", "undated")).labels.map((l) => l.label)).toEqual([UNDATED]);
+    expect((await listLabels("試験文庫", "", "")).total).toBe(2);
+    // 知らない era は絞り込み無し扱い。
+    expect((await listLabels("試験文庫", "", "でたらめ")).total).toBe(2);
+  });
+
+  it("ページ送りはせず、該当を全部返す（truncated は偽）", async () => {
+    const data = await listLabels();
+    expect(data.labels.length).toBe(data.total);
+    expect(data.truncated).toBe(false);
+    expect(data.shown).toBe(data.total);
   });
 });
 
@@ -214,8 +277,22 @@ describe("管理画面のタグ付け", () => {
     expect(await tagOf("何か")).toBeNull();
   });
 
-  it("一度に 200 件を超える指定は 400", async () => {
-    const many = Array.from({ length: 201 }, (_, i) => `多すぎ${i}`);
+  // 上限は一覧が 1 回に返す件数（MAX_ROWS）と同じにしてある。画面に出ている分は
+  // 必ず一度に設定できて、それ以上は弾く。
+  it("一度に 1,000 件を超える指定は 400（1 件も書かない）", async () => {
+    const many = Array.from({ length: 1001 }, (_, i) => `多すぎ${i}`);
     expect((await setTags({ labels: many, tag: "廉価版" })).status).toBe(400);
+    expect(await tagOf("多すぎ0")).toBeNull();
+  });
+
+  it("1,000 件ちょうどは通る（D1 へは小分けに流す）", async () => {
+    const many = Array.from({ length: 1000 }, (_, i) => `大量${i}`);
+    const res = await setTags({ labels: many, tag: "文庫版" });
+    expect(res.status).toBe(200);
+    expect(await res.json()).toMatchObject({ updated: 1000 });
+    expect(await tagOf("大量0")).toBe("文庫版");
+    expect(await tagOf("大量999")).toBe("文庫版");
+    await setTags({ labels: many, tag: "" });
+    expect(await tagOf("大量0")).toBeNull();
   });
 });

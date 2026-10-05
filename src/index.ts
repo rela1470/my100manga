@@ -688,13 +688,15 @@ const worker = {
       if (adminBookMetaMatch && request.method === "DELETE") {
         return await adminDeleteBookMeta(env, adminBookMetaMatch[1]);
       }
-      // レーベルのタグ付け（廉価版・文庫版）。?q= 名前の部分一致 / ?filter= untagged | tagged | <タグ名>。
+      // レーベルのタグ付け（廉価版・文庫版・傑作選）。?q= 名前（空白区切りで AND）/
+      // ?filter= untagged | tagged | <タグ名> / ?era= dated | undated（発行年の有無）。
       if (path === "/api/admin/labels" && request.method === "GET") {
+        // ページ送りはしない（絞り込んだ結果を 1 画面に出して全選択 → まとめて設定するため）。
         return await adminListLabels(
           env,
-          parsePage(url),
           url.searchParams.get("q") ?? "",
-          url.searchParams.get("filter") ?? ""
+          url.searchParams.get("filter") ?? "",
+          url.searchParams.get("era") ?? ""
         );
       }
       // レーベル名そのものが鍵なので（日本語・記号を含む）パスには載せず body で受ける。

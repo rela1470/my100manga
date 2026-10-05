@@ -14,7 +14,6 @@ import type { Env } from "../src/types";
 // （D1 はテストファイルごとに空で、同じファイル内のテストだけが共有する）。
 
 const adminEnv = env as unknown as Env;
-const page = { page: 1, per: 50, offset: 0 };
 
 const VARIANTS = [
   "ジャンプコミックスセレクション",
@@ -24,7 +23,7 @@ const VARIANTS = [
 const OTHERS = ["ジャンプ・コミックス", "Bamboo essay SELECTION", "講談社漫画文庫"];
 
 async function labelsFor(q: string): Promise<string[]> {
-  const res = await adminListLabels(adminEnv, page, q, "");
+  const res = await adminListLabels(adminEnv, q, "", "");
   expect(res.status).toBe(200);
   const body = (await res.json()) as { labels: { label: string }[] };
   return body.labels.map((l) => l.label).sort();

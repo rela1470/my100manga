@@ -9,7 +9,6 @@
 // タグは series.id ではなく **レーベル名そのもの** を鍵にした別表 label_tag に持つ。
 // series / volumes は月次の取り込みで表ごと作り直されるので（scripts/ingest.mjs SWAP_SQL）、
 // マスタ側に印を書くと毎月消えるため。db/add-label-tag.sql。
-import type { PageOpts } from "./admin";
 import { Env } from "./types";
 import { badRequest, escapeLikeClamped, json, LIKE_MAX_BYTES } from "./util";
 
@@ -36,8 +35,18 @@ function normLabel(v: unknown): string {
 // D1 の 1 文へのバインド上限に収まる分割幅。
 const IN_CHUNK = 100;
 
-/** 1 回のまとめて設定で受けるレーベルの上限（管理画面は 1 ページ 50 件なので十分）。 */
-const MAX_BULK = 200;
+/** 一覧が 1 回に返すレーベルの上限。管理画面はページ送りをせず、絞り込んだ結果を 1 画面に
+ *  出して「全選択 → まとめて設定」する作りなので、ページャーの代わりにこれで頭を押さえる。
+ *  実測で「文庫」が 426 件・70ms、絞り込み無しの全 7,808 件で 900ms なので、現実的な検索は
+ *  まず当たらない。超えたときは件数を添えて「絞り込んでください」と返す。 */
+const MAX_ROWS = 1000;
+
+/** 1 回のまとめて設定で受けるレーベルの上限。一覧の上限と同じにしてあるので、
+ *  画面に出ている分は必ず一度に設定できる。 */
+const MAX_BULK = MAX_ROWS;
+
+/** まとめて設定を D1 に流すときの 1 バッチの文数。1,000 文を 1 バッチにはしない。 */
+const WRITE_CHUNK = 100;
 
 /** 一覧の検索語を AND の語に割る上限。これ以上は落とす（LIKE の本数を青天井にしない）。 */
 const MAX_TERMS = 6;
@@ -100,15 +109,33 @@ interface LabelRow {
   series_count: number;
   tag: string | null;
   samples: string | null;
+  publisher: string | null;    // そのレーベルで一番多い出版社
+  publisher_n: number;         // そのレーベルに出てくる出版社の数（1 より多ければ「ほかN社」）
+  years: string | null;        // "1994-12/2018-12"（巻の発行年の最小/最大）。NULL = 1 冊も日付が無い
 }
 
-/** GET /api/admin/labels — レーベルの一覧（シリーズ数の多い順）。
- *  ?q= レーベル名の部分一致 / ?filter= untagged | tagged | <タグ名>。 */
+/** そのレーベルの巻が持つ発行年の範囲。「文庫」で引くと、判型ではなく叢書の意味で
+ *  「〜文庫」と名乗っていた昭和の貸本・児童書の線が 188 レーベル混ざる（『おもしろ漫画文庫』
+ *  『あり文庫』…）。それらはマスタに発行年が 1 つも無いので、ここが空なら一括付与から
+ *  外す、という判断に使える。 */
+function yearRange(years: string | null): { from: string; to: string } {
+  const [from = "", to = ""] = (years ?? "").split("/");
+  return { from: from.slice(0, 4), to: to.slice(0, 4) };
+}
+
+/** そのレーベルの巻が 1 冊でも発行年を持つか。EXISTS なので 1 件見つかれば止まる。 */
+const HAS_YEAR = `EXISTS (SELECT 1 FROM volumes v
+                           WHERE v.series_id IN (SELECT id FROM series WHERE label = g.label)
+                             AND v.pubdate > '')`;
+
+/** GET /api/admin/labels — レーベルの一覧（シリーズ数の多い順、ページ送り無し）。
+ *  ?q= レーベル名（空白区切りで AND）/ ?filter= untagged | tagged | <タグ名> /
+ *  ?era= dated（発行年あり）| undated（発行年なし）。 */
 export async function adminListLabels(
   env: Env,
-  opts: PageOpts,
   q: string,
-  filter: string
+  filter: string,
+  era: string
 ): Promise<Response> {
   const where: string[] = [];
   const binds: unknown[] = [];
@@ -128,32 +155,44 @@ export async function adminListLabels(
     where.push(`EXISTS (SELECT 1 FROM label_tag t WHERE t.label = g.label AND t.tag = ?)`);
     binds.push(filter);
   }
+  // 発行年の有無。「文庫」を一括で付けるときに、昭和の貸本・児童書の線（発行年なし）を
+  // まとめて外す／そこだけ見る、のに使う。
+  if (era === "dated") where.push(HAS_YEAR);
+  else if (era === "undated") where.push(`NOT ${HAS_YEAR}`);
   const cond = where.length ? ` WHERE ${where.join(" AND ")}` : "";
 
   const totalRow = await env.DB.prepare(`${LABEL_GROUPS} SELECT COUNT(*) AS n FROM g${cond}`)
     .bind(...binds)
     .first<{ n: number }>();
+  const total = totalRow?.n ?? 0;
 
-  // 代表作品は「そのレーベルで巻数の多いシリーズ」を 3 つ。レーベル名だけでは何の廉価版か
-  // 分からないことがあるので、判断材料として出す。
+  // 代表作品・出版社・発行年の範囲は、レーベルごとに別途引く列。
   // **並べ替えと LIMIT を内側の p で終わらせてから引くこと。** 相関サブクエリを LIMIT と同じ
-  // SELECT に置くと、SQLite は ORDER BY のソートに載せる時点で全行ぶん（7,808 レーベル =
-  // series 13 万行ぶんの読み直し）評価する。内側に押し込めば実際に返す 50 行だけで済む
-  // （ローカル実測で 50ms → 10ms）。
+  // SELECT に置くと、SQLite は ORDER BY のソートに載せる時点で全行ぶん評価する（7,808 レーベル
+  // = series 13 万行ぶんの読み直し）。内側に押し込めば実際に返す行だけで済む。
   const { results } = await env.DB.prepare(
     `${LABEL_GROUPS},
      p AS (SELECT g.label, g.series_count FROM g${cond}
             ORDER BY g.series_count DESC, g.label
-            LIMIT ? OFFSET ?)
+            LIMIT ?)
      SELECT p.label, p.series_count,
             (SELECT t.tag FROM label_tag t WHERE t.label = p.label) AS tag,
             (SELECT group_concat(name, ' / ') FROM
                (SELECT s2.name FROM series s2 WHERE s2.label = p.label
-                 ORDER BY COALESCE(s2.num_items, 0) DESC, s2.id LIMIT 3)) AS samples
+                 ORDER BY COALESCE(s2.num_items, 0) DESC, s2.id LIMIT 3)) AS samples,
+            (SELECT s3.publisher FROM series s3
+               WHERE s3.label = p.label AND COALESCE(s3.publisher, '') <> ''
+               GROUP BY s3.publisher ORDER BY COUNT(*) DESC, s3.publisher LIMIT 1) AS publisher,
+            (SELECT COUNT(DISTINCT s4.publisher) FROM series s4
+               WHERE s4.label = p.label AND COALESCE(s4.publisher, '') <> '') AS publisher_n,
+            -- MIN と MAX を 1 本のサブクエリで取る（スカラーなので連結して返し、受け側で割る）。
+            (SELECT MIN(v.pubdate) || '/' || MAX(v.pubdate) FROM volumes v
+               WHERE v.series_id IN (SELECT id FROM series WHERE label = p.label)
+                 AND v.pubdate > '') AS years
        FROM p
       ORDER BY p.series_count DESC, p.label`
   )
-    .bind(...binds, opts.per, opts.offset)
+    .bind(...binds, MAX_ROWS)
     .all<LabelRow>();
 
   // タグごとの付与件数（label_tag は数十〜数百行なので全部数えてよい）。
@@ -165,16 +204,28 @@ export async function adminListLabels(
   for (const t of LABEL_TAGS) byTag[t] = 0;
   for (const r of counts.results ?? []) byTag[r.tag] = r.n;
 
+  const rows = results ?? [];
   return json(
     {
       tags: LABEL_TAGS,
-      labels: (results ?? []).map((r) => ({
-        label: r.label,
-        series_count: r.series_count,
-        tag: r.tag ?? "",
-        samples: r.samples ?? "",
-      })),
-      total: totalRow?.n ?? 0,
+      labels: rows.map((r) => {
+        const { from, to } = yearRange(r.years);
+        return {
+          label: r.label,
+          series_count: r.series_count,
+          tag: r.tag ?? "",
+          samples: r.samples ?? "",
+          publisher: r.publisher ?? "",
+          publisher_n: r.publisher_n ?? 0,
+          year_from: from,
+          year_to: to,
+        };
+      }),
+      total,
+      // 上限で切れたか。切れたときだけクライアントが「絞り込んでください」を出す。
+      shown: rows.length,
+      truncated: total > rows.length,
+      limit: MAX_ROWS,
       by_tag: byTag,
       tagged: Object.values(byTag).reduce((a, b) => a + b, 0),
     },
@@ -206,7 +257,11 @@ export async function adminSetLabelTags(env: Env, body: Record<string, unknown>)
         ).bind(label, tag, now, now)
       : env.DB.prepare(`DELETE FROM label_tag WHERE label = ?`).bind(label)
   );
-  await env.DB.batch(stmts);
+  // 1,000 件を 1 バッチにはしない。途中で落ちても入った分はそのまま有効で、同じ操作を
+  // やり直せば残りが入る（どちらも冪等な upsert / delete なので）。
+  for (let i = 0; i < stmts.length; i += WRITE_CHUNK) {
+    await env.DB.batch(stmts.slice(i, i + WRITE_CHUNK));
+  }
 
   return json({ ok: true, updated: labels.length, tag }, 200, { "cache-control": "no-store" });
 }

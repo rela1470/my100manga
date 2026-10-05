@@ -279,8 +279,21 @@ Cloudflare Access の内側で手元から確認できないため**未確認**�
 | admin（未認証） | 本家 api=401、R18 api=403 |
 | R18 本番の年齢ゲート | ブラウザ UA・cookie 無しで `/api/site-stats` が 403 |
 
-R18 の `/`（HTML の殻）はブラウザ UA・cookie 無しでも 200 で返る。ゲートは殻の中の API に
-掛かっているので、年齢ゲートの確認は `/` ではなく API（`/api/site-stats` 等）で見ること。
+**R18 の年齢ゲートを curl で確かめるときのヘッダ。** ゲートは「HTML を見に来たリクエスト」
+（`src/ageGate.ts` の `wantsDocument`）と API の両方に掛かるが、curl は既定でどちらの条件も
+満たさないので素通りして見える。実測（本番 `/`、cookie 無し）:
+
+| 付けるヘッダ | 結果 |
+|---|---|
+| 既定の curl UA | 200 本編（`isCrawler` に当たってゲート除外。**壊れて見えるが正常**） |
+| ブラウザ UA のみ | 200 本編（`accept` も `sec-fetch-dest` も無く、HTML 要求と見なされない） |
+| ブラウザ UA ＋ `accept: text/html` | **200 年齢確認ページ**（`<title>年齢確認 \| My 100 Shunga`） |
+| ブラウザ UA ＋ `sec-fetch-dest: document` | **200 年齢確認ページ** |
+
+つまり `/` も**ブラウザからは正しくゲートされる**（本物のブラウザは必ず `accept` と
+`sec-fetch-dest` を送る）。curl で `/` が 200 本編だったことを「`/` はゲート対象外」と
+読まないこと。API で見るなら `GET /api/search?q=…` にブラウザ UA を付けて 403
+`{"age_gate":true}` を確認するのが手早い。
 
 admin UI（「戻す」を押してサジェストに戻るか）は Access の内側なので**未確認**。ブラウザで要確認。
 

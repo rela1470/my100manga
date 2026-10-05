@@ -12,6 +12,7 @@ import {
   workKey,
 } from "./util";
 import { readCachedCovers } from "./covers";
+import { tagsForLabels } from "./labels";
 
 /** series.name_norm の前方一致を idx_series_name_norm で引く WHERE 句。同じ前方一致文字列を 2 回
  *  bind する（下限と上限）。SQLite の LIKE は既定で ASCII の大小を無視するため BINARY の索引では
@@ -335,6 +336,8 @@ export async function getGroupVolumes(
       creator: g.creator,
       creators: g.creators,
       publisher: g.publisher,
+      // レーベルに付いた運営のタグ（"廉価版" / "文庫版"）。検索カードと同じ印を巻一覧でも出す。
+      label_tag: (await tagsForLabels(env, [g.label])).get(g.label) ?? "",
       group: true,
       supplement_probed: true,
       supplement_checked_at: 0,

@@ -33,6 +33,7 @@ const pageState = {
   corrReviewed: 1,
   nameOverrides: 1,
   merge: 1,
+  labels: 1,
   volTitleReports: 1,
   titleOverrides: 1,
   reportResolved: 1,
@@ -2782,6 +2783,231 @@ async function deleteBookMeta(btn) {
   }
 }
 
+/* ---------- レーベル管理（廉価版・文庫版のタグ付け） ---------- */
+// マスタ（MADB）には「コンビニ廉価版か」「文庫版か」を表す項目が無いが、レーベル名
+// （schema:brand）を見れば分かるものが多い（KPC・講談社プラチナコミックス = 廉価版）。
+// ここで付けたタグは label_tag（レーベル名が鍵）に入り、そのレーベルのシリーズ全部の
+// 検索カード・巻一覧に出る（src/labels.ts）。毎月の取り込みでは消えない。
+let labelQuery = "";
+let labelTagOptions = [];
+let labelCounts = { tagged: 0, by_tag: {} };
+const labelSelected = new Set();
+
+// タグの選択肢はサーバ（src/labels.ts LABEL_TAGS）が返すものをそのまま使う。増やしたときに
+// 画面側を直さなくて済むよう、絞り込み・まとめて設定・レーベル名指定の 3 つを一度に埋める。
+function syncLabelTagOptions(tags) {
+  if (labelTagOptions.length || !(tags || []).length) return;
+  labelTagOptions = tags;
+  for (const t of labelTagOptions) {
+    $("labelFilter").append(el("option", { value: t, textContent: t }));
+  }
+  for (const id of ["labelBulkTag", "labelManualTag"]) {
+    const sel = $(id);
+    sel.textContent = "";
+    sel.append(el("option", { value: "", textContent: "タグなし（解除）" }));
+    for (const t of labelTagOptions) sel.append(el("option", { value: t, textContent: t }));
+    sel.value = labelTagOptions[0];
+  }
+}
+
+function tagSelect(current) {
+  const sel = el("select", { title: "このレーベルのタグ" });
+  sel.append(el("option", { value: "", textContent: "—" }));
+  for (const t of labelTagOptions) sel.append(el("option", { value: t, textContent: t }));
+  sel.value = current || "";
+  return sel;
+}
+
+function renderLabelCounts(total) {
+  const breakdown = labelTagOptions
+    .map((t) => `${t} ${(labelCounts.by_tag[t] ?? 0).toLocaleString("ja-JP")}`)
+    .join(" / ");
+  $("labelCount").textContent =
+    `${total.toLocaleString("ja-JP")}件` +
+    (breakdown ? `（設定済み ${labelCounts.tagged.toLocaleString("ja-JP")}: ${breakdown}）` : "");
+}
+
+function updateLabelSelCount() {
+  $("labelSelCount").textContent = `選択中 ${labelSelected.size} 件`;
+  $("labelBulkApply").disabled = labelSelected.size === 0;
+}
+
+async function loadLabels(page = pageState.labels) {
+  const table = $("labelTable");
+  const body = $("labelBody");
+  const hint = $("labelHint");
+  const filter = $("labelFilter").value;
+  body.textContent = "";
+  hint.style.display = "none";
+  table.style.display = "none";
+  $("labelPager").style.display = "none";
+  $("labelClear").style.display = labelQuery || filter ? "" : "none";
+  $("labelCheckAll").checked = false;
+  labelSelected.clear();
+  updateLabelSelCount();
+
+  let data;
+  try {
+    const qs = new URLSearchParams({ page: String(page), per: String(PER) });
+    if (labelQuery) qs.set("q", labelQuery);
+    if (filter) qs.set("filter", filter);
+    const res = await fetch(`/api/admin/labels?${qs}`);
+    data = await res.json();
+    if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
+  } catch {
+    hint.textContent = "レーベル一覧の取得に失敗しました";
+    hint.style.display = "";
+    return;
+  }
+  syncLabelTagOptions(data.tags);
+
+  const labels = data.labels || [];
+  const total = data.total ?? labels.length;
+  // 末尾ページの行が絞り込みから外れて空になったら 1 つ前へ戻る。
+  if (labels.length === 0 && page > 1 && total > 0) {
+    return loadLabels(Math.min(page - 1, Math.max(1, Math.ceil(total / PER))));
+  }
+  pageState.labels = page;
+  labelCounts = { tagged: data.tagged ?? 0, by_tag: data.by_tag || {} };
+  renderLabelCounts(total);
+
+  if (total === 0) {
+    hint.textContent = labelQuery
+      ? `「${labelQuery}」に一致するレーベルはありません。`
+      : "該当するレーベルはありません。";
+    hint.style.display = "";
+    return;
+  }
+
+  for (const row of labels) {
+    const cb = el("input", { type: "checkbox", title: `${row.label} を選択` });
+    cb.addEventListener("change", () => {
+      if (cb.checked) labelSelected.add(row.label);
+      else labelSelected.delete(row.label);
+      updateLabelSelCount();
+    });
+
+    const sel = tagSelect(row.tag);
+    sel.addEventListener("change", async () => {
+      const next = sel.value;
+      const prev = row.tag || "";
+      if (next === prev) return;
+      sel.disabled = true;
+      try {
+        await setLabelTags([row.label], next);
+        // 1 行の付け替えでは一覧を取り直さない（チェック中の選択が消えるため）。件数だけ直す。
+        row.tag = next;
+        if (prev) labelCounts.by_tag[prev] = Math.max(0, (labelCounts.by_tag[prev] ?? 0) - 1);
+        if (next) labelCounts.by_tag[next] = (labelCounts.by_tag[next] ?? 0) + 1;
+        labelCounts.tagged += (next ? 1 : 0) - (prev ? 1 : 0);
+        renderLabelCounts(total);
+      } catch (e) {
+        sel.value = prev;
+        uiAlert("設定に失敗しました: " + e.message);
+      } finally {
+        sel.disabled = false;
+      }
+    });
+
+    body.append(
+      el("tr", null, [
+        el("td", null, [cb]),
+        el("td", { textContent: row.label }),
+        el("td", { className: "num", textContent: (row.series_count ?? 0).toLocaleString("ja-JP") }),
+        el("td", { className: "muted", textContent: row.samples || "-" }),
+        el("td", null, [sel]),
+      ])
+    );
+  }
+
+  table.style.display = "";
+  renderPager("labelPager", page, total, loadLabels);
+}
+
+/** レーベルにタグを付ける / 外す（tag = "" が解除）。成功しなければ投げる。 */
+async function setLabelTags(labels, tag) {
+  const res = await fetch("/api/admin/labels", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ labels, tag }),
+  });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
+  return data;
+}
+
+async function applyLabelBulk(btn) {
+  const labels = [...labelSelected];
+  if (!labels.length) return;
+  const tag = $("labelBulkTag").value;
+  const what = tag ? `「${tag}」を設定` : "タグを解除";
+  if (!(await uiConfirm(`選択した ${labels.length} 件のレーベルに${what}します。よろしいですか？`, { okLabel: "設定する" }))) return;
+  const orig = btn.textContent;
+  btn.disabled = true;
+  btn.textContent = "設定中…";
+  try {
+    await setLabelTags(labels, tag);
+    await loadLabels(pageState.labels);
+  } catch (e) {
+    uiAlert("設定に失敗しました: " + e.message);
+  } finally {
+    btn.disabled = false;
+    btn.textContent = orig;
+  }
+}
+
+async function applyLabelManual(btn) {
+  const input = $("labelManualName");
+  const label = input.value.trim();
+  if (!label) {
+    uiAlert("レーベル名を入力してください。");
+    return;
+  }
+  const tag = $("labelManualTag").value;
+  const orig = btn.textContent;
+  btn.disabled = true;
+  btn.textContent = "設定中…";
+  try {
+    await setLabelTags([label], tag);
+    input.value = "";
+    uiAlert(tag ? `「${label}」に「${tag}」を設定しました。` : `「${label}」のタグを解除しました。`);
+    await loadLabels(pageState.labels);
+  } catch (e) {
+    uiAlert("設定に失敗しました: " + e.message);
+  } finally {
+    btn.disabled = false;
+    btn.textContent = orig;
+  }
+}
+
+$("labelSearch").addEventListener("click", () => {
+  labelQuery = $("labelQuery").value.trim();
+  loadLabels(1);
+});
+$("labelQuery").addEventListener("keydown", (e) => {
+  if (e.key !== "Enter") return;
+  labelQuery = $("labelQuery").value.trim();
+  loadLabels(1);
+});
+$("labelClear").addEventListener("click", () => {
+  labelQuery = "";
+  $("labelQuery").value = "";
+  $("labelFilter").value = "";
+  loadLabels(1);
+});
+$("labelFilter").addEventListener("change", () => loadLabels(1));
+$("reloadLabels").addEventListener("click", () => loadLabels(pageState.labels));
+$("labelCheckAll").addEventListener("change", (e) => {
+  for (const cb of $("labelBody").querySelectorAll('input[type="checkbox"]')) {
+    if (cb.checked !== e.target.checked) {
+      cb.checked = e.target.checked;
+      cb.dispatchEvent(new Event("change"));
+    }
+  }
+});
+$("labelBulkApply").addEventListener("click", (e) => applyLabelBulk(e.currentTarget));
+$("labelManualApply").addEventListener("click", (e) => applyLabelManual(e.currentTarget));
+
 // --- 開発ツール（ローカル dev 限定: ADMIN_DEV_BYPASS）------------------------
 // DB 初期化（マスターデータ以外を全削除）と、各キャッシュの「全削除」系ボタン。どちらも
 // 一撃で全件消える破壊的操作なので本番からは隠す。/api/admin/stats の dev=false で
@@ -2858,6 +3084,7 @@ const PAGES = {
     loadSeriesReports(1);
   },
   "series-merges": () => setMergeMode(mergeMode),
+  labels: () => loadLabels(1),
   "volume-title-reports": () => {
     resetHistory("volumeTitleReports");
     loadVolumeTitleReports(1);

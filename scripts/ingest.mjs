@@ -124,6 +124,8 @@ const SWAP_SQL = [
   "CREATE INDEX IF NOT EXISTS idx_series_name_label ON series (name, label);",
   // db/add-circulation.sql で足した索引（暖機 src/warm.ts が巻数順にたどる）。
   "CREATE INDEX IF NOT EXISTS idx_series_num_items ON series (num_items DESC, id);",
+  // db/add-label-tag.sql で足した索引（管理画面のレーベル管理が GROUP BY label で数える）。
+  "CREATE INDEX IF NOT EXISTS idx_series_label ON series (label);",
   "CREATE INDEX IF NOT EXISTS idx_volumes_unlinked_title ON volumes (title, label) WHERE series_id IS NULL;",
   "CREATE TABLE IF NOT EXISTS series_supplement (series_id TEXT PRIMARY KEY, volumes_json TEXT NOT NULL, checked_at INTEGER NOT NULL);",
   PRUNE_SUPPLEMENT_SQL,

@@ -28,6 +28,7 @@ import { findSiblingVolumes, SiblingVolume } from "./siblingVolumes";
 import { getCorrectionVolumes } from "./corrections";
 import { resolveMergeTarget, mergeMembers } from "./merge";
 import { isCustomSeriesId, NAME_NORM_PREFIX } from "./groups";
+import { tagsForLabels } from "./labels";
 
 interface VolumeRow {
   isbn: string;
@@ -561,6 +562,9 @@ export async function getSeriesVolumes(
       // 巻一覧は検索を経由せずに開けるので（/s/:id の直リンク・リストからの遷移）、カードが
       // 持っている値に頼らずここでも返す。管理者が名前を直していても版は版なので併記する。
       version: meta.version ?? "",
+      // レーベルに付いた運営のタグ（"廉価版" / "文庫版"）。検索カードと同じ印を巻一覧でも出す
+      // （巻一覧は検索を経由せずに開ける: /s/:id の直リンク・リスト・本の詳細から）。
+      label_tag: (await tagsForLabels(env, [meta.label ?? ""])).get(meta.label ?? "") ?? "",
       creator: meta.creator ?? "",
       // 役割付きの全作者表記（"原作：A、作画：B"）。検索カード（search.ts SERIES_COLS）と同じく
       // 先頭巻のものを優先し、無ければシリーズ側。

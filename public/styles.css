@@ -1483,6 +1483,21 @@ html:has(.modal-backdrop.open) { overflow: hidden; }
   border-radius: 999px;
 }
 
+/* レーベルから判定した版（廉価版・文庫版）。管理画面でレーベルに付けたタグ（src/labels.ts）。
+   live-badge と並ぶことがあるので色を変える（こちらは版の区別、あちらはデータ源の区別）。 */
+.label-tag {
+  display: inline-block;
+  margin-left: 6px;
+  padding: 1px 6px;
+  font-size: 10px;
+  font-weight: 700;
+  vertical-align: middle;
+  color: var(--accent-3);
+  background: rgba(139, 92, 246, .10);
+  border: 1px solid var(--accent-3);
+  border-radius: 999px;
+}
+
 .gap-box {
   display: flex;
   flex-wrap: wrap;

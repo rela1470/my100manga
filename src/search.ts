@@ -9,6 +9,7 @@ import { attributeTitles, buildGroup, groupKey, resolveGroup, GroupRow, GroupVol
 import { edgeCacheKey, withEdgeCache } from "./edgeCache";
 import { getViewEpoch } from "./viewSnapshot";
 import { ADULT_BLOCK_MESSAGE, adultBlockMessage, findAdultIsbns, hasAdultTitleMatch } from "./adult";
+import { attachLabelTags, tagsForLabels } from "./labels";
 
 interface SeriesResult {
   series_id: string;
@@ -17,6 +18,9 @@ interface SeriesResult {
   creators: string; // all authors with roles for display; falls back to creator
   publisher: string;
   label: string;
+  // レーベルに付いた運営のタグ（"廉価版" / "文庫版" / 付いていなければ ""）。マスタには
+  // この区別が無く、レーベル名を鍵に label_tag が持つ（src/labels.ts）。カードの書名に添える。
+  label_tag: string;
   // 版表示（MADB schema:version。「新装版」「大判」…）。同名の版違いが別シリーズとして
   // 並ぶので、あればカードの書名に添える。無い版も多いので label / first_year で補う。
   version: string;
@@ -110,6 +114,7 @@ function toSeriesResult(r: SeriesRow, covers: Map<string, string>): SeriesResult
     creators: r.creators || r.creator || "",
     publisher: r.publisher ?? "",
     label: r.label ?? "",
+    label_tag: "", // attachLabelTags がレーベルの集合で 1 回引いて埋める
     version: r.version ?? "",
     first_year: (r.first_pubdate ?? "").slice(0, 4),
     volume_count: r.vol_count,
@@ -323,6 +328,9 @@ async function searchByKeyword(env: Env, q: string, offset: number, adultOnly: b
   );
   const results = rows.map((r) => toSeriesResult(r, covers));
   const promoted = promotedRows.map((r) => toSeriesResult(r, covers));
+  // 「廉価版」「文庫版」の印（レーベルへのタグ付け, src/labels.ts）。standalone は
+  // discoverUnlinked の中で付けてある。
+  await attachLabelTags(env, [...results, ...promoted]);
 
   // 書名に検索語を含む成年向けの巻（取り込みで外したもの, adult_volumes）があれば、結果の下に
   // 「成年向けは追加できません」と注記できるよう adult_hits を立てる。1 ページ目だけ見る。
@@ -350,6 +358,7 @@ interface UnlinkedCard {
   creators: string;
   publisher: string;
   label: string;
+  label_tag: string;
   volume_count: number;
   unconfirmed: boolean;
   unlinked: true;
@@ -358,7 +367,9 @@ interface UnlinkedCard {
   volumes: GroupVolume[];
 }
 
-function toUnlinkedCard(g: UnlinkedGroup): UnlinkedCard {
+// labelTag はまとまりのレーベル（g.label）に付いているタグ。label 自体はカードに出さない
+// （まとまりの鍵の一部で、表示用に選ばれた値ではない）が、タグは出す。
+function toUnlinkedCard(g: UnlinkedGroup, labelTag = ""): UnlinkedCard {
   const first = g.volumes[0];
   return {
     series_id: g.id,
@@ -367,6 +378,7 @@ function toUnlinkedCard(g: UnlinkedGroup): UnlinkedCard {
     creators: g.creators,
     publisher: g.publisher,
     label: "",
+    label_tag: labelTag,
     volume_count: g.volumes.length,
     unconfirmed: false,
     unlinked: true,
@@ -408,7 +420,10 @@ async function searchByIsbn(env: Env, isbn: string): Promise<Response> {
     const card = await rakutenCard(env, isbn);
     return json(card ? { results: [card] } : { results: [], isbn_miss: true }, 200, headers);
   }
-  if ("group" in hit) return json({ results: [toUnlinkedCard(hit.group)] }, 200, headers);
+  if ("group" in hit) {
+    const tag = (await tagsForLabels(env, [hit.group.label])).get(hit.group.label) ?? "";
+    return json({ results: [toUnlinkedCard(hit.group, tag)] }, 200, headers);
+  }
 
   const id = (await mergeTargetsFor(env, [hit.seriesId])).get(hit.seriesId) ?? hit.seriesId;
   const row = await env.DB.prepare(
@@ -420,7 +435,9 @@ async function searchByIsbn(env: Env, isbn: string): Promise<Response> {
     .first<SeriesRow>();
   if (!row) return json({ results: [], isbn_miss: true }, 200, headers);
   const covers = await readCachedCovers(env, [row.first_isbn ?? ""]);
-  return json({ results: [toSeriesResult(row, covers)] }, 200, headers);
+  const card = toSeriesResult(row, covers);
+  await attachLabelTags(env, [card]);
+  return json({ results: [card] }, 200, headers);
 }
 
 // A one-volume live card for an ISBN only 楽天ブックス knows (コンビニ版・再編集本 etc. that
@@ -448,6 +465,7 @@ async function rakutenCard(env: Env, isbn: string) {
     creators: b.author.split("/").map((s) => s.trim()).filter(Boolean).join("、"), // 楽天は "/" 区切り
     publisher: b.publisher,
     label: "",
+    label_tag: "", // 楽天だけが知っている本。マスタのレーベルが無いので印も付かない
     volume_count: 1,
     unconfirmed: false,
     live: true,
@@ -534,7 +552,9 @@ async function discoverUnlinked(
   }
 
   const covers = await readCachedCovers(env, standaloneGroups.flat().map((r) => r.isbn));
-  const standalone = standaloneGroups.map((rows) => toUnlinkedCard(buildGroup(rows, covers)));
+  const built = standaloneGroups.map((rows) => buildGroup(rows, covers));
+  const groupTags = await tagsForLabels(env, built.map((g) => g.label));
+  const standalone = built.map((g) => toUnlinkedCard(g, groupTags.get(g.label) ?? ""));
 
   return { promoteIds: [...promoteIds], standalone };
 }

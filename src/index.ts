@@ -100,6 +100,7 @@ import { footerHtml } from "./footer";
 import { headerLinksHtml } from "./header";
 import { site } from "./site";
 import { bumpPopularity } from "./popularity";
+import { adminListLabels, adminSetLabelTags } from "./labels";
 import { Env, MangaList, ShareJob } from "./types";
 import { rateLimit } from "./ratelimit";
 import { turnstileAction, verifyTurnstile } from "./turnstile";
@@ -686,6 +687,19 @@ const worker = {
       const adminBookMetaMatch = path.match(/^\/api\/admin\/book-meta\/([0-9Xx]+)$/);
       if (adminBookMetaMatch && request.method === "DELETE") {
         return await adminDeleteBookMeta(env, adminBookMetaMatch[1]);
+      }
+      // レーベルのタグ付け（廉価版・文庫版）。?q= 名前の部分一致 / ?filter= untagged | tagged | <タグ名>。
+      if (path === "/api/admin/labels" && request.method === "GET") {
+        return await adminListLabels(
+          env,
+          parsePage(url),
+          url.searchParams.get("q") ?? "",
+          url.searchParams.get("filter") ?? ""
+        );
+      }
+      // レーベル名そのものが鍵なので（日本語・記号を含む）パスには載せず body で受ける。
+      if (path === "/api/admin/labels" && request.method === "POST") {
+        return await adminSetLabelTags(env, await readJsonObject(request));
       }
       if (path === "/api/admin/reports" && request.method === "GET") {
         // ?resolved=1 で処理済み(却下/伏字)の履歴、無ければレビュー待ちキュー。

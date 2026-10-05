@@ -263,6 +263,8 @@ npm run dev
 - `POST /api/admin/circulation/recompute` — 作品名 → シリーズの寄せと表紙を付け直す（取り込み直した後・シリーズを結合した後に）
 - `POST /api/admin/circulation/suggest` — 寄せ先の指定が無い作品を自動照合して `circulation_link` に `source='suggested'` で入れる（手動指定は触らない）。`?overwrite=1` を付けると `'suggested'` の行も付け直す（マスタを取り込み直したあと用）
 - `POST /api/admin/circulation/link` — 寄せ先を確定する。`{article, series_id}` で、`series_id` が文字列ならそのシリーズへ（`'manual'`）、`""` なら「寄せない」として確定、`null` なら指定を外して自動照合に戻す
+- `GET /api/admin/labels?page=&per=&q=&filter=` — 管理画面「レーベル管理」用。レーベルをシリーズ数の多い順に、現在のタグ・そのレーベルの主な作品 3 件つきで返す。`q` はレーベル名の部分一致、`filter` は `untagged` / `tagged` / タグ名（`廉価版` など）
+- `POST /api/admin/labels` — レーベルにタグを付ける / 外す。`{labels: [...], tag}`（`tag: ""` で解除。`label` 単数でも可）。レーベル名は日本語・記号を含むのでパスではなく body で受ける。まとめて設定できるので「文庫」で絞って一括付与ができる
 - `GET /api/admin/warm` — 表紙・書誌キャッシュの埋まり具合（全体と、発行部数 / 売上ランキングの寄せ先の巻について）
 - `POST /api/admin/warm?scope=&cursor=&limit=` — 公開前の暖機。`scope` は `circulation`（部数順）/ `sales`（順位順）/ `series`（巻数順）。まだ `covers` に無い巻を数件だけ解決して、次に渡す `cursor` を返す。楽天の枠（サイト全体で約 1 req/s）に合わせた刻みで、繰り返しは `scripts/warm-cache.mjs` か管理画面のループに任せる。`src/warm.ts`
 - `GET /api/admin/sales-ranking` — 管理画面「売上ランキング」用。直近 14 日の取得件数、集計開始日、最後に集計した時刻、窓ごとのリンク付き件数、巻一覧へのリンクが付かなかった作品（どれかの窓の上位に入っているもの）を返す
@@ -391,6 +393,7 @@ MADB の取り込みでは成年コミック（MADB の `schema:contentRating` �
 - `lists` — `slug`(PK), `edit_token`, `owner_name`, `items_json`, `created_at`, `updated_at`
 - `series` — MADB シリーズ。`id`(PK, C-id), `name`, `name_norm`, `name_kana`, `name_kana_norm`, `name_search`(検索専用。全角半角を寄せて記号を落とした書名、`src/util.ts` `searchKey`), `creator`(代表作者), `creators`(表示用。役割付き全作者), `creators_norm`(検索専用), `publisher`, `label`, `num_items`, `version`(版表示。MADB `schema:version`。下記「同名の版違いの見分け」)
 - `volumes` — MADB 単行本。`isbn`(PK), `series_id`, `volume_number`, `vol_sort`, `title`, `subtitle`(巻の副題。MADB `schema:alternateName`), `title_search`(検索専用、`name_search` と同じ変換), `creator`, `creators`, `creators_norm`, `publisher`, `label`, `pubdate`
+- `label_tag` — レーベルに付けた運営のタグ。`label`(PK, `series.label` / `volumes.label` の値そのまま), `tag`(`廉価版` / `文庫版`), `created_at`, `updated_at`。管理画面「レーベル管理」で付ける。`series` / `volumes` は月次取り込みで表ごと作り直されるので、シリーズ ID ではなくレーベル名を鍵にして取り込みで消えないようにしてある。`src/labels.ts`、`db/add-label-tag.sql`。
 - `covers` — 書影解決結果のキャッシュ。`isbn`(PK), `cover_url`(解決した書影URL。`""` は「どこにも無し」), `checked_at`。詳細は下記。
 - `list_item_events` — 巻の「追加」イベントログ（ランキングの元データ）。`id`(PK), `slug`, `isbn`, `added_at`。表示名・著者・表紙は持たず、ランキング計算時に ISBN から引く。公開時に新しく加わった巻を追記（作成は全 item、更新は旧→新差分の新規 isbn のみ）。ランキングは `COUNT(DISTINCT slug)` で人数を数え `added_at` で窓を切る。リスト削除時は `slug` 単位で掃除。集計結果は `meta` に `book_ranking_json` / `book_ranking_at` として 10 分 TTL キャッシュ。`src/ranking.ts`。
 - `sales_snapshot` — 売上ランキングの日次スナップショット。`(day, rank)`(PK), `isbn`, `title`(楽天の書名), `work` / `work_norm`(巻数・版の表記を除いた作品名と集計キー), `author`, `publisher`, `sales_date`, `cover_url`。1 日 300 行。集計結果は `meta` の `sales_ranking_json` に保存し、Cron のたびに作り直す。`src/salesRanking.ts`。
@@ -414,6 +417,7 @@ MADB の取り込みでは成年コミック（MADB の `schema:contentRating` �
 - **同名の版違いの見分け**: MADB は同じ作品の版違い（新装版・完全版・愛蔵版・大判…）を**同じ `schema:name` の別 C-id** として持つ。横山光輝「三国志」は潮出版社だけで 8 シリーズあり、マスタの名前はどれも「三国志」なので、検索すると同じカードが並んで見える。同名＋同著者のシリーズは実測で **8,513 組 / 21,233 シリーズ**。区別は次の順で行う:
   1. **版表示**（`series.version` = MADB `schema:version`）。13.9 万シリーズ中 3,923 件が持つ（新装版 859 / コミック版 442 / 完全版 408 / 愛蔵版 274 / 新版 152 / 改訂版 125 / 大判 15 …）。あれば書名に添えて「三国志（大判）」と出す（`public/app.js` `editionTitle`）。外国語の版表示（`1st ed.` 等 205 件）と、既に書名・レーベルに入っている値（286 件）は取り込みで落とす（`scripts/ingest.mjs` `editionVersion`）。
   2. **レーベルと初版年**（`series.label` / `first_year`）。版表示を足してもなお同じ「書名＋作者」のカードが並ぶときだけ、メタ行に「希望コミックス / 1974年」のように足す（`public/app.js` `ambiguousEditionKeys`）。1 件しか出ていないカードには出さない。
+  3. **レーベルのタグ**（`label_tag`）。コンビニ廉価版・文庫版はマスタに区別が無いが、レーベル名（`schema:brand`）を見れば分かるものが多い（`KPC`・`講談社プラチナコミックス` = 廉価版、`講談社漫画文庫`・`小学館文庫` = 文庫版）。管理画面「レーベル管理」でレーベルにタグを付けると、そのレーベルのシリーズ全部の検索カード・巻一覧に「廉価版」「文庫版」のバッジが出る（`src/labels.ts` / `public/app.js` `labelTagBadge`）。1. 2. と違い自動では決まらない運営の印で、タグはレーベル名を鍵にした別表に持つので月次の取り込みで消えない。例: 「GTO」は `KPC`（廉価版）/ `講談社コミックス`（無印）/ `講談社漫画文庫`（文庫版）の 3 枚に分かれる。タグの種類は `src/labels.ts` の `LABEL_TAGS` に足せば増やせる。
 
   リスト・ランキング・編集画面の本のタイトル（`src/listItems.ts` `resolveBooks`）にも同じ規則で入る（「ドラゴンボール（完全版） 第1巻」）。これが無いと 100 冊リストの中で版違いが同じ名前に潰れる。管理者のシリーズ名の上書き（`series_name_override`）が既にその版を名乗っているときは足さない。
   この 2 段で 8,513 組中 8,040 組（94%）が区別できる。版表示は**表示専用**で、検索の照合は今までどおり `name_norm` / `name_kana_norm` に対して行う。楽天ブックス・openBD には版表示が無く（実測）、`schema:version` が唯一の自動ソースなので、それを持たない版（例: 2007 年の「三国志」愛蔵版）は初版年での区別にとどまる。

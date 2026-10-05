@@ -178,6 +178,9 @@ CREATE INDEX IF NOT EXISTS idx_series_kana_norm ON series (name_kana_norm);
 CREATE INDEX IF NOT EXISTS idx_series_name_label ON series (name, label);
 -- 公開前のキャッシュ暖機 (src/warm.ts) が巻数の多いシリーズから順にたどる。取り込みの SWAP_SQL でも張り直す。
 CREATE INDEX IF NOT EXISTS idx_series_num_items ON series (num_items DESC, id);
+-- 管理画面のレーベル管理 (src/labels.ts) がレーベルごとのシリーズ数を数える GROUP BY label。
+-- 取り込みの SWAP_SQL でも張り直す。
+CREATE INDEX IF NOT EXISTS idx_series_label ON series (label);
 
 CREATE TABLE IF NOT EXISTS volumes (
   isbn          TEXT PRIMARY KEY,  -- normalized ISBN13
@@ -345,6 +348,22 @@ CREATE TABLE IF NOT EXISTS series_name_override (
   series_id  TEXT PRIMARY KEY,   -- MADB collection C-id whose display name is overridden
   name       TEXT NOT NULL,      -- corrected series title shown to everyone
   created_at INTEGER NOT NULL
+);
+
+-- ── レーベルのタグ付け（廉価版・文庫版） ────────────────────────────────────
+-- 「KPC」「講談社プラチナコミックス」のように、名前を見ればコンビニ廉価版・文庫版だと分かる
+-- レーベルがマスタに多数ある（マスタ側にその区別を表す列は無い）。管理画面（レーベル管理）で
+-- レーベルにタグを付けると、そのレーベルのシリーズの検索カード・巻一覧に「廉価版」「文庫版」
+-- と出る。series.version（新装版・完全版…）と役割が似ているが、あちらは MADB 由来の版表示で、
+-- こちらは運営がレーベル単位で付ける印。
+-- series / volumes は月次の取り込みで表ごと作り直される（scripts/ingest.mjs SWAP_SQL）ので、
+-- series.id ではなく **レーベル名そのもの** を鍵にして取り込みで消えないようにしてある。
+-- See src/labels.ts。
+CREATE TABLE IF NOT EXISTS label_tag (
+  label      TEXT PRIMARY KEY,   -- series.label / volumes.label の値そのまま（正規化しない）
+  tag        TEXT NOT NULL,      -- src/labels.ts LABEL_TAGS のいずれか（'廉価版' / '文庫版'）
+  created_at INTEGER NOT NULL,
+  updated_at INTEGER NOT NULL
 );
 
 -- ── 巻(本)のタイトルの通報 (本のタイトルが違う？) ───────────────────────────

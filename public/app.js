@@ -1597,6 +1597,18 @@ function buildLiveBar() {
   return bar;
 }
 
+// レーベルに付いた運営のタグ（server: label_tag = "廉価版" / "文庫版"）の印。マスタには
+// コンビニ廉価版・文庫版の区別が無いので、管理画面でレーベルごとに付けている（src/labels.ts）。
+// 版表示（version）と違い書名には混ぜず、独立したバッジで出す。
+function labelTagBadge(tag) {
+  if (!tag) return null;
+  const el = document.createElement("span");
+  el.className = "label-tag";
+  el.textContent = tag;
+  el.title = "レーベルから判定した版（管理者が設定）";
+  return el;
+}
+
 // 版違いの見分け（MADB は「新装版」「大判」などを同じ schema:name の別シリーズとして持つ）。
 // 横山光輝「三国志」は潮出版社だけで 8 シリーズあり、マスタの名前はどれも「三国志」。
 // 書名に添える版表示（server: version = schema:version）があればそれを使い、版表示を持たない
@@ -1633,6 +1645,8 @@ function buildResultCard(r, pending, ambiguous) {
   const t = document.createElement("div");
   t.className = "t";
   t.textContent = editionTitle(r);
+  const tagBadge = labelTagBadge(r.label_tag);
+  if (tagBadge) t.appendChild(tagBadge);
   if (r.live) {
     const badge = document.createElement("span");
     badge.className = "live-badge";
@@ -1951,6 +1965,8 @@ async function openSeries(series) {
     }
     // 巻ページ・直リンクから開いたカードは版表示を持たないので、サーバの値で埋める。
     if (data.version !== undefined) series.version = data.version;
+    // レーベルのタグ（廉価版・文庫版）も同じ理由でサーバの値を優先する。
+    if (data.label_tag !== undefined) series.label_tag = data.label_tag;
     // 巻ページから開いた場合など、カードに作者表記が無くてもサーバの creators で補う。
     if (data.creators) series.creators = data.creators;
     if (data.group) {
@@ -2083,6 +2099,8 @@ function renderVolumes(series, volumes, opts) {
   titleEl.className = "st";
   titleEl.textContent = editionTitle(series);
   head.appendChild(titleEl);
+  const headTag = labelTagBadge(series.label_tag);
+  if (headTag) head.appendChild(headTag);
   head.hidden = false;
   // 通報・依頼の旗はタイトルの次の行にまとめる（長いタイトルと同じ行に並べると折り返しが崩れる）。
   const flags = document.createElement("div");

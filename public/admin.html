@@ -25,6 +25,7 @@
       <a href="#volume-reports" data-page="volume-reports">巻の通報</a>
       <a href="#series-reports" data-page="series-reports">シリーズ名の修正</a>
       <a href="#series-merges" data-page="series-merges">シリーズの結合</a>
+      <a href="#labels" data-page="labels">レーベル管理</a>
       <a href="#volume-title-reports" data-page="volume-title-reports">本のタイトルの修正</a>
       <a href="#corrections" data-page="corrections">シリーズへの手動追加</a>
       <a href="#cover-suggestions" data-page="cover-suggestions">表紙の修正</a>
@@ -277,6 +278,67 @@
       <p class="hint" id="mergeHint" style="display:none"></p>
       <div id="mergeList"></div>
       <div class="pager" id="mergePager" style="display:none"></div>
+    </section>
+
+    <!-- レーベル管理（廉価版・文庫版のタグ付け） -->
+    <section class="admin-page" id="page-labels" hidden>
+      <div class="toolbar">
+        <strong>レーベル管理</strong>
+        <span class="count" id="labelCount"></span>
+        <input type="text" id="labelQuery" placeholder="レーベル名で検索（例: 文庫）" style="margin-left:8px;min-width:200px">
+        <select id="labelFilter" aria-label="タグで絞り込む">
+          <option value="">すべて</option>
+          <option value="untagged">未設定</option>
+          <option value="tagged">設定済み</option>
+        </select>
+        <button id="labelSearch">検索</button>
+        <button id="labelClear" style="display:none">クリア</button>
+        <div style="flex:1"></div>
+        <button id="reloadLabels">再読み込み</button>
+      </div>
+      <p class="hint">
+        マスタ（MADB）には「コンビニ廉価版か」「文庫版か」を表す項目がありませんが、レーベル名
+        （<code>schema:brand</code>）を見れば分かるものが多くあります（<code>KPC</code>・
+        <code>講談社プラチナコミックス</code> = 廉価版、<code>講談社漫画文庫</code>・
+        <code>小学館文庫</code> = 文庫版）。ここでレーベルにタグを付けると、そのレーベルの
+        シリーズ全部の検索カードと巻一覧に「廉価版」「文庫版」と出ます。タグはレーベル名を鍵に
+        別の表（<code>label_tag</code>）が持つので、毎月の取り込みで消えません。
+        <br>
+        「文庫」などで検索 → 「未設定」で絞り込み → <strong>このページを全選択</strong> →
+        下のまとめて設定、の順が速いです。一覧はシリーズ数の多い順に並びます。
+      </p>
+      <p class="hint" id="labelHint" style="display:none"></p>
+      <div class="table-scroll">
+        <table class="admin-table" id="labelTable" style="display:none">
+          <thead>
+            <tr>
+              <th><input type="checkbox" id="labelCheckAll" aria-label="このページを全選択"></th>
+              <th>レーベル</th>
+              <th>シリーズ数</th>
+              <th>そのレーベルの主な作品</th>
+              <th>タグ</th>
+            </tr>
+          </thead>
+          <tbody id="labelBody"></tbody>
+        </table>
+      </div>
+      <div class="pager" id="labelPager" style="display:none"></div>
+      <div class="cover-actions" style="margin-top:16px">
+        <div class="cover-single">
+          <span class="hint" id="labelSelCount">選択中 0 件</span>
+          <select id="labelBulkTag" aria-label="まとめて設定するタグ"></select>
+          <button id="labelBulkApply">選択したレーベルにまとめて設定</button>
+        </div>
+        <p class="hint">
+          一覧に出るのはシリーズに付いているレーベルです。シリーズ無しの巻にしか出ないレーベルは
+          ここに並ばないので、レーベル名を直接入力して設定してください（名前は完全一致）。
+        </p>
+        <div class="cover-single">
+          <input type="text" id="labelManualName" placeholder="レーベル名（完全一致）" style="min-width:220px">
+          <select id="labelManualTag" aria-label="設定するタグ"></select>
+          <button id="labelManualApply">このレーベルに設定</button>
+        </div>
+      </div>
     </section>
 
     <!-- 本のタイトルの修正 -->

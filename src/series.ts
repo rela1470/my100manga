@@ -27,7 +27,7 @@ import { findGapFillVolumes } from "./gapFill";
 import { findSiblingVolumes, SiblingVolume } from "./siblingVolumes";
 import { getCorrectionVolumes } from "./corrections";
 import { resolveMergeTarget, mergeMembers } from "./merge";
-import { isCustomSeriesId, NAME_NORM_PREFIX } from "./groups";
+import { attributeTitles, isCustomSeriesId, NAME_NORM_PREFIX } from "./groups";
 
 interface VolumeRow {
   isbn: string;
@@ -191,8 +191,15 @@ export async function getSeriesVolumes(
   // different creator per volume (e.g. リュート vs 鍋島テツヒロ), and gating on the
   // master creator would drop one half. Duplicate volume_numbers just collapse into
   // sibling ISBNs of the volume already present, so no volume is double-counted.
+  // 複数の fold（書名の完全一致・巻が名乗る書名・基本書名）が同じ行を拾うので、ISBN で一度だけ
+  // 入れる。入れ直すと同じ巻の isbns に同じ ISBN が並ぶ。
+  const foldedIsbns = new Set((res.results ?? []).map((v) => v.isbn));
   const foldUnlinked = (rows: VolumeRow[]) => {
-    for (const v of rows) addToGroup(v);
+    for (const v of rows) {
+      if (foldedIsbns.has(v.isbn)) continue;
+      foldedIsbns.add(v.isbn);
+      addToGroup(v);
+    }
   };
 
   // 結合済みなら member ごとに名前・レーベルが違う（例: C451211「One piece」/ C336558
@@ -234,6 +241,48 @@ export async function getSeriesVolumes(
         .bind(name, label)
         .all<VolumeRow>();
       foldUnlinked(unlinked.results ?? []);
+    }
+  }
+
+  // MADB がシリーズ名には付けない別名を、巻の schema:name にだけ持つ作品
+  // （series.name「東京卍リベンジャーズ」に対し巻は「東京卍リベンジャーズ = Tokyo Revengers」）。
+  // 上の完全一致はシリーズ名で引くので当たらず、下の基本書名 fold もシリーズ名に区切りが無い
+  // シリーズでは回らないので、同じ書名の迷子巻（7 巻）が巻一覧から抜けたままになる。そこで
+  // 「このシリーズの巻が実際に名乗っている書名」でも完全一致で拾う（迷子巻の名指し
+  // src/siblingVolumes.ts が既に使っているのと同じ書名）。寄せてよいかの判定は
+  // groups.attributeTitles ＝ 検索・本の詳細がその書名の迷子巻をどのシリーズに寄せるかと同じ
+  // 規則に委ねる。あちらは「getSeriesVolumes がこの条件の巻を巻一覧に混ぜる」前提で書かれて
+  // いるので、これで「ISBN 検索ではこのシリーズが出るのに巻一覧には無い」ずれが消える。
+  const volTitles = [...new Set((res.results ?? []).map((v) => (v.title ?? "").trim()))].filter(
+    (t) => t && !nameLabels.has(t)
+  );
+  if (volTitles.length) {
+    // 先に迷子巻の有無だけ引く（部分索引 idx_volumes_unlinked_title）。ほとんどのシリーズは
+    // 0 件で、寄せ先の判定まで進むのは候補が実際にあるときだけ（実測 13.3 万シリーズ中 699 本）。
+    const CHUNK = 80; // D1 の bind パラメータ上限（100）に当たらない刻み
+    const byTitle = new Map<string, VolumeRow[]>();
+    for (let i = 0; i < volTitles.length; i += CHUNK) {
+      const part = volTitles.slice(i, i + CHUNK);
+      const loose = await env.DB.prepare(
+        `SELECT isbn, volume_number, vol_sort, title, subtitle, creator, creators, publisher, label, pubdate
+         FROM volumes WHERE series_id IS NULL AND title IN (${part.map(() => "?").join(",")})
+         ORDER BY vol_sort, pubdate, isbn`
+      )
+        .bind(...part)
+        .all<VolumeRow>();
+      for (const v of loose.results ?? []) {
+        const list = byTitle.get(v.title);
+        if (list) list.push(v);
+        else byTitle.set(v.title, [v]);
+      }
+    }
+    if (byTitle.size) {
+      const owner = await attributeTitles(env, [...byTitle.keys()]);
+      for (const [title, rows] of byTitle) {
+        const id = owner.get(title);
+        // 結合済みなら吸収された側の C-id が返るので、member のどれかなら自分のもの。
+        if (id && members.includes(id)) foldUnlinked(rows);
+      }
     }
   }
 

@@ -44,7 +44,7 @@ DB 側に記録されないので、この表で管理する。
 | `add-is-adult.sql` | `series.is_adult` / `volumes.is_adult`（R18版が成年向けを収録するための印。本家では常に 0）。**R18版の D1 では ingest の前に** | × | 未適用 | 未適用（本家は次の月次 ingest で shadow テーブルごと入れ替わるときに入る。R18版は dev 2026-10-04 適用済み・本番未適用） |
 | `add-volume-subtitle.sql` | `volumes.subtitle`（巻の副題。同じ巻番号の別作品が 1 冊に畳まれるのを直す。中身は取り込み直しで埋まる）。**デプロイ前に** | × | 2026-10-04 | 2026-10-04 |
 | `add-series-version.sql` | `series.version`（版表示。同名の版違いシリーズを見分ける。中身は取り込み直しで埋まる）。**デプロイ前に** | × | 2026-10-04 | 2026-10-04 |
-| `add-label-tag.sql` | `label_tag`（レーベルの廉価版・文庫版タグ）＋ `idx_series_label`（管理画面のレーベル一覧）。**デプロイ前に** | ○ | 未適用 | 未適用 |
+| `add-label-tag.sql` | `label_tag`（レーベルの廉価版・文庫版タグ）＋ `idx_series_label`（管理画面のレーベル一覧）。**デプロイ前に** | ○ | 2026-10-05 | 未適用 |
 
 冪等: ○ = 何度流しても同じ結果。× = 2 回目はエラーになる（`ALTER TABLE ... ADD COLUMN` など。エラーで
 止まるだけで壊れはしないが、同じファイルの後続の文も流れない）。
@@ -84,6 +84,19 @@ DB 側に記録されないので、この表で管理する。
   （`scripts/ingest.mjs` の `SWAP_SQL`）でも張り直す。
 - タグの中身（どのレーベルに何を付けたか）は本番の管理画面で付ける運用。ローカルで付けて本番へ
   持っていく必要が出たら、`series-merge-data.sql` と同じく upsert の SQL に書き出す。
+
+### `add-label-tag.sql` の適用記録
+
+**dev（2026-10-05）**
+
+- 適用前の Time Travel ブックマーク: `000000db-00000000-000050fb-4f29bb3769f44e0b0cda18dd8029af65`
+- ユーザデータの書き出し: `backups/dev-20261005-1533-labeltag.sql`（`users` 1 / `series_merge` 168 /
+  `custom_series` 1 / `volume_series_link` 36 / `series_correction` 3。`lists` は 0 件）
+- `db/add-label-tag.sql` を適用（`rows_read` 268,989 / `rows_written` 133,588 = `idx_series_label` の作成、
+  363ms）。`label_tag` 0 行、`series` 133,584 / `volumes` 349,020 と他のユーザデータは適用前後とも同数。
+  レーベルは 7,808 種。
+- **この時点では dev の Worker は旧コードのまま**（旧コードは `label_tag` を参照しないので、
+  表だけ先にある状態は無害）。デプロイは次項。
 
 ### `add-indexes-2026-10.sql` の注意
 

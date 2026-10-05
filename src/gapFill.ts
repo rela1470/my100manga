@@ -207,9 +207,34 @@ export async function findGapFillVolumes(env: Env, input: GapFillInput): Promise
   return { filled: out, noIsbn: allGaps.filter((n) => !picked.has(n)) };
 }
 
-// 1 回の押下で Yahoo に投げる巻数の上限。実際に効く制約はレートリミッタ（高優先レーンの
-// 待ち上限 4 秒 ＝ 3〜4 件）なので、これは MAX_PAGES と同じく外側の保険。
-const MAX_YAHOO_PROBES = 12;
+// 1 回の押下で Yahoo に投げる巻数の上限。Yahoo は 1 巻 1 リクエストで、レートリミッタが
+// 約 0.9 req/s に均すので、この数がそのまま押下の待ち時間（秒）になる。巻一覧の「取得」は
+// 利用者が待っているボタンなので、1 回で全部やろうとせず、下の巡回カーソルで押すたびに
+// 続きへ進める。
+const MAX_YAHOO_PROBES = 8;
+
+// 巡回カーソルの meta キー。値は「前回どの巻まで投げたか」の巻数。
+// 投げて空振りだった巻（出品が無い / 出品はあるが master が既に持つ ISBN）は穴に残り続けるので、
+// 毎回 1 巻目から投げると先頭の空振りだけで枠を使い切り、押しても先へ進まなくなる（実測:
+// C326076 で 23 巻から進まなくなった）。巻数そのものではなく「どこまで見たか」だけを覚えて、
+// 一周したら先頭へ戻る。一周の間に出品が増えることもあるので、巡回は止めない。
+const PROBE_CURSOR_PREFIX = "yahoo_gap_cursor:";
+
+async function readProbeCursor(env: Env, seriesId: string): Promise<number> {
+  const row = await env.DB.prepare(`SELECT value FROM meta WHERE key = ?`)
+    .bind(PROBE_CURSOR_PREFIX + seriesId)
+    .first<{ value: string }>();
+  const n = Number(row?.value ?? 0);
+  return Number.isFinite(n) && n > 0 ? n : 0;
+}
+
+async function writeProbeCursor(env: Env, seriesId: string, volume: number): Promise<void> {
+  await env.DB.prepare(
+    `INSERT INTO meta (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value`
+  )
+    .bind(PROBE_CURSOR_PREFIX + seriesId, String(volume))
+    .run();
+}
 
 /** 楽天に無かった巻を Yahoo!ショッピングの商品名検索で引き当て、`picked` に足す。
  *
@@ -227,12 +252,20 @@ async function fillFromYahoo(
   const missing = [...gaps.keys()].filter((n) => !picked.has(n)).sort((a, b) => a - b);
   if (missing.length === 0) return;
 
+  // 前回の続きから。末尾まで行ったら先頭へ戻る（巡回）ので、どの押下でも必ず前進する。
+  const cursor = await readProbeCursor(env, input.seriesId);
+  const order = [...missing.filter((n) => n > cursor), ...missing.filter((n) => n <= cursor)];
+
   const found = new Map<number, string[]>();
-  for (const n of missing.slice(0, MAX_YAHOO_PROBES)) {
+  let last = 0;
+  for (const n of order.slice(0, MAX_YAHOO_PROBES)) {
     const isbns = await yahooVolumeIsbns(env, input.name, n);
     if (isbns === null) break; // 枠が取れない: 残りは次の押下に回す
+    last = n;
     if (isbns.length) found.set(n, isbns);
   }
+  // 空振りでもカーソルは進める（空振りした巻を次の押下で引き直さないのが目的）。
+  if (last) await writeProbeCursor(env, input.seriesId, last);
   if (found.size === 0) return;
 
   const taken = await alreadyTaken(env, input.seriesId, [...new Set([...found.values()].flat())]);

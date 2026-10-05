@@ -303,11 +303,84 @@ describe("取得を押すたびに次の巻へ進む", () => {
 
     asked.length = 0;
     const res = await getSeriesVolumes(yahooEnv, ACC, true);
-    // 2 巻は前回の補完で埋まっている ＝ もう穴ではない。残り枠は 3 巻に回る。
+    // 2 巻は前回の補完で埋まっている ＝ もう穴ではない。残るのは空振りの 3 巻だけで、
+    // カーソルが一周して戻るのでもう一度だけ投げる。
     expect(asked).toEqual(["積み上げ試験 3"]);
     const body = (await res.json()) as { volumes: { isbn: string }[]; volumes_no_isbn: number[] };
     expect(body.volumes.map((v) => v.isbn)).toEqual([V1, V2]);
     // 埋まった 2 巻は「見つからなかった」側に残らない。
     expect(body.volumes_no_isbn).toEqual([3]);
   });
+});
+
+// 空振りした巻を毎回引き直すと、先頭の空振りだけで 1 回ぶんの枠を使い切って先へ進めない。
+// 巡回カーソル（meta の yahoo_gap_cursor:<C-id>）で「前回どこまで投げたか」を覚える。
+describe("空振りした巻は次の押下で後回しにする", () => {
+  const ROT = "C900004";
+  const V1 = "9784267903014";
+  const TOTAL = 14; // master は 1 巻だけ。穴は 2〜14 巻（13 巻ぶん＞ MAX_YAHOO_PROBES）
+
+  function mockForRot(): string[] {
+    const asked: number[] = [];
+    vi.spyOn(globalThis, "fetch").mockImplementation(async (input: RequestInfo | URL) => {
+      const url = String(input instanceof Request ? input.url : input);
+      if (url.includes("/sparql")) {
+        const bindings = decodeURIComponent(url).includes("isPartOf")
+          ? Array.from({ length: TOTAL }, (_, i) => ({
+              vol: { value: String(i + 1) },
+              ...(i === 0 ? { isbn: { value: V1 } } : {}),
+              date: { value: "1974-04" },
+            }))
+          : [];
+        return new Response(JSON.stringify({ results: { bindings } }), {
+          headers: { "content-type": "application/json" },
+        });
+      }
+      if (url.includes("openapi.rakuten.co.jp")) {
+        return new Response(JSON.stringify({ pageCount: 1, Items: [] }), {
+          headers: { "content-type": "application/json" },
+        });
+      }
+      if (url.includes("shopping.yahooapis.jp")) {
+        // どの巻も出品が無い（全部空振り）。見たいのは「次にどこを投げるか」だけ。
+        asked.push(Number(new URL(url).searchParams.get("query")!.split(" ")[1]));
+        return new Response(JSON.stringify({ hits: [] }), { headers: { "content-type": "application/json" } });
+      }
+      return new Response("{}", { headers: { "content-type": "application/json" } });
+    });
+    return asked as unknown as string[];
+  }
+
+  beforeAll(async () => {
+    await env.DB.prepare(
+      `INSERT OR REPLACE INTO series (id, name, name_norm, name_search, creator, publisher)
+       VALUES (?, ?, ?, ?, ?, ?)`
+    )
+      .bind(ROT, "巡回試験", "巡回試験", "巡回試験", "作者", "潮出版社")
+      .run();
+    await env.DB.prepare(
+      `INSERT OR REPLACE INTO volumes (isbn, series_id, volume_number, vol_sort, title, title_search, creator)
+       VALUES (?, ?, ?, ?, ?, ?, ?)`
+    )
+      .bind(V1, ROT, "1", 1, "巡回試験", "巡回試験", "作者")
+      .run();
+  });
+
+  it("前回の続きから投げ、一周したら先頭へ戻る", async () => {
+    // カーソルを直に置いてから 1 回だけ押す（押下ごとにレートリミッタで約 8 秒かかるので、
+    // 2 回ぶんの往復はテストに載せない）。
+    await env.DB.prepare(
+      `INSERT INTO meta (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value`
+    )
+      .bind("yahoo_gap_cursor:" + ROT, "11")
+      .run();
+    const asked = mockForRot() as unknown as number[];
+    await getSeriesVolumes(yahooEnv, ROT, true);
+    // 12〜14 巻を見てから先頭へ戻る。全部空振りでも必ず前進する。
+    expect(asked).toEqual([12, 13, 14, 2, 3, 4, 5, 6]);
+    const row = await env.DB.prepare(`SELECT value FROM meta WHERE key = ?`)
+      .bind("yahoo_gap_cursor:" + ROT)
+      .first<{ value: string }>();
+    expect(row?.value).toBe("6");
+  }, 30_000);
 });

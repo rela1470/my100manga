@@ -355,7 +355,12 @@ export async function suggestCirculationLinks(env: Env, overwrite: boolean): Pro
     return overwrite && link.source === "suggested";
   });
   if (!target.length) return { added: 0, kept: rows.length };
+  return { added: await writeSuggestions(env, target), kept: rows.length - target.length };
+}
 
+/** 渡した作品を自動照合して circulation_link に 'suggested' で入れる。入れた件数を返す。
+ *  「サジェストを取り込む」（全件）と、1 行だけサジェストに戻す「戻す」で共有する。 */
+async function writeSuggestions(env: Env, target: Array<{ article: string; title_ja: string }>): Promise<number> {
   const works: WorkRef[] = [];
   const seen = new Set<string>();
   for (const row of target) {
@@ -380,7 +385,7 @@ export async function suggestCirculationLinks(env: Env, overwrite: boolean): Pro
       ).bind(x.article, x.id, now)
     );
   for (let i = 0; i < stmts.length; i += 50) await env.DB.batch(stmts.slice(i, i + 50));
-  return { added: stmts.length, kept: rows.length - target.length };
+  return stmts.length;
 }
 
 export async function adminCirculationSuggest(env: Env, overwrite: boolean): Promise<Response> {
@@ -396,7 +401,7 @@ export async function adminCirculationSuggest(env: Env, overwrite: boolean): Pro
 /** POST /api/admin/circulation/link。寄せ先を確定する。
  *   series_id が文字列 … そのシリーズへ寄せる（'manual'）
  *   series_id が ""    … 「寄せない」として確定する（自動照合もしない）
- *   series_id が null  … 指定を取り消して自動照合に戻す */
+ *   series_id が null  … 指定を取り消し、自動照合し直して 'suggested' に戻す */
 export async function adminCirculationLink(env: Env, body: unknown): Promise<Response> {
   const b = (body ?? {}) as { article?: unknown; series_id?: unknown };
   const article = typeof b.article === "string" ? b.article.trim() : "";
@@ -405,7 +410,16 @@ export async function adminCirculationLink(env: Env, body: unknown): Promise<Res
   if (!exists) return notFound("その作品は取り込まれていません");
 
   if (b.series_id === null) {
+    // 指定を外すだけだと、その行は「指定なし」（毎回その場で自動照合する状態）になる。
+    // 表示される寄せ先は同じでも、ほかの 200 行とは別の状態になってしまい、「要確認」にも
+    // 残り続ける。「戻す」で行きたいのは元のサジェストなので、消したうえで同じ自動照合を
+    // 走らせて 'suggested' として入れ直す（照合で何も見つからなければ行は作らない ー
+    // そのときは「寄せ先なし」であって、サジェストが有るのに外した状態ではない）。
     await env.DB.prepare(`DELETE FROM circulation_link WHERE article = ?`).bind(article).run();
+    const row = await env.DB.prepare(`SELECT article, title_ja FROM circulation WHERE article = ?`)
+      .bind(article)
+      .first<{ article: string; title_ja: string }>();
+    if (row) await writeSuggestions(env, [row]);
   } else {
     const id = typeof b.series_id === "string" ? b.series_id.trim() : null;
     if (id === null) return badRequest("series_id は文字列か null で指定してください");

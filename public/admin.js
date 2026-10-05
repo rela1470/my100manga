@@ -3495,7 +3495,9 @@ function renderCircRows() {
         type: "button",
         textContent: "戻す",
         disabled: r.state === "auto" || r.state === "none",
-        onclick: () => setCircLink(r.article, null, `「${r.title}」の指定を外して自動照合に戻しますか？`),
+        title: "指定を外し、自動照合をやり直してサジェストに戻す",
+        onclick: () =>
+          setCircLink(r.article, null, `「${r.title}」の指定を外して、自動照合の結果（サジェスト）に戻しますか？`),
       }),
     ]);
 

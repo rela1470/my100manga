@@ -2,6 +2,7 @@ import { env } from "cloudflare:workers";
 import { SELF } from "cloudflare:test";
 import { beforeEach, describe, expect, it } from "vitest";
 import {
+  adminCirculationLink,
   computeCirculation,
   refreshCirculation,
   suggestCirculationLinks,
@@ -251,6 +252,35 @@ describe("寄せ先の指定（circulation_link）", () => {
     const payload = await computeCirculation(env);
     expect(payload.entries[0].series_id).toBe("C2"); // 手動のまま
     expect(payload.entries[1].series_id).toBe("C2"); // B は自動で C2
+  });
+
+  it("指定を外すと、自動照合をやり直してサジェストとして入れ直す", async () => {
+    await seedSeries("C1", "テスト作品A", 3);
+    await seedSeries("C2", "まったく別の作品", 2);
+    await seedCirculation([{ title: "テスト作品A", copies: 100_000_000 }]);
+    await link("article-0", "C2"); // 手動で別のシリーズに寄せてある
+
+    const res = await adminCirculationLink(env, { article: "article-0", series_id: null });
+    expect(res.status).toBe(200);
+
+    // 行は残り、自動照合の結果（C1）が 'suggested' として入る（= 画面の状態が「サジェスト」）。
+    const row = await env.DB.prepare(`SELECT series_id, source FROM circulation_link WHERE article = ?`)
+      .bind("article-0")
+      .first<{ series_id: string; source: string }>();
+    expect(row).toEqual({ series_id: "C1", source: "suggested" });
+    expect((await computeCirculation(env)).entries[0].series_id).toBe("C1");
+  });
+
+  it("照合で何も見つからない作品の指定を外したら、行は作らない", async () => {
+    await seedSeries("C1", "まったく別の作品", 3);
+    await seedCirculation([{ title: "マスタに無い作品", copies: 30_000_000 }]);
+    await link("article-0", "C1");
+
+    await adminCirculationLink(env, { article: "article-0", series_id: null });
+
+    // 行を残すと「寄せない」と同じ意味になってしまうので、見つからないときは作らない。
+    const n = await env.DB.prepare(`SELECT COUNT(*) AS n FROM circulation_link`).first<{ n: number }>();
+    expect(n?.n).toBe(0);
   });
 
   it("寄せ先が見つからない作品には行を作らない（あとで拾えるように）", async () => {

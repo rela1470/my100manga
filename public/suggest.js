@@ -65,20 +65,50 @@
       input.removeAttribute("aria-activedescendant");
     }
 
-    // 入力欄の真下に幅を合わせて置く。モーダル内で欄ごとスクロールするので、開いている間は
-    // スクロール・リサイズのたびに置き直す。
+    const GAP = 2;   // 欄と候補の隙間
+    const EDGE = 8;  // 画面端に寄せすぎない余白
+    const MIN_H = 96; // これだけの高さが下に取れなければ上に出す
+
+    /** いま見えている範囲（スマホはソフトキーボードで下が隠れる）。
+     *  window.innerHeight はキーボードが出ても縮まないので、あるなら visualViewport を見る。
+     *  position:fixed の基準はレイアウトビューポートなので、visualViewport の offsetTop/Left を
+     *  足し戻した座標で置く（iOS はキーボードが出ると視覚ビューポートだけがずれる）。 */
+    function viewport() {
+      const vv = window.visualViewport;
+      if (!vv) {
+        return { top: 0, left: 0, width: document.documentElement.clientWidth, height: window.innerHeight };
+      }
+      return { top: vv.offsetTop, left: vv.offsetLeft, width: vv.width, height: vv.height };
+    }
+
+    // 入力欄の真下（下に入らなければ真上）に幅を合わせて置く。モーダル内で欄ごとスクロールするので、
+    // 開いている間はスクロール・リサイズ・キーボードの開閉のたびに置き直す。
     function place() {
       const r = input.getBoundingClientRect();
-      // 欄が画面の外に出たら（モーダルを下までスクロールした等）候補も畳む。
-      if (r.bottom < 0 || r.top > window.innerHeight) {
+      const v = viewport();
+      const viewBottom = v.top + v.height;
+      // 欄が見えている範囲の外に出たら（モーダルを下までスクロールした等）候補も畳む。
+      if (r.bottom < v.top || r.top > viewBottom) {
         close();
         return;
       }
-      box.style.left = r.left + "px";
-      box.style.top = r.bottom + 2 + "px";
-      box.style.width = r.width + "px";
-      // 画面下端までに収める（はみ出す分はこの中でスクロールさせる）。
-      box.style.maxHeight = Math.max(120, window.innerHeight - r.bottom - 12) + "px";
+      // 幅は欄に合わせるが、画面からはみ出す位置には置かない（狭い画面で右に切れるのを防ぐ）。
+      const width = Math.min(r.width, v.width - EDGE * 2);
+      box.style.width = width + "px";
+      box.style.left = Math.min(Math.max(r.left, v.left + EDGE), v.left + v.width - width - EDGE) + "px";
+
+      const below = viewBottom - r.bottom - GAP - EDGE;
+      const above = r.top - v.top - GAP - EDGE;
+      // スマホでキーボードを出すと欄のすぐ下がキーボードになり、真下に出した候補が隠れる。
+      // 下に入らず上の方が広ければ欄の上に出す。
+      const flip = below < MIN_H && above > below;
+      box.style.maxHeight = Math.max(MIN_H, flip ? above : below) + "px";
+      if (flip) {
+        // 上に出すときは実寸が要るので、幅と maxHeight を当てたあとに測って下端を欄に合わせる。
+        box.style.top = Math.max(v.top + EDGE, r.top - GAP - box.offsetHeight) + "px";
+      } else {
+        box.style.top = r.bottom + GAP + "px";
+      }
     }
 
     function setActive(i) {
@@ -177,6 +207,10 @@
       document.removeEventListener("keydown", onKeydown, true);
       window.removeEventListener("scroll", onScroll, true);
       window.removeEventListener("resize", onResize);
+      if (window.visualViewport) {
+        window.visualViewport.removeEventListener("resize", onResize);
+        window.visualViewport.removeEventListener("scroll", onScroll);
+      }
     }
 
     /** 欄がまだ画面にあるか。無ければ片付けて false。 */
@@ -245,6 +279,12 @@
     function onResize() { if (alive() && !box.hidden) place(); }
     window.addEventListener("scroll", onScroll, true);
     window.addEventListener("resize", onResize);
+    // スマホのソフトキーボードの開閉・視覚ビューポートのずれは window の scroll/resize では
+    // 拾えない（iOS は innerHeight も scrollY も動かないことがある）ので visualViewport も見る。
+    if (window.visualViewport) {
+      window.visualViewport.addEventListener("resize", onResize);
+      window.visualViewport.addEventListener("scroll", onScroll);
+    }
 
     return {
       // 絞り込み（R18版の「全年齢も含める」）が変わったとき用。出ている候補は古い条件のものなので

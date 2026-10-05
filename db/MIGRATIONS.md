@@ -49,7 +49,7 @@ DB 側に記録されないので、この表で管理する。
 | `add-series-name-display.sql` | `series.name_display`（同名シリーズを見分ける表示用名。ALTER + 今のデータへのバックフィル）。**デプロイ前に** | × | 2026-10-05 | 2026-10-05（R18版も dev / 本番とも同日 適用・デプロイ済み） |
 | `fix-series-name-display-variants.sql` | `name_display` の「同名」判定を検索の照合キー基準に直して入れ直す（「ブラック・ジャック」と「ブラックジャック」）。**デプロイ前に** | ○ | 2026-10-05 | 2026-10-05（R18版も dev / 本番とも同日 適用・デプロイ済み） |
 | `add-name-override-search.sql` | `series_name_override.name_norm` / `name_search`（管理者が直した名前を検索の鍵にもする。ALTER + 既存行の `name_norm` バックフィル）。**デプロイ前に** | ×（ALTER。`UPDATE` は `WHERE name_norm = ''` なので再実行可） | 2026-10-05 | 2026-10-05（R18版も dev / 本番とも同日 適用・デプロイ済み） |
-| `add-volume-master-fix.sql` | `volume_master_fix`（上流が壊している巻のマスタ行を丸ごと差し替える）＋ 9784063129502（Rave 9 巻）と 9784063029505（超感電少女モナ）の 2 件。管理画面「マスタ行の修正」が読み書きするので**デプロイ前に** | ○ | 未適用 | 未適用 |
+| `add-volume-master-fix.sql` | `volume_master_fix`（上流が壊している巻のマスタ行を丸ごと差し替える）＋ 9784063129502（Rave 9 巻）と 9784063029505（超感電少女モナ）の 2 件。管理画面「マスタ行の修正」が読み書きするので**デプロイ前に** | ○ | 2026-10-05 | 2026-10-05（R18版も dev / 本番とも同日 適用・デプロイ済み） |
 
 冪等: ○ = 何度流しても同じ結果。× = 2 回目はエラーになる（`ALTER TABLE ... ADD COLUMN` など。エラーで
 止まるだけで壊れはしないが、同じファイルの後続の文も流れない）。
@@ -1040,14 +1040,30 @@ KCフレンドB はこの行だけ浮いている（1994 年の KCフレンドB 
 `wrangler dev` で実物も通した（lookup が openBD から "Rave 9" を引く → 保存 → `/api/series/C325142/volumes`
 に 9 巻が出る → 取り消しで `C279630` が元に戻る）。
 
-### 適用
+### 適用（2026-10-05、全 4 環境）
 
-4 環境とも未適用。**migration → デプロイの順**（逆だと管理画面が `no such table: volume_master_fix` で
-落ちる）。
+**migration → デプロイの順**（逆だと管理画面が `no such table: volume_master_fix` で落ちる）。
+ingest は不要（マスタの列は増えていない）。次の月次取り込み以降は `APPLY_MASTER_FIX_SQL` が
+自動で載せ直す。
 
-1. `wrangler d1 execute DB [--env ...] --remote --file db/add-volume-master-fix.sql`
-2. `npm run deploy:dev` / `npm run deploy:prod`（R18版は `deploy:r18:dev` / `deploy:r18:prod`）
+1. `wrangler d1 execute DB [--env dev|r18dev|r18] --remote --file db/add-volume-master-fix.sql`
+   … 4 環境とも `changes: 5` / `rows_written: 13`。適用後はどの DB でも
+   `volume_master_fix` 2 行、`volumes` の 9784063129502 が `C325142`、9784063029505 が `C279630`。
+2. `npm run deploy:dev` → `deploy:prod` → `deploy:r18:dev` → `deploy:r18:prod`
 
-リポ直下の CLAUDE.md の予告・調整に従う。ingest は不要（マスタの列は増えていない）。次の月次取り込み
-以降は `APPLY_MASTER_FIX_SQL` が自動で載せ直す。適用後、`C325142` の巻一覧に 9 巻が出て、リストにも
-追加できるようになる。
+| 環境 | Version ID | 適用前のブックマーク（Time Travel の戻し先） |
+|---|---|---|
+| dev | `e0bc6b3c-de25-4117-8290-36a295528248` | `000000f4-00000000-000050fb-4e8772fe2698c6632edc530345e40a61` |
+| 本番 | `6c66f704-617b-44d4-9fe1-94cd85fa710d` | `00000108-0000041a-000050fb-300e3cb5bbc7a464b31456cfed2b2fef` |
+| R18 dev | `aaeace56-1b65-4329-8c88-d31e9b0a9a62` | `0000001d-00000000-000050fb-5a3e1c057b26026bd05416f0b43b8e4b` |
+| R18 本番 | `a50fc304-81fa-424c-9954-02ce47f020d7` | `00000025-00000000-000050fb-39052ee0dbdd6aa896029dd54ed30fe4` |
+
+デプロイ後の確認: 4 ドメインとも `/api/series/C325142/volumes` が 35 巻を返し、9 巻が
+`9784063129502` で出る（`my100manga.com` / `dev.my100manga.com` / `my100shunga.com` /
+`dev.my100shunga.com`）。`/api/admin/master-fixes` は Cloudflare Access のガードで 401
+（ルートは通っている）。
+
+デプロイ中に並行セッション（`my100manga-0f`）から `db/fix-honzuki-part4-volume.sql`
+（`series_correction` の 1 行の付け替え）の予告を受けたが、触る表が重ならないので止めずに続行し、
+完了を知らせた。あちらは本番適用をこちらの完了まで待っている。
+

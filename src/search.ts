@@ -10,6 +10,7 @@ import {
   attributeTitles,
   buildGroup,
   groupKey,
+  isGroupId,
   resolveGroup,
   GroupRow,
   GroupVolume,
@@ -69,8 +70,9 @@ interface SeriesRow {
 // vol_count come from the LINKED volumes only; unlinked volumes fold in when the series
 // is opened (see getSeriesVolumes), so an author who appears solely on the unlinked half
 // still needs Phase-2 promotion to be reachable from search. name is COALESCE(override,
-// master) so an admin-corrected title (series_name_override) shows here; search MATCHING
-// stays on the original name_norm / name_kana_norm columns below.
+// master) so an admin-corrected title (series_name_override) shows here. The keyword query
+// below still MATCHES on the master columns only (name_norm / name_search / name_kana_norm);
+// the corrected name is matched separately and cheaply by matchNameOverrides.
 // Volume-derived columns span the merge group (MEMBERS: the series plus any series an admin
 // merged into it, see src/merge.ts) so a merged card shows the combined count/cover.
 const MEMBERS = `(SELECT s.id UNION ALL SELECT m.absorbed_id FROM series_merge m WHERE m.target_id = s.id)`;
@@ -141,6 +143,10 @@ function toSeriesResult(r: SeriesRow, covers: Map<string, string>): SeriesResult
 
 const PAGE = 30;
 const SEARCH_MAX_OFFSET = 300;
+// 1 ページ目に足せる「管理者が直した名前で当たったカード」の数（matchNameOverrides）。上書きは
+// 管理者が 1 件ずつ入れたものなので当たっても数件だが、「スランプ」のような短い語で中間一致が
+// 増えたときに 1 ページ目が上書きだらけにならないよう上限を置く。
+const OVERRIDE_MAX = 5;
 // キーワード検索の結果をエッジ（Cache API）で持つ秒数。検索は series / volumes を '%q%' の LIKE で
 // 全行なめる一番重い読み取りで、マスタは月次取り込みと管理者の結合・修正でしか変わらないので
 // 1 時間遅れてよい。表紙はキャッシュ済みのものだけ返し、空欄はクライアントが POST /api/covers で
@@ -281,16 +287,48 @@ async function searchByKeyword(env: Env, q: string, offset: number, adultOnly: b
           kanaLike, like, likeS, kanaLike, like)
     .all<SeriesRow & { mt: number }>();
 
+  // 管理者が直したシリーズ名（series_name_override）でも引く。上の照合はマスタの列だけを見るので、
+  // マスタが書名を壊している作品はどの段にも載らない —『Dr.スランプ』のジャンプ・コミックス版
+  // 18 巻（G9784088511818）は書名が「Dr」で、シリーズ行も無いから読み（name_kana_norm）も無く、
+  // 「Dr.スランプ」では 1 件も当たらなかった。直した名前はその唯一の手掛かりなので、照合にも使う。
+  // 足すのは 1 ページ目だけ（2 ページ目以降にも足すと 1 ページ目と重なる）。
+  const nameHits = offset === 0
+    ? await matchNameOverrides(env, { nq, sq, prefix, prefixS, like, likeS }, adultOnly)
+    : [];
+  // まとまり（G-id）の上書きは、まとまりを組み立ててそのままカードにする。通報の後に既存シリーズへ
+  // 寄せられるようになっていれば、そのシリーズの上書きとして扱う（resolveGroup）。
+  const hitGroups: { group: UnlinkedGroup; mt: number }[] = [];
+  const hitSeries = new Map<string, number>(); // シリーズ ID → 段（mt）。結合先への読み替えは下で
+  for (const h of nameHits) {
+    if (hitGroups.length + hitSeries.size >= OVERRIDE_MAX) break;
+    if (!isGroupId(h.id)) {
+      hitSeries.set(h.id, Math.max(hitSeries.get(h.id) ?? 0, h.mt));
+      continue;
+    }
+    const r = await resolveGroup(env, h.id);
+    if (!r) continue;
+    if ("seriesId" in r) hitSeries.set(r.seriesId, Math.max(hitSeries.get(r.seriesId) ?? 0, h.mt));
+    else hitGroups.push({ group: r.group, mt: h.mt });
+  }
+
   // Series an admin merged away (series_merge) never show as their own card: drop them and
   // surface their target instead (fetched with the promoted rows below).
   // One row past the page tells whether another page exists; s.id breaks ties so pages
   // don't overlap or skip.
   const hasMore = (res.results ?? []).length > PAGE;
   const keywordRows = (res.results ?? []).slice(0, PAGE);
-  const absorbedTo = await mergeTargetsFor(env, keywordRows.map((r) => r.id));
+  const absorbedTo = await mergeTargetsFor(env, [...keywordRows.map((r) => r.id), ...hitSeries.keys()]);
   const rows = keywordRows.filter((r) => !absorbedTo.has(r.id));
   const keptIds = new Set(rows.map((r) => r.id));
   const mergedTargets = [...new Set(absorbedTo.values())].filter((id) => !keptIds.has(id));
+  // 吸収されたシリーズに付いた上書きは、結合先のカードの段に効かせる。
+  const overrideTier = new Map<string, number>();
+  for (const [id, mt] of hitSeries) {
+    const target = absorbedTo.get(id) ?? id;
+    overrideTier.set(target, Math.max(overrideTier.get(target) ?? 0, mt));
+  }
+  const overrideIds = [...overrideTier.keys()].filter((id) => !keptIds.has(id));
+  const groupHitIds = new Set(hitGroups.map(({ group }) => group.id));
 
   // ~20% of the MADB dump's volumes carry no schema:isPartOf, so they never join a
   // series row and are invisible to the series-based query above. Two cases, handled by
@@ -302,8 +340,8 @@ async function searchByKeyword(env: Env, q: string, offset: number, adultOnly: b
   //       "Promote" to that series id so opening it folds the unlinked volumes back in
   //       (getSeriesVolumes), giving the complete work instead of a partial card.
   const seriesTitles = new Set(rows.map((r) => normTitle(r.name)));
-  const existingIds = new Set([...keptIds, ...mergedTargets]);
-  const { promoteIds: discovered, standalone } = await discoverUnlinked(
+  const existingIds = new Set([...keptIds, ...mergedTargets, ...overrideIds]);
+  const { promoteIds: discovered, standalone: discoveredStandalone } = await discoverUnlinked(
     env,
     like,
     likeS,
@@ -313,9 +351,11 @@ async function searchByKeyword(env: Env, q: string, offset: number, adultOnly: b
     hasMore ? 0 : PAGE - rows.length - mergedTargets.length,
     adultOnly
   );
+  // 直した名前でもうカードにしたまとまりは、マスタの書名でも当たったときに二重に出さない。
+  const standalone = discoveredStandalone.filter((c) => !groupHitIds.has(c.series_id));
   const discoveredTo = await mergeTargetsFor(env, discovered);
   const promoteIds = [
-    ...new Set([...mergedTargets, ...discovered.map((id) => discoveredTo.get(id) ?? id)]),
+    ...new Set([...overrideIds, ...mergedTargets, ...discovered.map((id) => discoveredTo.get(id) ?? id)]),
   ].filter((id) => !keptIds.has(id));
 
   // Fetch the promoted series with the same columns as the keyword query so they render
@@ -338,8 +378,37 @@ async function searchByKeyword(env: Env, q: string, offset: number, adultOnly: b
     env,
     [...rows, ...promotedRows].map((r) => r.first_isbn ?? "")
   );
-  const results = rows.map((r) => toSeriesResult(r, covers));
-  const promoted = promotedRows.map((r) => toSeriesResult(r, covers));
+
+  // 直した名前で当たったカードを、キーワードで当たったカードと同じ物差し（段 → 巻数）で並べる。
+  // まとまりのカードはここでしか出ない（マスタの書名では当たらないので discoverUnlinked にも
+  // 載らない）。表紙はまとまりを組み立てた時点で引いてある（groups.loadGroup）。
+  const overrideRows = promotedRows.filter((r) => overrideTier.has(r.id));
+  const plainPromoted = promotedRows.filter((r) => !overrideTier.has(r.id));
+  const hitTags = hitGroups.length
+    ? await tagsForLabels(env, hitGroups.map(({ group }) => group.label))
+    : new Map<string, string>();
+  const ranked: { mt: number; count: number; card: SeriesResult | UnlinkedCard }[] = [
+    ...rows.map((r) => ({
+      mt: Math.max(r.mt, overrideTier.get(r.id) ?? 0),
+      count: r.vol_count,
+      card: toSeriesResult(r, covers),
+    })),
+    ...overrideRows.map((r) => ({
+      mt: overrideTier.get(r.id) ?? 0,
+      count: r.vol_count,
+      card: toSeriesResult(r, covers),
+    })),
+    ...hitGroups.map(({ group, mt }) => ({
+      mt,
+      count: group.volumes.length,
+      card: toUnlinkedCard(group, hitTags.get(group.label) ?? ""),
+    })),
+  ];
+  // 同点はもとの並びを保つ（Array#sort は安定なので、キーワード側は SQL の
+  // mt → 巻数 → num_items → id のまま）。
+  ranked.sort((a, b) => b.mt - a.mt || b.count - a.count);
+  const results = ranked.map((x) => x.card);
+  const promoted = plainPromoted.map((r) => toSeriesResult(r, covers));
 
   // 書名に検索語を含む成年向けの巻（取り込みで外したもの, adult_volumes）があれば、結果の下に
   // 「成年向けは追加できません」と注記できるよう adult_hits を立てる。1 ページ目だけ見る。
@@ -349,15 +418,64 @@ async function searchByKeyword(env: Env, q: string, offset: number, adultOnly: b
   // Real series first (keyword hits, then promoted complete works), then any standalone
   // series-less cards. Capped at PAGE per page. A merge target or promoted series can
   // reappear on a later page; the client drops cards it already shows.
+  // 直した名前で当たった分は PAGE の枠の外に足す。枠を食わせるとキーワードで当たった行が
+  // こぼれ、2 ページ目は SQL の offset で続きを出すのでそのまま消えてしまう。
+  const extra = overrideRows.length + hitGroups.length;
   return json(
     {
-      results: [...results, ...promoted, ...standalone].slice(0, PAGE),
+      results: [...results, ...promoted, ...standalone].slice(0, PAGE + extra),
       next_offset: hasMore && offset + PAGE <= SEARCH_MAX_OFFSET ? offset + PAGE : null,
       ...(adultHits ? { adult_hits: true, adult_message: ADULT_BLOCK_MESSAGE } : {}),
     },
     200,
     { "cache-control": "no-store" }
   );
+}
+
+/** 管理者が直したシリーズ名（series_name_override）での照合。当たった上書きの ID（C-id / U-id /
+ *  G-id）と段（mt）を強い順に返す。
+ *
+ *  キーワード検索の本体はマスタの列（name_norm / name_search / name_kana_norm）だけを見るので、
+ *  マスタが書名を壊している作品は正しい名前では 1 件も当たらない。『Dr.スランプ』のジャンプ・
+ *  コミックス版 18 巻は書名が「Dr」で入っていて、しかもシリーズに属さない巻のまとまりなので
+ *  読みも無い。管理者が直した名前だけが正しい名前を知っているので、それを検索の鍵にもする。
+ *
+ *  段は本体と揃える（前方一致 5 / 中間一致 4）が、完全一致だけは 1 つ上の 7 に置く。上書きは
+ *  「この名前の作品はこれ」という管理者の明示なので、たまたま同じ名前で並ぶマスタ行（『Dr.スランプ』
+ *  は同名のシリーズが 5 件ある）より確かな手掛かりで、同率の巻数勝負にせず先頭に出す。
+ *
+ *  表は管理者が直した分しかなく（本番で数十行）、照合は中間一致なのでどのみち索引は効かない。
+ *  全行走査 1 回で済むので、重いキーワード検索の方には手を入れない。name_norm / name_search は
+ *  修正時に書く（src/admin.ts）。列を足す前からある行・テストが直に入れた行は空なので、
+ *  空なら SQL で正規化して代用する（name_search 相当は SQL で作れないので name_norm で代える）。 */
+async function matchNameOverrides(
+  env: Env,
+  pat: { nq: string; sq: string; prefix: string; prefixS: string; like: string; likeS: string },
+  adultOnly: boolean
+): Promise<{ id: string; mt: number }[]> {
+  // 別名 o を必ず付ける。volumes にも series_id 列があるので、下の EXISTS で裸の series_id を
+  // 書くと内側の volumes.series_id に束縛される。
+  const norm = `COALESCE(NULLIF(o.name_norm, ''), REPLACE(REPLACE(LOWER(o.name), ' ', ''), '　', ''))`;
+  const search = `COALESCE(NULLIF(o.name_search, ''), ${norm})`;
+  // R18版の既定の絞り込み。series 行のある上書き（C-id / U-id）はその行で、まとまり（G-id）は
+  // ID が名乗る ISBN の巻で見る（まとまりの巻は成年向けの別がそろっている）。
+  const adultFilter = adultOnly
+    ? `AND (EXISTS (SELECT 1 FROM series s WHERE s.id = o.series_id AND s.is_adult = 1)
+            OR EXISTS (SELECT 1 FROM volumes v WHERE v.isbn = substr(o.series_id, 2) AND v.is_adult = 1))`
+    : "";
+  const res = await env.DB.prepare(
+    `SELECT o.series_id AS id,
+            CASE WHEN ${norm} = ? OR ${search} = ? THEN 7
+                 WHEN ${norm} LIKE ? ESCAPE '\\' OR ${search} LIKE ? ESCAPE '\\' THEN 5
+                 ELSE 4 END AS mt
+       FROM series_name_override o
+      WHERE (${norm} LIKE ? ESCAPE '\\' OR ${search} LIKE ? ESCAPE '\\')
+      ${adultFilter}`
+  )
+    .bind(pat.nq, pat.sq, pat.prefix, pat.prefixS, pat.like, pat.likeS)
+    .all<{ id: string; mt: number }>();
+  // 強い段から。同じ段の中はどれを採っても優劣が無いので ID で決め打ちして並びを安定させる。
+  return (res.results ?? []).sort((a, b) => b.mt - a.mt || a.id.localeCompare(b.id));
 }
 
 interface UnlinkedCard {

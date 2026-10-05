@@ -359,16 +359,22 @@ CREATE INDEX IF NOT EXISTS idx_series_report_last ON series_report (last_reporte
 -- Admin-confirmed series name overrides. When an admin fixes a reported name, the
 -- corrected title is stored here and applied at READ time (COALESCE over series.name
 -- in search + series detail), so it survives the monthly MADB re-ingest that would
--- otherwise restore the corrupt master name. Display-only: search matching still runs
--- against the original name_norm / name_kana_norm columns (the kana reading already
--- carries the real title, so corrupt-named series remain findable). One row per series.
+-- otherwise restore the corrupt master name. One row per series.
 -- シリーズに属さない巻のまとまり（G-id）の名前もここで直す（series_tag と同じ扱い）。series 行が
 -- 無いので COALESCE では畳めず、src/groups.ts applyGroupNames がまとまりの正規 ID で引く。
+-- 直した名前は検索の照合にも使う（db/add-name-override-search.sql）。マスタの書名が壊れている
+-- 作品（『Dr.スランプ』の JC 版 18 巻が「Dr」）は name_norm でも読みでも当たらず、直した名前が
+-- 唯一の手掛かりだから。照合用の正規形は修正時に JS で作って name_norm / name_search に入れ、
+-- 完全一致はマスタ名の完全一致より 1 段上に置く（src/search.ts matchNameOverrides）。
 -- See src/admin.ts (adminOverrideSeriesName), src/search.ts and src/series.ts.
 CREATE TABLE IF NOT EXISTS series_name_override (
-  series_id  TEXT PRIMARY KEY,   -- 表示名を上書きするシリーズ: C-id / U-id / G-id
-  name       TEXT NOT NULL,      -- corrected series title shown to everyone
-  created_at INTEGER NOT NULL
+  series_id   TEXT PRIMARY KEY,          -- 表示名を上書きするシリーズ: C-id / U-id / G-id
+  name        TEXT NOT NULL,             -- corrected series title shown to everyone
+  -- 検索の照合用。normTitle(name) / searchKey(name)（series の同名列と同じ畳み方）。
+  -- 古い行・他の経路で入った行は空のことがあり、読み出し側が SQL で代用する。
+  name_norm   TEXT NOT NULL DEFAULT '',
+  name_search TEXT NOT NULL DEFAULT '',
+  created_at  INTEGER NOT NULL
 );
 
 -- ── レーベルのタグ付け（廉価版・文庫版） ────────────────────────────────────

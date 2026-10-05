@@ -971,7 +971,7 @@ async function loadSeriesReports(page = pageState.seriesReports) {
 async function overrideSeriesName(r, btn) {
   const suggested = r.suggested_name || r.override_name || r.name_kana || r.vol_title || "";
   const name = await uiPrompt(
-    `シリーズ「${r.reported_name || r.series_id}」の正しい名前を入力してください。\n全ての閲覧者の検索/詳細表示に反映されます。`,
+    `シリーズ「${r.reported_name || r.series_id}」の正しい名前を入力してください。\n全ての閲覧者の検索/詳細表示に反映され、その名前で検索したときに先頭に出ます。`,
     suggested
   );
   if (name === null) return;

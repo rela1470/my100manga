@@ -1,6 +1,6 @@
 import { Env, StoredListItem } from "./types";
 import { parseStoredItems, resolveBooks, resolveListItems } from "./listItems";
-import { json, notFound, readJsonObject, toIsbn13, seriesNameSql } from "./util";
+import { json, notFound, normTitle, readJsonObject, searchKey, toIsbn13, seriesNameSql } from "./util";
 import { getMostCommonVolumeTitle } from "./series";
 import { deleteListStatements } from "./lists";
 import { devBypassActive } from "./adminAuth";
@@ -635,6 +635,7 @@ export async function adminDismissSeriesReport(env: Env, seriesId: string): Prom
 
 /** シリーズ名を修正（上書き）。正しい名前を series_name_override に記録し、read 時に
  *  COALESCE で全ユーザの検索/詳細表示へ反映する（再取り込みでマスター名が戻っても残る）。
+ *  直した名前は検索の照合にも使うので、正規形（name_norm / name_search）も一緒に書く。
  *  シリーズに属さない巻のまとまり（G-id, src/groups.ts）も同じ表で直せる: series 行が無いので
  *  まとまりの正規 ID（G + 最小 ISBN）に書き、読み出しは groups.applyGroupNames が引く。
  *  通報のあと既存シリーズに寄せられていれば、閲覧者が見るのはそのシリーズ名なのでそちらに書く。
@@ -662,11 +663,17 @@ export async function adminOverrideSeriesName(
   if (name.length > 200) return json({ ok: false, error: "名前が長すぎます" }, 400);
 
   const now = Date.now();
+  // 照合用の正規形も一緒に書く。直した名前は表示だけでなく検索の鍵にもなる（マスタの書名が
+  // 壊れている作品は、直した名前でしか引けない。src/search.ts matchNameOverrides）。畳み方は
+  // series.name_norm / name_search と同じで、name_search は NFKC と記号落としを含むので
+  // SQL では作れず、ここで作る。
   await env.DB.prepare(
-    `INSERT INTO series_name_override (series_id, name, created_at) VALUES (?, ?, ?)
-     ON CONFLICT (series_id) DO UPDATE SET name = excluded.name, created_at = excluded.created_at`
+    `INSERT INTO series_name_override (series_id, name, name_norm, name_search, created_at)
+     VALUES (?, ?, ?, ?, ?)
+     ON CONFLICT (series_id) DO UPDATE SET name = excluded.name, name_norm = excluded.name_norm,
+       name_search = excluded.name_search, created_at = excluded.created_at`
   )
-    .bind(targetId, name, now)
+    .bind(targetId, name, normTitle(name), searchKey(name), now)
     .run();
   // 通報は通報された ID で記録されている（まとまりの正規 ID は後から動くことがある）ので、
   // 書いた先の分と合わせて片付ける。

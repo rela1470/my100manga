@@ -36,6 +36,7 @@ import {
   adminApproveCoverSuggestion,
   adminDismissCoverSuggestion,
   adminDeleteCorrection,
+  adminUpdateCorrection,
   adminDeleteCover,
   adminDeleteList,
   adminDismissReport,
@@ -546,6 +547,10 @@ const worker = {
       const adminCorrMatch = path.match(/^\/api\/admin\/corrections\/([A-Za-z0-9]+)\/([0-9]+)$/);
       if (adminCorrMatch && request.method === "DELETE") {
         return await adminDeleteCorrection(env, adminCorrMatch[1], adminCorrMatch[2]);
+      }
+      // 巻番号の付け直し・別シリーズへの移動（確定/却下だけでは直せない取り違えの受け皿）。
+      if (adminCorrMatch && request.method === "PATCH") {
+        return await adminUpdateCorrection(request, env, adminCorrMatch[1], adminCorrMatch[2]);
       }
       if (path === "/api/admin/volume-reports" && request.method === "GET") {
         return await adminListVolumeReports(env, parsePage(url));

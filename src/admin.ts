@@ -1,6 +1,7 @@
 import { Env, StoredListItem } from "./types";
 import { parseStoredItems, resolveBooks, resolveListItems } from "./listItems";
-import { json, notFound, normTitle, readJsonObject, searchKey, toIsbn13, seriesNameSql } from "./util";
+import { badRequest, json, notFound, normTitle, readJsonObject, searchKey, toIsbn13, seriesNameSql, volSort } from "./util";
+import { normalizeCorrectionVolume } from "./corrections";
 import { getMostCommonVolumeTitle } from "./series";
 import { deleteListStatements } from "./lists";
 import { devBypassActive } from "./adminAuth";
@@ -391,6 +392,91 @@ export async function adminListCorrections(
   }));
 
   return json({ corrections, total, page: opts.page, per: opts.per }, 200, { "cache-control": "no-store" });
+}
+
+/** 手動追加の修正（PATCH /api/admin/corrections/:series/:isbn）。巻番号の付け直しと、
+ *  別シリーズへの移し替えを行う。
+ *
+ *  投稿の入口（src/corrections.ts addCorrection）は巻番号を「N」「巻N」と、部立てのシリーズでの
+ *  「第N部M」しか受け付けない。それでも取り違えは起きるし、投稿された巻そのものは正しいのに
+ *  巻番号や置き場所だけが違う、ということがある（本好きの下剋上 第4部9巻が「9」で入り、第1部の
+ *  巻のあいだに並んだ件。db/MIGRATIONS.md 2026-10-05 の節）。確定か却下しかできないと、
+ *  正しい巻を消すか SQL を手で書くかの二択になるのでここで直せるようにする。
+ *
+ *  巻番号は投稿と同じ規則で検査する（移動先のシリーズの書式に揃う）。vol_sort は volSort で
+ *  引き直すので、呼び出し側は送らない。移動先は series 行のあるシリーズ（C-id / U-id）だけ:
+ *  まとまり（G-id）への移動は巻の実体がシリーズに属さない前提なので受け付けない。 */
+export async function adminUpdateCorrection(
+  request: Request,
+  env: Env,
+  seriesId: string,
+  isbn: string
+): Promise<Response> {
+  const row = await env.DB.prepare(
+    `SELECT series_id, isbn, volume_number, vol_sort, cover_url, created_at, reviewed_at
+       FROM series_correction WHERE series_id = ? AND isbn = ?`
+  )
+    .bind(seriesId, isbn)
+    .first<{
+      series_id: string;
+      isbn: string;
+      volume_number: string;
+      vol_sort: number;
+      cover_url: string;
+      created_at: number;
+      reviewed_at: number;
+    }>();
+  if (!row) return notFound("修正が見つかりません");
+
+  const body = (await readJsonObject(request)) as { series_id?: unknown; volume_number?: unknown };
+  const rawSeries = typeof body.series_id === "string" ? body.series_id.trim() : "";
+  const target = rawSeries || row.series_id;
+  if (target !== row.series_id) {
+    if (isGroupId(target)) {
+      return badRequest("まとまり（G-id）へは移せません。シリーズ（C-id / U-id）を指定してください");
+    }
+    const exists = await env.DB.prepare(`SELECT 1 AS n FROM series WHERE id = ?`).bind(target).first();
+    if (!exists) return badRequest(`シリーズ ${target} が見つかりません`);
+    const clash = await env.DB.prepare(
+      `SELECT 1 AS n FROM series_correction WHERE series_id = ? AND isbn = ?`
+    )
+      .bind(target, isbn)
+      .first();
+    if (clash) return badRequest(`シリーズ ${target} には既に同じ ISBN の手動追加があります`);
+  }
+
+  const rawVolume = typeof body.volume_number === "string" ? body.volume_number : row.volume_number;
+  // 巻番号の書式は移動先のシリーズに合わせる（部立てかどうかは移動先で決まる）。
+  const checked = await normalizeCorrectionVolume(env, target, rawVolume);
+  if (!checked.volume) return badRequest(checked.error);
+  const volume = checked.volume;
+  const vol_sort = volSort(volume);
+
+  if (target === row.series_id) {
+    if (volume === row.volume_number && vol_sort === row.vol_sort) {
+      return json({ ok: true, series_id: target, isbn, volume_number: volume, vol_sort, changed: false });
+    }
+    await env.DB.prepare(
+      `UPDATE series_correction SET volume_number = ?, vol_sort = ? WHERE series_id = ? AND isbn = ?`
+    )
+      .bind(volume, vol_sort, target, isbn)
+      .run();
+  } else {
+    // 主キーが (series_id, isbn) なので移動は入れ直し。表紙・投稿日・確定状態は引き継ぐ。
+    await env.DB.batch([
+      env.DB.prepare(
+        `INSERT INTO series_correction
+           (series_id, isbn, volume_number, vol_sort, cover_url, created_at, reviewed_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?)`
+      ).bind(target, isbn, volume, vol_sort, row.cover_url, row.created_at, row.reviewed_at),
+      env.DB.prepare(`DELETE FROM series_correction WHERE series_id = ? AND isbn = ?`).bind(
+        row.series_id,
+        isbn
+      ),
+    ]);
+  }
+
+  return json({ ok: true, series_id: target, isbn, volume_number: volume, vol_sort, changed: true });
 }
 
 export async function adminDeleteCorrection(

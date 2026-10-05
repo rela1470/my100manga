@@ -557,10 +557,13 @@ async function loadCorrections(page = pageState.corr) {
     const seriesLabel = c.series_creator ? `${seriesName}（${c.series_creator}）` : seriesName;
 
     // 確定=承認（公開維持・レビュー済みにしてキューから外す）、却下=誤投稿として削除。
+    // 修正=巻そのものは正しいが巻番号や置き場所が違うとき（確定と却下だけでは直せない）。
     const approveBtn = el("button", { className: "ok", textContent: "確定" });
     approveBtn.addEventListener("click", () =>
       approveCorrection(c.series_id, c.isbn, seriesName, approveBtn)
     );
+    const editBtn = el("button", { textContent: "修正" });
+    editBtn.addEventListener("click", () => editCorrection(c, seriesName, editBtn));
     const delBtn = el("button", { className: "danger", textContent: "却下" });
     delBtn.addEventListener("click", () => deleteCorrection(c.series_id, c.isbn, seriesName, delBtn));
 
@@ -580,7 +583,7 @@ async function loadCorrections(page = pageState.corr) {
         el("td", { textContent: c.isbn }),
         el("td", { className: "slug", textContent: c.series_id }),
         el("td", { textContent: fmtDate(c.created_at) }),
-        el("td", { className: "report-actions" }, [approveBtn, delBtn]),
+        el("td", { className: "report-actions" }, [approveBtn, editBtn, delBtn]),
       ])
     );
   }
@@ -2101,6 +2104,51 @@ async function approveCorrection(seriesId, isbn, seriesName, btn) {
     uiAlert("確定に失敗しました: " + e.message);
     btn.disabled = false;
     btn.textContent = "確定";
+  }
+}
+
+/** 手動追加を直す（PATCH /api/admin/corrections/:series/:isbn）。巻そのものは正しいのに巻番号や
+ *  置き場所だけが違う投稿の受け皿。巻番号 → シリーズ ID の順に聞き、どちらも変えなければ何もしない。
+ *  巻番号の形式（「N」「巻N」、部立てのシリーズなら「第N部M」）はサーバが移動先のシリーズに
+ *  合わせて検査・整形するので、ここでは空かどうかだけ見る。 */
+async function editCorrection(c, seriesName, btn) {
+  const volume = await uiPrompt(
+    `「${seriesName}」ISBN ${c.isbn} の巻番号を入力してください。\n` +
+      `部立てのシリーズでは「第4部9」のように部を付けられます（書式はシリーズの他の巻に揃います）。`,
+    c.volume_number || ""
+  );
+  if (volume === null) return;
+  if (!volume.trim()) {
+    uiAlert("巻番号を入力してください");
+    return;
+  }
+  const seriesId = await uiPrompt(
+    `この巻を置くシリーズ ID を入力してください（変えないならそのまま）。\n` +
+      `別のシリーズに移すときだけ変更してください。まとまり（G-id）へは移せません。`,
+    c.series_id
+  );
+  if (seriesId === null) return;
+  const target = seriesId.trim() || c.series_id;
+  if (volume.trim() === (c.volume_number || "") && target === c.series_id) return;
+
+  btn.disabled = true;
+  btn.textContent = "修正中…";
+  try {
+    const res = await fetch(
+      `/api/admin/corrections/${encodeURIComponent(c.series_id)}/${encodeURIComponent(c.isbn)}`,
+      {
+        method: "PATCH",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ series_id: target, volume_number: volume.trim() }),
+      }
+    );
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
+    await loadCorrections(pageState.corr);
+  } catch (e) {
+    uiAlert("修正に失敗しました: " + e.message);
+    btn.disabled = false;
+    btn.textContent = "修正";
   }
 }
 

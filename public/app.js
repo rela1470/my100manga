@@ -2498,6 +2498,39 @@ function formatVolRanges(ns) {
   return parts.join("・");
 }
 
+// ── 部立ての巻ラベル（「第4部[9]」「第2部 4」「第1幕 3」）──────────────────────────
+// src/util.ts の parseArcLabel / arcLabelTemplate / formatArcLabel の写し（サーバと同じ規則で
+// 既定の巻番号を出し、同じ書式で送るため）。片方だけ直さないこと。並び順のキー vol_sort は
+// サーバの volSort と同じ「部 ×1000 + 巻」。
+const ARC_LABEL_RE = /^第[\s　]*(\d{1,3})[\s　]*([部幕])([\s　]*\[?)(\d{1,4})(\]?)$/;
+
+function parseArcLabel(label) {
+  const m = ARC_LABEL_RE.exec((label || "").trim());
+  if (!m) return null;
+  return {
+    arc: parseInt(m[1], 10),
+    n: parseInt(m[4], 10),
+    unit: m[2],
+    template: `第{a}${m[2]}${m[3]}{n}${m[5]}`,
+  };
+}
+
+function arcLabelTemplate(labels) {
+  const counts = new Map();
+  for (const l of labels) {
+    const a = parseArcLabel(l);
+    if (a) counts.set(a.template, (counts.get(a.template) || 0) + 1);
+  }
+  let best = null;
+  let bestN = 0;
+  for (const [t, n] of counts) if (n > bestN) ((best = t), (bestN = n));
+  return best;
+}
+
+function formatArcLabel(template, arc, n) {
+  return template.replace("{a}", String(arc)).replace("{n}", String(n));
+}
+
 function detectGaps(volumes) {
   let kan = 0;
   let num = 0;
@@ -2537,7 +2570,7 @@ function detectGaps(volumes) {
   const gaps = [];
   for (let i = from; i < max; i++) {
     if (!present.has(i)) {
-      gaps.push({ n: i, vol: fmt === "KAN" ? `巻${i}` : `${i}`, disp: `${i}巻` });
+      gaps.push({ n: i, vol: fmt === "KAN" ? `巻${i}` : `${i}`, disp: `${i}巻`, sort: i });
     }
   }
   return gaps;
@@ -2579,7 +2612,9 @@ async function openGapPicker(series, gap, volumes, opts) {
   const isbnHint = document.createElement("p");
   isbnHint.className = "hint";
   isbnHint.textContent = mkGap
-    ? "候補に無い場合は ISBN13 と巻番号を直接指定できます。書影が見つかる ISBN のみ追加できます。"
+    ? (opts && opts.arc
+        ? "候補に無い場合は ISBN13 と、部・巻番号を直接指定できます。書影が見つかる ISBN のみ追加できます。"
+        : "候補に無い場合は ISBN13 と巻番号を直接指定できます。書影が見つかる ISBN のみ追加できます。")
     : "候補に無い場合は ISBN を直接指定できます。";
   const isbnRow = document.createElement("div");
   isbnRow.className = mkGap ? "share-url new-vol-row" : "share-url";
@@ -2591,7 +2626,18 @@ async function openGapPicker(series, gap, volumes, opts) {
   isbnBtn.type = "button";
   isbnBtn.textContent = "このISBNで追加";
   let volInput = null;
+  let arcInput = null;
   if (mkGap) {
+    // 部立てのシリーズでは部も編集できるようにする（「第4部の9巻」を指すのに巻番号だけでは
+    // 足りない）。既定は最後の部。openNewVolumePicker が opts.arc を立てる。
+    if (opts && opts.arc) {
+      arcInput = document.createElement("input");
+      arcInput.type = "text";
+      arcInput.inputMode = "numeric";
+      arcInput.className = "new-vol-num";
+      arcInput.value = String(gap.arc);
+      arcInput.setAttribute("aria-label", "部");
+    }
     volInput = document.createElement("input");
     volInput.type = "text";
     volInput.inputMode = "numeric";
@@ -2612,21 +2658,41 @@ async function openGapPicker(series, gap, volumes, opts) {
         uiAlert("巻番号を数字で入力してください");
         return;
       }
+      let a;
+      if (arcInput) {
+        a = parseInt(arcInput.value.replace(/[^0-9]/g, ""), 10);
+        if (!a) {
+          uiAlert("部を数字で入力してください");
+          return;
+        }
+      }
       if (inList(isbn)) {
         uiAlert("この ISBN はすでに巻一覧にあります");
         return;
       }
-      g = mkGap(n);
+      g = mkGap(n, a);
     }
     pickManualVolume(series, g, { isbn, cover_url: "" }, volumes);
   };
   isbnBtn.addEventListener("click", submitIsbn);
-  for (const el of [isbnInput, volInput].filter(Boolean)) {
+  for (const el of [isbnInput, arcInput, volInput].filter(Boolean)) {
     el.addEventListener("keydown", (e) => {
       if (e.key === "Enter" && !e.isComposing) submitIsbn();
     });
   }
   isbnRow.appendChild(isbnInput);
+  if (arcInput) {
+    const arcUnit = document.createElement("span");
+    arcUnit.className = "hint";
+    // 「部」か「幕」か。既定のラベル（gap.vol）から拾う。
+    arcUnit.textContent = (parseArcLabel(gap.vol) || { unit: "部" }).unit;
+    const arcHead = document.createElement("span");
+    arcHead.className = "hint";
+    arcHead.textContent = "第";
+    isbnRow.appendChild(arcHead);
+    isbnRow.appendChild(arcInput);
+    isbnRow.appendChild(arcUnit);
+  }
   if (volInput) {
     const volUnit = document.createElement("span");
     volUnit.className = "hint";
@@ -2710,15 +2776,54 @@ async function openGapPicker(series, gap, volumes, opts) {
 // 初期値にして開く。まだ一覧に無い巻を挟んでいることもあるので、候補はその巻番号で、ISBN の
 // 直接指定は巻番号を編集して追加できる。
 function openNewVolumePicker(series, volumes) {
+  const labels = volumes.map((v) => (v.volume_number || "").trim()).filter(Boolean);
+  // 数字が 1 つだけのラベルを素の巻番号として読む（"巻110" / "第170巻" / "VOLUME26"、および
+  // "170　／　第170巻" のように同じ数を 2 度書く MADB の表記ゆれ）。部立てのラベルはここでは
+  // 読まない（"第4部[9]" の最初の数字は部番号）。
+  const plainOf = (l) => {
+    if (parseArcLabel(l)) return null;
+    const nums = l.match(/\d+/g);
+    if (!nums) return null;
+    const uniq = [...new Set(nums)];
+    return uniq.length === 1 ? parseInt(uniq[0], 10) : null;
+  };
+  // 部立てのシリーズ（本好きの下剋上 等。マスタが部ごとに巻番号を振り直す）は、素の数字では
+  // 巻を指せない。最後の部の最大巻 + 1 を既定にし、部と巻の 2 つを編集できる形で開く。
+  // 部立てが多数派のときだけそうする（素の巻番号のシリーズに部立てのラベルが 1 つ紛れて
+  // いるだけで画面が変わらないように）。
+  const arcT = arcLabelTemplate(labels);
+  const arcCount = labels.filter((l) => parseArcLabel(l)).length;
+  const plainCount = labels.filter((l) => plainOf(l) !== null).length;
+  if (arcT && arcCount >= plainCount) {
+    let arc = 0;
+    let max = 0;
+    for (const l of labels) {
+      const a = parseArcLabel(l);
+      if (!a) continue;
+      if (a.arc > arc) ((arc = a.arc), (max = 0));
+      if (a.arc === arc) max = Math.max(max, a.n);
+    }
+    const unit = parseArcLabel(formatArcLabel(arcT, 1, 1)).unit;
+    const mkGap = (n, a = arc) => ({
+      n,
+      arc: a,
+      vol: formatArcLabel(arcT, a, n),
+      disp: `第${a}${unit}${n}巻`,
+      sort: a * 1000 + n,
+    });
+    openGapPicker(series, mkGap(max + 1), volumes, { mkGap, arc: true });
+    return;
+  }
+  // 素の巻番号のシリーズ。以前は最初の数字列を無条件に採っていたので、"第1部[7]" のような
+  // 部立てのラベルから部番号（1）の方を掴み、既定の巻番号が巻一覧と合わなかった。
   let kan = false;
   let max = 0;
-  for (const v of volumes) {
-    const s = (v.volume_number || "").trim();
-    if (/^巻\d+$/.test(s)) kan = true;
-    const m = s.match(/\d+/);
-    if (m) max = Math.max(max, parseInt(m[0], 10));
+  for (const l of labels) {
+    if (/^巻\d+$/.test(l)) kan = true;
+    const n = plainOf(l);
+    if (n !== null) max = Math.max(max, n);
   }
-  const mkGap = (n) => ({ n, vol: kan ? `巻${n}` : `${n}`, disp: `${n}巻` });
+  const mkGap = (n) => ({ n, vol: kan ? `巻${n}` : `${n}`, disp: `${n}巻`, sort: n });
   openGapPicker(series, mkGap(max + 1), volumes, { mkGap });
 }
 
@@ -2730,7 +2835,7 @@ async function pickManualVolume(series, gap, c, volumes) {
     isbn: c.isbn || "",
     isbns: c.isbn ? [c.isbn] : [],
     volume_number: gap.vol,
-    vol_sort: gap.n,
+    vol_sort: gap.sort != null ? gap.sort : gap.n,
     title: series.title,
     author: series.creator || "",
     publisher: "",

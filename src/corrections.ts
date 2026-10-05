@@ -1,5 +1,18 @@
 import { Env } from "./types";
-import { badRequest, json, notFound, volumeLabelTemplate, formatVolumeLabel, readJsonObject, toIsbn13, volSort, seriesNameSql } from "./util";
+import {
+  arcLabelTemplate,
+  badRequest,
+  formatArcLabel,
+  json,
+  notFound,
+  parseArcLabel,
+  readJsonObject,
+  seriesNameSql,
+  toIsbn13,
+  unifyVolumeLabel,
+  volSort,
+  volumeLabelTemplate,
+} from "./util";
 import { findNgWord } from "./ngwords";
 import { isTrustedCoverUrl, readCachedCovers, resolveCovers } from "./covers";
 import type { UnlinkedGroup } from "./groups";
@@ -23,11 +36,61 @@ const MAX_CORRECTIONS = 20;
 // Cap on the optional "正しい名前" suggestion attached to a series-name report.
 const MAX_SUGGESTED_NAME = 100;
 
-/** Standard tankobon labels we accept for a correction ("巻110" or "110"). Anything
- *  else is rejected: arc labels etc. can't be numerically placed and invite noise. */
-function normalizeVolume(raw: string): string | null {
+/** Standard tankobon labels we accept for a correction ("巻110" or "110"), plus the
+ *  部立て form ("第4部[9]") for series that already number their volumes per arc.
+ *
+ *  部立てを無条件に通すと、素の巻番号で並ぶシリーズに volSort が「部 ×1000 + 巻」で弾き出す値
+ *  （第4部9巻 → 4009）が紛れ込んで並び順が壊れるので、`arcTemplate`（そのシリーズで最も多い
+ *  部立てラベルの書式。arcLabelTemplate が出す。部立てを使っていなければ null）がある
+ *  ときだけ受け付け、書式もそれに揃える（"第4部9" → "第4部[9]"）。それ以外のラベル
+ *  （「24億脱出編4」等の自由な部名）は従来どおり拒否する: 数で置けないうえ荒らしの的になる。
+ *
+ *  部立てを閉じていたせいで、本好きの下剋上 第4部9巻（ISBN 9784867943816）が「9」として
+ *  入り、第1部の巻のあいだに並んだ（db/MIGRATIONS.md 2026-10-05 の節）。 */
+function normalizeVolume(raw: string, arcTemplate: string | null): string | null {
   const v = raw.trim();
-  return /^巻\d+$/.test(v) || /^\d+$/.test(v) ? v : null;
+  if (/^巻\d+$/.test(v) || /^\d+$/.test(v)) return v;
+  if (arcTemplate) {
+    const a = parseArcLabel(v);
+    if (a) return formatArcLabel(arcTemplate, a.arc, a.n);
+  }
+  return null;
+}
+
+/** 巻番号の形式を誤ったときの案内。部立てのシリーズでは部付きの形も挙げる。 */
+function volumeFormatMessage(arcTemplate: string | null): string {
+  const example = arcTemplate ? `「${formatArcLabel(arcTemplate, 4, 9)}」` : "";
+  return arcTemplate
+    ? `巻番号は「巻N」「N」または部付き${example}の形式で指定してください`
+    : "巻番号は「巻N」または「N」の形式で指定してください";
+}
+
+/** そのシリーズがマスタで使っている巻ラベル（重複なし）。結合済みのシリーズは 1 つの単位として
+ *  見る（巻一覧 src/series.ts getSeriesVolumes と同じ）ので、吸収された側の巻のラベルも拾う。
+ *  巻番号の検査（部立てを受け付けるか）と、応答で返すラベルの書式合わせに使う。 */
+async function seriesVolumeLabels(env: Env, seriesId: string): Promise<string[]> {
+  const unit = await mergeMembers(env, await resolveMergeTarget(env, seriesId));
+  const ph = unit.map(() => "?").join(",");
+  const res = await env.DB.prepare(
+    `SELECT DISTINCT volume_number FROM volumes
+      WHERE series_id IN (${ph}) AND volume_number IS NOT NULL`
+  )
+    .bind(...unit)
+    .all<{ volume_number: string }>();
+  return (res.results ?? []).map((r) => r.volume_number);
+}
+
+/** 手動追加の巻番号を、そのシリーズの書式に正規化する。受け付けなければエラー文言を返す。
+ *  管理画面の修正（src/admin.ts adminUpdateCorrection）も投稿と同じ規則で検査するための入口。
+ *  まとまり（G-id）は volumes 側に行が無いのでラベルを引けず、素の巻番号だけを受け付ける。 */
+export async function normalizeCorrectionVolume(
+  env: Env,
+  seriesId: string,
+  raw: string
+): Promise<{ volume: string | null; error: string }> {
+  const arcTemplate = arcLabelTemplate(await seriesVolumeLabels(env, seriesId));
+  const volume = normalizeVolume(raw, arcTemplate);
+  return { volume, error: volume ? "" : volumeFormatMessage(arcTemplate) };
 }
 
 /** Strip separators and keep digits; a valid ISBN13 is exactly 13 digits. */
@@ -127,9 +190,19 @@ export async function addCorrection(
 
   const body = (await readJsonObject(request)) as { isbn?: unknown; volume_number?: unknown };
   const isbn = typeof body.isbn === "string" ? normalizeIsbn(body.isbn) : null;
-  const volume = typeof body.volume_number === "string" ? normalizeVolume(body.volume_number) : null;
   if (!isbn) return badRequest("ISBN13 を指定してください");
-  if (!volume) return badRequest("巻番号は「巻N」または「N」の形式で指定してください");
+
+  // 巻番号の検査にはそのシリーズが使っている巻ラベルが要る（部立てを受け付けるかの判断と、
+  // 書式合わせ）。応答で返すラベルの整形にも同じものを使うので、ここで 1 度だけ引く。
+  const labels = group
+    ? group.volumes.map((v) => v.volume_number).filter(Boolean)
+    : await seriesVolumeLabels(env, seriesId);
+  const template = volumeLabelTemplate(labels);
+  const arcTemplate = arcLabelTemplate(labels);
+
+  const volume =
+    typeof body.volume_number === "string" ? normalizeVolume(body.volume_number, arcTemplate) : null;
+  if (!volume) return badRequest(volumeFormatMessage(arcTemplate));
   // 成年向けとして取り込みから外した巻（adult_volumes）は手動追加でも入れない。
   const adultTitle = (await findAdultIsbns(env, [isbn])).get(isbn);
   if (adultTitle !== undefined) return badRequest(adultBlockMessage(adultTitle));
@@ -168,24 +241,15 @@ export async function addCorrection(
     .run();
 
   // Echo the label in the series' style so the client's immediate re-render matches
-  // what GET /volumes returns (see the correction merge in src/series.ts).
-  const labels = group
-    ? group.volumes.map((v) => v.volume_number).filter(Boolean)
-    : (
-        await env.DB.prepare(
-          `SELECT DISTINCT volume_number FROM volumes WHERE series_id = ? AND volume_number IS NOT NULL`
-        )
-          .bind(seriesId)
-          .all<{ volume_number: string }>()
-      ).results?.map((r) => r.volume_number) ?? [];
-  const template = volumeLabelTemplate(labels);
-
+  // what GET /volumes returns (see the correction merge in src/series.ts). 素の巻番号だけを
+  // 書き換える unifyVolumeLabel を使う: 部立てのラベルは巻番号を一意に取れないので、
+  // そのまま返す（formatVolumeLabel に vol_sort を渡すと「第4009巻」になってしまう）。
   return json(
     {
       volume: {
         isbn,
         isbns: [isbn],
-        volume_number: formatVolumeLabel(template, vol_sort, volume),
+        volume_number: unifyVolumeLabel(template, volume),
         vol_sort,
         title: meta.name,
         author: meta.creator ?? "",

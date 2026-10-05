@@ -362,6 +362,49 @@ export function unifyVolumeLabel(template: string | null, label: string): string
   return n === null ? label : formatVolumeLabel(template, n, label);
 }
 
+// ── 部立ての巻ラベル（「第4部[9]」「第2部 4」「第1幕 3」）────────────────────────────
+// MADB は部ごとに巻番号を振り直す作品（本好きの下剋上・ガラスの仮面 等）をこの形で持つ。
+// volSort は ARC_VOLUME_RE でこれを「部 ×1000 + 巻」に並べる。plainVolumeNumber は null を
+// 返す（数字が 2 つあるので巻番号を一意に決められない）ので、素のラベルとは別に扱う。
+// 書式はシリーズごとにぶれる（"第4部[9]" / "第2部 4" / "第2部1"）ので、分解したうえで
+// そのシリーズで最も多い書式に当てはめ直す。public/app.js にも同じ 3 つの写しがある
+// （新刊の追加画面で既定の巻番号を出すため。片方だけ直さないこと）。
+const ARC_LABEL_RE = /^第[\s　]*(\d{1,3})[\s　]*([部幕])([\s　]*\[?)(\d{1,4})(\]?)$/;
+
+export interface ArcLabel {
+  arc: number; // 部の番号
+  n: number; // その部の中の巻番号
+  unit: string; // 「部」か「幕」
+  template: string; // 書式（"第{a}部[{n}]"）
+}
+
+/** 部立ての巻ラベルを部の番号・巻番号・書式に分解する。部立てでなければ null。 */
+export function parseArcLabel(label: string): ArcLabel | null {
+  const m = ARC_LABEL_RE.exec((label ?? "").trim());
+  if (!m) return null;
+  return {
+    arc: parseInt(m[1], 10),
+    n: parseInt(m[4], 10),
+    unit: m[2],
+    template: `第{a}${m[2]}${m[3]}{n}${m[5]}`,
+  };
+}
+
+/** そのシリーズで最も多い部立てラベルの書式。部立てを使っていなければ null。 */
+export function arcLabelTemplate(labels: string[]): string | null {
+  const counts = new Map<string, number>();
+  for (const l of labels) {
+    const a = parseArcLabel(l);
+    if (a) counts.set(a.template, (counts.get(a.template) ?? 0) + 1);
+  }
+  return mostCommon(counts);
+}
+
+/** 部立てラベルを書式に当てはめる（"第{a}部[{n}]" + 4,9 → "第4部[9]"）。 */
+export function formatArcLabel(template: string, arc: number, n: number): string {
+  return template.replace("{a}", String(arc)).replace("{n}", String(n));
+}
+
 /** Normalize an ISBN-10/13 (hyphens allowed) to ISBN-13, mirroring scripts/ingest.mjs
  *  isbn13 so list items saved with an ISBN-10 ("4088725093") match master rows. "" if
  *  it isn't an ISBN. */

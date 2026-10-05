@@ -45,6 +45,7 @@ DB 側に記録されないので、この表で管理する。
 | `add-volume-subtitle.sql` | `volumes.subtitle`（巻の副題。同じ巻番号の別作品が 1 冊に畳まれるのを直す。中身は取り込み直しで埋まる）。**デプロイ前に** | × | 2026-10-04 | 2026-10-04 |
 | `add-series-version.sql` | `series.version`（版表示。同名の版違いシリーズを見分ける。中身は取り込み直しで埋まる）。**デプロイ前に** | × | 2026-10-04 | 2026-10-04 |
 | `add-label-tag.sql` | `label_tag`（レーベルの廉価版・文庫版タグ）＋ `idx_series_label`（管理画面のレーベル一覧）。**デプロイ前に** | ○ | 2026-10-05 | 2026-10-05（R18版も dev / 本番とも 2026-10-05 適用・デプロイ済み） |
+| `add-series-tag.sql` | `series_tag` / `series_tag_request`（シリーズ個別のタグと利用者申請）。**デプロイ前に** | ○ | 未適用 | 未適用（R18版も未適用） |
 
 冪等: ○ = 何度流しても同じ結果。× = 2 回目はエラーになる（`ALTER TABLE ... ADD COLUMN` など。エラーで
 止まるだけで壊れはしないが、同じファイルの後続の文も流れない）。
@@ -84,6 +85,20 @@ DB 側に記録されないので、この表で管理する。
   （`scripts/ingest.mjs` の `SWAP_SQL`）でも張り直す。
 - タグの中身（どのレーベルに何を付けたか）は本番の管理画面で付ける運用。ローカルで付けて本番へ
   持っていく必要が出たら、`series-merge-data.sql` と同じく upsert の SQL に書き出す。
+
+### `add-series-tag.sql` の注意
+
+- シリーズ個別のタグ（`series_tag`）と、その利用者申請（`series_tag_request`）。表 2 つと索引 1 本で、
+  中身は空。レーベル単位のタグでは拾えないシリーズ（同じレーベルに文庫版でない本が混じる等）を
+  個別に上書きする。`series_tag.tag = ''` は「タグ無し」を明示する上書きで、レーベル由来の印を打ち消す。
+- **必ずデプロイより前に流すこと。** `add-label-tag.sql` と同じ理由で、検索（`src/search.ts` の
+  `SERIES_COLS`）とシリーズの巻一覧（`src/series.ts`）が `src/labels.ts` の `effectiveTagSql` を
+  畳み込んで `series_tag` を引く。表が無いまま新しいコードを出すと `no such table: series_tag` で
+  **検索と巻一覧が全部落ちる**。
+- 本家・R18版の両方に要る（同じコードで動くため）。dev / 本番それぞれ、計 4 つ。
+- 索引は `series_tag_request(last_reported_at)` の 1 本だけ（管理画面のキューを新しい順に出す）。
+  `series` / `volumes` への索引ではないので、取り込みの差し替え（`scripts/ingest.mjs` の `SWAP_SQL`）に
+  足す必要は無い。
 
 ### `add-label-tag.sql` の適用記録
 

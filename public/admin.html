@@ -26,6 +26,7 @@
       <a href="#series-reports" data-page="series-reports">シリーズ名の修正</a>
       <a href="#series-merges" data-page="series-merges">シリーズの結合</a>
       <a href="#labels" data-page="labels">レーベル管理</a>
+      <a href="#series-tags" data-page="series-tags">シリーズのタグの申請</a>
       <a href="#volume-title-reports" data-page="volume-title-reports">本のタイトルの修正</a>
       <a href="#corrections" data-page="corrections">シリーズへの手動追加</a>
       <a href="#cover-suggestions" data-page="cover-suggestions">表紙の修正</a>
@@ -278,6 +279,56 @@
       <p class="hint" id="mergeHint" style="display:none"></p>
       <div id="mergeList"></div>
       <div class="pager" id="mergePager" style="display:none"></div>
+    </section>
+
+    <!-- シリーズのタグの申請（閲覧者からの collect-only の申請を確定/却下する） -->
+    <section class="admin-page" id="page-series-tags" hidden>
+      <div class="toolbar">
+        <strong>シリーズのタグの申請</strong>
+        <span class="count" id="seriesTagCount"></span>
+        <div style="flex:1"></div>
+        <button id="reloadSeriesTag">再読み込み</button>
+      </div>
+      <p class="hint">
+        閲覧者が巻一覧の「廉価版・文庫版？」から申請したものです。件数を積むだけで全体には
+        反映していません。<strong>確定</strong>を押すとそのシリーズ個別のタグ（<code>series_tag</code>）
+        が決まり、レーベル単位のタグより優先されます。<strong>却下</strong>すると申請だけ消え、
+        表示は今までどおり（レーベル由来のまま）です。
+        <br>
+        「現在」はいまそのシリーズに出ている印で、出どころが「レーベル」ならレーベル管理で付けた
+        タグ、「個別」なら既にこの画面で確定したものです。確定するタグは申請どおりでなくてよく、
+        その場で選び直せます。「タグ無し」を選ぶと、レーベル由来の印を打ち消します。
+      </p>
+      <p class="hint" id="seriesTagHint" style="display:none"></p>
+      <div class="table-scroll">
+        <table class="admin-table" id="seriesTagTable" style="display:none">
+          <thead>
+            <tr>
+              <th>申請</th>
+              <th>件数</th>
+              <th>作品</th>
+              <th>レーベル</th>
+              <th>現在</th>
+              <th>確定するタグ</th>
+              <th></th>
+            </tr>
+          </thead>
+          <tbody id="seriesTagBody"></tbody>
+        </table>
+      </div>
+      <div class="pager" id="seriesTagPager" style="display:none"></div>
+      <div class="cover-actions" style="margin-top:16px">
+        <p class="hint">
+          申請を待たずに直接付けることもできます（シリーズ ID は巻一覧の下に「ID C…」と出ています）。
+          タグを選ばずに「レーベルに戻す」を押すと個別の指定を外し、レーベル由来の印に戻します。
+        </p>
+        <div class="cover-single">
+          <input type="text" id="seriesTagId" placeholder="シリーズID（例: C322586）" style="min-width:200px">
+          <select id="seriesTagManualTag" aria-label="設定するタグ"></select>
+          <button id="seriesTagApply">このシリーズに設定</button>
+          <button id="seriesTagClear">レーベルに戻す</button>
+        </div>
+      </div>
     </section>
 
     <!-- レーベル管理（廉価版・文庫版のタグ付け） -->
@@ -832,6 +883,7 @@
           <li>公開リスト（<code>lists</code>）と追加イベントログ（<code>list_item_events</code>）</li>
           <li>各種キャッシュ（表紙・楽天データ・補完）</li>
           <li>ユーザ投稿の修正・通報・各種上書き・表紙の修正</li>
+          <li>レーベル／シリーズのタグ（<code>label_tag</code> / <code>series_tag</code>）と、その申請</li>
           <li>自由入力の通報・公開の監査ログ</li>
           <li>R2 のトリム済み表紙画像（<code>yahoo/*.jpg</code>）</li>
         </ul>

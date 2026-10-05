@@ -33,6 +33,7 @@ const pageState = {
   corrReviewed: 1,
   nameOverrides: 1,
   merge: 1,
+  seriesTag: 1,
   volTitleReports: 1,
   titleOverrides: 1,
   reportResolved: 1,
@@ -61,6 +62,7 @@ const TODO_ITEMS = [
   ["volume_title_reports", "本のタイトルの修正", "volume-title-reports"],
   ["corrections", "シリーズへの手動追加", "corrections"],
   ["cover_suggestions", "表紙の修正", "cover-suggestions"],
+  ["series_tag_requests", "シリーズのタグの申請", "series-tags"],
 ];
 
 function fmtDate(ms) {
@@ -2798,6 +2800,167 @@ async function deleteBookMeta(btn) {
   }
 }
 
+/* ---------- シリーズのタグの申請（廉価版・文庫版・傑作選） ---------- */
+// 閲覧者が巻一覧の「廉価版・文庫版？」から出した申請（collect-only）。確定すると
+// series_tag に書いてレーベル単位のタグより優先される。却下は申請を消すだけ。
+// タグの選択肢はサーバ（src/labels.ts LABEL_TAGS）が返すものを使う。
+let seriesTagOptions = [];
+
+function syncSeriesTagOptions(tags) {
+  if (seriesTagOptions.length || !(tags || []).length) return;
+  seriesTagOptions = tags;
+  const sel = $("seriesTagManualTag");
+  sel.textContent = "";
+  sel.append(el("option", { value: "", textContent: "タグ無し（レーベル由来を打ち消す）" }));
+  for (const t of seriesTagOptions) sel.append(el("option", { value: t, textContent: t }));
+  sel.value = seriesTagOptions[0];
+}
+
+async function loadSeriesTagRequests(page = pageState.seriesTag) {
+  const table = $("seriesTagTable");
+  const body = $("seriesTagBody");
+  const hint = $("seriesTagHint");
+  body.textContent = "";
+  hint.style.display = "none";
+  table.style.display = "none";
+  $("seriesTagPager").style.display = "none";
+
+  let data;
+  try {
+    const res = await fetch(`/api/admin/series-tag-requests?page=${page}&per=${PER}`);
+    data = await res.json();
+    if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
+  } catch {
+    hint.textContent = "申請一覧の取得に失敗しました";
+    hint.style.display = "";
+    return;
+  }
+  syncSeriesTagOptions(data.tags);
+
+  const rows = data.requests || [];
+  const total = data.total ?? rows.length;
+  if (rows.length === 0 && page > 1 && total > 0) {
+    return loadSeriesTagRequests(Math.min(page - 1, Math.max(1, Math.ceil(total / PER))));
+  }
+  pageState.seriesTag = page;
+  $("seriesTagCount").textContent = `${total.toLocaleString("ja-JP")}件`;
+
+  if (total === 0) {
+    hint.textContent = "未処理の申請はありません。";
+    hint.style.display = "";
+    return;
+  }
+
+  for (const r of rows) {
+    // 確定するタグは申請どおりでなくてよい（誤申請をその場で直せる）。既定は申請された値。
+    const sel = el("select", { title: "確定するタグ" });
+    sel.append(el("option", { value: "", textContent: "タグ無し" }));
+    for (const t of seriesTagOptions) sel.append(el("option", { value: t, textContent: t }));
+    sel.value = r.tag || "";
+
+    const ok = el("button", { className: "primary", textContent: "確定" });
+    ok.addEventListener("click", () => confirmSeriesTag(r, sel.value, ok));
+    const no = el("button", { textContent: "却下" });
+    no.addEventListener("click", () => dismissSeriesTag(r, no));
+
+    const requested = r.tag ? r.tag : "タグを外して";
+    const from = r.current_from === "series" ? "個別" : r.current_from === "label" ? "レーベル" : "";
+    const current = r.current_tag ? `${r.current_tag}（${from}）` : "なし";
+
+    body.append(
+      el("tr", { dataset: { sid: r.series_id } }, [
+        el("td", null, [el("span", { className: "label-tag", textContent: requested })]),
+        el("td", { className: "num", textContent: String(r.report_count) }),
+        el("td", null, [
+          seriesVolumesLink(r.series_id, r.name || "(マスターに無いシリーズ)", r.name || ""),
+          el("div", { className: "muted", textContent: r.creator || "" }),
+        ]),
+        el("td", { className: "muted", textContent: r.label || "-" }),
+        el("td", { className: r.current_tag ? "" : "muted", textContent: current }),
+        el("td", null, [sel]),
+        el("td", { className: "report-actions" }, [ok, no]),
+      ])
+    );
+  }
+
+  table.style.display = "";
+  renderPager("seriesTagPager", page, total, loadSeriesTagRequests);
+}
+
+async function confirmSeriesTag(r, tag, btn) {
+  btn.disabled = true;
+  const orig = btn.textContent;
+  btn.textContent = "確定中…";
+  try {
+    const res = await fetch(`/api/admin/series-tag-requests/${encodeURIComponent(r.series_id)}/confirm`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ tag }),
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
+    await loadSeriesTagRequests(pageState.seriesTag);
+  } catch (e) {
+    uiAlert("確定に失敗しました: " + e.message);
+    btn.disabled = false;
+    btn.textContent = orig;
+  }
+}
+
+async function dismissSeriesTag(r, btn) {
+  if (!(await uiConfirm(`「${r.name || r.series_id}」への申請を却下します（表示は今までどおり）。よろしいですか？`, { okLabel: "却下する" }))) return;
+  btn.disabled = true;
+  try {
+    const res = await fetch(`/api/admin/series-tag-requests/${encodeURIComponent(r.series_id)}`, { method: "DELETE" });
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    await loadSeriesTagRequests(pageState.seriesTag);
+  } catch (e) {
+    uiAlert("却下に失敗しました: " + e.message);
+    btn.disabled = false;
+  }
+}
+
+// 申請を待たずに直接設定する / 個別の指定を外してレーベル由来に戻す。
+async function applySeriesTagManual(btn, clear) {
+  const input = $("seriesTagId");
+  const seriesId = input.value.trim();
+  if (!seriesId) {
+    uiAlert("シリーズ ID を入力してください。");
+    return;
+  }
+  const orig = btn.textContent;
+  btn.disabled = true;
+  btn.textContent = "設定中…";
+  try {
+    const body = clear ? { series_id: seriesId } : { series_id: seriesId, tag: $("seriesTagManualTag").value };
+    const res = await fetch("/api/admin/series-tags", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(body),
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
+    input.value = "";
+    uiAlert(
+      clear
+        ? `${seriesId} の個別指定を外しました（レーベル由来の印に戻ります）。`
+        : data.tag
+          ? `${seriesId} に「${data.tag}」を設定しました。`
+          : `${seriesId} を「タグ無し」に設定しました（レーベル由来の印を打ち消します）。`
+    );
+    await loadSeriesTagRequests(pageState.seriesTag);
+  } catch (e) {
+    uiAlert("設定に失敗しました: " + e.message);
+  } finally {
+    btn.disabled = false;
+    btn.textContent = orig;
+  }
+}
+
+$("reloadSeriesTag").addEventListener("click", () => loadSeriesTagRequests(pageState.seriesTag));
+$("seriesTagApply").addEventListener("click", (e) => applySeriesTagManual(e.currentTarget, false));
+$("seriesTagClear").addEventListener("click", (e) => applySeriesTagManual(e.currentTarget, true));
+
 /* ---------- レーベル管理（廉価版・文庫版のタグ付け） ---------- */
 // マスタ（MADB）には「コンビニ廉価版か」「文庫版か」を表す項目が無いが、レーベル名
 // （schema:brand）を見れば分かるものが多い（KPC・講談社プラチナコミックス = 廉価版）。
@@ -3133,6 +3296,7 @@ const PAGES = {
     loadSeriesReports(1);
   },
   "series-merges": () => setMergeMode(mergeMode),
+  "series-tags": () => loadSeriesTagRequests(1),
   labels: () => loadLabels(),
   "volume-title-reports": () => {
     resetHistory("volumeTitleReports");

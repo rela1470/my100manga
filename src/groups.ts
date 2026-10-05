@@ -336,8 +336,9 @@ export async function getGroupVolumes(
       creator: g.creator,
       creators: g.creators,
       publisher: g.publisher,
-      // レーベルに付いた運営のタグ（"廉価版" / "文庫版"）。検索カードと同じ印を巻一覧でも出す。
-      label_tag: (await tagsForLabels(env, [g.label])).get(g.label) ?? "",
+      // 運営のタグ（"廉価版" / "文庫版" / "傑作選"）。まとまりには series 行が無いので
+      // 畳み込めず、シリーズ個別の上書き（series_tag）とレーベルのタグを順に引く。
+      label_tag: await groupTag(env, g.id, g.label),
       group: true,
       supplement_probed: true,
       supplement_checked_at: 0,
@@ -347,6 +348,20 @@ export async function getGroupVolumes(
     200,
     { "cache-control": "no-store" }
   );
+}
+
+/** まとまり（G-id）に出すタグ。series 表に行が無いので src/labels.ts の effectiveTagSql を
+ *  畳み込めず、同じ優先順（シリーズ個別の上書き → レーベル）を 2 本に分けて引く。 */
+async function groupTag(env: Env, id: string, label: string): Promise<string> {
+  try {
+    const row = await env.DB.prepare(`SELECT tag FROM series_tag WHERE series_id = ?`)
+      .bind(id)
+      .first<{ tag: string }>();
+    if (row) return row.tag; // '' = タグ無しを明示する上書き
+  } catch (err) {
+    console.error("series tag lookup failed", err);
+  }
+  return (await tagsForLabels(env, [label])).get(label) ?? "";
 }
 
 /** グループの手動追加（series_correction）・非表示（volume_hidden）の行が使う ID。

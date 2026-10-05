@@ -100,7 +100,15 @@ import { footerHtml } from "./footer";
 import { headerLinksHtml } from "./header";
 import { site } from "./site";
 import { bumpPopularity } from "./popularity";
-import { adminListLabels, adminSetLabelTags } from "./labels";
+import {
+  adminConfirmSeriesTagRequest,
+  adminDismissSeriesTagRequest,
+  adminListLabels,
+  adminListSeriesTagRequests,
+  adminSetLabelTags,
+  adminSetSeriesTag,
+  requestSeriesTag,
+} from "./labels";
 import { Env, MangaList, ShareJob } from "./types";
 import { rateLimit } from "./ratelimit";
 import { turnstileAction, verifyTurnstile } from "./turnstile";
@@ -366,6 +374,11 @@ const worker = {
       const splitReqMatch = path.match(/^\/api\/series\/([A-Za-z0-9]+)\/split-request$/);
       if (splitReqMatch && request.method === "POST") {
         return await requestSeriesSplit(request, env, splitReqMatch[1]);
+      }
+      // 「廉価版・文庫版？」: シリーズ個別のタグの申請（collect-only, see src/labels.ts）。
+      const tagReqMatch = path.match(/^\/api\/series\/([A-Za-z0-9]+)\/tag-request$/);
+      if (tagReqMatch && request.method === "POST") {
+        return await requestSeriesTag(request, env, tagReqMatch[1]);
       }
       const mergeReqMatch = path.match(/^\/api\/series\/([A-Za-z0-9]+)\/merge-request$/);
       if (mergeReqMatch && request.method === "POST") {
@@ -702,6 +715,21 @@ const worker = {
       // レーベル名そのものが鍵なので（日本語・記号を含む）パスには載せず body で受ける。
       if (path === "/api/admin/labels" && request.method === "POST") {
         return await adminSetLabelTags(env, await readJsonObject(request));
+      }
+      // シリーズ個別のタグ: 利用者からの申請のキューと、確定・却下・直接設定。
+      if (path === "/api/admin/series-tag-requests" && request.method === "GET") {
+        return await adminListSeriesTagRequests(env, parsePage(url));
+      }
+      const adminTagReqConfirm = path.match(/^\/api\/admin\/series-tag-requests\/([A-Za-z0-9]+)\/confirm$/);
+      if (adminTagReqConfirm && request.method === "POST") {
+        return await adminConfirmSeriesTagRequest(env, adminTagReqConfirm[1], await readJsonObject(request));
+      }
+      const adminTagReqMatch = path.match(/^\/api\/admin\/series-tag-requests\/([A-Za-z0-9]+)$/);
+      if (adminTagReqMatch && request.method === "DELETE") {
+        return await adminDismissSeriesTagRequest(env, adminTagReqMatch[1]);
+      }
+      if (path === "/api/admin/series-tags" && request.method === "POST") {
+        return await adminSetSeriesTag(env, await readJsonObject(request));
       }
       if (path === "/api/admin/reports" && request.method === "GET") {
         // ?resolved=1 で処理済み(却下/伏字)の履歴、無ければレビュー待ちキュー。

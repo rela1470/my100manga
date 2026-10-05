@@ -1487,6 +1487,15 @@ html:has(.modal-backdrop.open) { overflow: hidden; }
 .search-subtitle[hidden] { display: none; }
 .search-subtitle .name-report-flag { font-size: 13px; font-weight: normal; }
 .search-subtitle .st-flags { display: flex; flex-wrap: wrap; align-items: center; gap: 2px; margin: 2px 0 0 -6px; }
+/* 「廉価版・文庫版？」の旗を押したときに、その場で開くタグの選択（public/app.js openTagPicker）。
+   選ぶ情報が 1 つしかないので別画面にはせず、旗の下に並べる。 */
+.search-subtitle .tag-pick {
+  display: flex; flex-wrap: wrap; align-items: center; gap: 8px;
+  margin: 6px 0 0; padding: 8px 10px;
+  background: var(--panel-2); border: 1px solid var(--line); border-radius: var(--radius-sm);
+}
+.search-subtitle .tag-pick .hint { margin: 0; }
+.search-subtitle .tag-pick button { font-weight: 700; }
 .search-subtitle .sa { margin-top: 2px; font-size: 13px; font-weight: normal; color: var(--muted); }
 .search-bar { flex: none; margin: 0 0 4px; }
 .search-bar[hidden] { display: none; }

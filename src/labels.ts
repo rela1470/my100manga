@@ -9,8 +9,9 @@
 // タグは series.id ではなく **レーベル名そのもの** を鍵にした別表 label_tag に持つ。
 // series / volumes は月次の取り込みで表ごと作り直されるので（scripts/ingest.mjs SWAP_SQL）、
 // マスタ側に印を書くと毎月消えるため。db/add-label-tag.sql。
+import type { PageOpts } from "./admin";
 import { Env } from "./types";
-import { badRequest, escapeLikeClamped, json, LIKE_MAX_BYTES } from "./util";
+import { badRequest, json, notFound, escapeLikeClamped, readJsonObject, LIKE_MAX_BYTES } from "./util";
 
 /** レーベルに付けられるタグ。増やすときはここに足すだけでよい（管理画面の選択肢・検索の
  *  絞り込み・表示は全部この配列から作る。DB の tag は素の TEXT なので migration も要らない）。
@@ -30,6 +31,17 @@ function isLabelTag(v: unknown): v is LabelTag {
  *  （前後の空白だけ落とす）。長すぎる値は弾く。 */
 function normLabel(v: unknown): string {
   return typeof v === "string" ? v.trim().slice(0, 200) : "";
+}
+
+/** シリーズに実際に出すタグの SQL 片。シリーズ個別の上書き（series_tag）があればそれ、
+ *  無ければレーベルのタグ（label_tag）。`alias` は series 表の別名。
+ *
+ *  series_tag.tag = '' は「タグ無し」を明示する上書きなので、COALESCE がそれを拾って
+ *  レーベルのタグを打ち消す（行が無いときだけ NULL になってレーベル側に落ちる）。
+ *  どちらも主キー 1 本の索引引きなので、呼び出し側のクエリに畳み込めば D1 の往復は増えない。 */
+export function effectiveTagSql(alias: string): string {
+  return `COALESCE((SELECT st.tag FROM series_tag st WHERE st.series_id = ${alias}.id),
+                   (SELECT lt.tag FROM label_tag lt WHERE lt.label = ${alias}.label))`;
 }
 
 // D1 の 1 文へのバインド上限に収まる分割幅。
@@ -264,4 +276,167 @@ export async function adminSetLabelTags(env: Env, body: Record<string, unknown>)
   }
 
   return json({ ok: true, updated: labels.length, tag }, 200, { "cache-control": "no-store" });
+}
+
+// ── シリーズ個別のタグ ──────────────────────────────────────────────────────
+
+/** 申請・設定で受け取れるタグ値。LABEL_TAGS に加えて '' （タグ無しを明示する上書き）。 */
+function parseSeriesTag(v: unknown): string | null {
+  if (typeof v !== "string") return null;
+  const t = v.trim();
+  return t === "" || isLabelTag(t) ? t : null;
+}
+
+/** そのシリーズがマスタに在るか（C-id / U-id は series、まとまりは G + ISBN13）。
+ *  存在しない ID で申請の行を作られないようにする。 */
+async function seriesExists(env: Env, id: string): Promise<boolean> {
+  if (/^G\d{13}$/.test(id)) {
+    const v = await env.DB.prepare(`SELECT 1 AS hit FROM volumes WHERE isbn = ? LIMIT 1`)
+      .bind(id.slice(1))
+      .first<{ hit: number }>();
+    return !!v;
+  }
+  const s = await env.DB.prepare(`SELECT 1 AS hit FROM series WHERE id = ? LIMIT 1`)
+    .bind(id)
+    .first<{ hit: number }>();
+  return !!s;
+}
+
+/** POST /api/series/:id/tag-request — 「このシリーズは廉価版です」等の申請。
+ *  body: { tag }（LABEL_TAGS のいずれか、または "" = ついているタグを外してほしい）。
+ *
+ *  シリーズ名の通報・結合依頼・分離依頼と同じ collect-only。ここでは件数を積むだけで、
+ *  全体への反映は管理者が確定したときだけ（src/labels.ts adminConfirmSeriesTag）。
+ *  端末ごとの二重申請の抑止はクライアントの localStorage に任せる（他の依頼と同じ）。 */
+export async function requestSeriesTag(request: Request, env: Env, seriesId: string): Promise<Response> {
+  const body = await readJsonObject(request);
+  const tag = parseSeriesTag(body.tag);
+  if (tag === null) return badRequest("不明なタグです");
+  const id = seriesId.toUpperCase();
+  if (!(await seriesExists(env, id))) return notFound("シリーズが見つかりません");
+
+  const now = Date.now();
+  await env.DB.prepare(
+    `INSERT INTO series_tag_request (series_id, tag, report_count, first_reported_at, last_reported_at)
+     VALUES (?, ?, 1, ?, ?)
+     ON CONFLICT (series_id, tag) DO UPDATE SET
+       report_count = report_count + 1,
+       last_reported_at = excluded.last_reported_at`
+  )
+    .bind(id, tag, now, now)
+    .run();
+  return json({ ok: true }, 200, { "cache-control": "no-store" });
+}
+
+// ── シリーズ個別のタグ: 管理画面 ────────────────────────────────────────────
+
+interface TagRequestRow {
+  series_id: string;
+  tag: string;
+  report_count: number;
+  first_reported_at: number;
+  last_reported_at: number;
+  name: string | null;
+  creator: string | null;
+  label: string | null;
+  current_tag: string | null;
+  label_tag: string | null;
+}
+
+/** GET /api/admin/series-tag-requests — 申請のキュー（新しい順）。 */
+export async function adminListSeriesTagRequests(env: Env, opts: PageOpts): Promise<Response> {
+  const totalRow = await env.DB.prepare(
+    `SELECT COUNT(*) AS n FROM series_tag_request`
+  ).first<{ n: number }>();
+
+  const { results } = await env.DB.prepare(
+    `SELECT r.series_id, r.tag, r.report_count, r.first_reported_at, r.last_reported_at,
+            COALESCE(o.name, s.name) AS name, s.creator, s.label,
+            (SELECT st.tag FROM series_tag st WHERE st.series_id = r.series_id) AS current_tag,
+            (SELECT lt.tag FROM label_tag lt WHERE lt.label = s.label) AS label_tag
+       FROM series_tag_request r
+       LEFT JOIN series s ON s.id = r.series_id
+       LEFT JOIN series_name_override o ON o.series_id = r.series_id
+      ORDER BY r.last_reported_at DESC, r.series_id
+      LIMIT ? OFFSET ?`
+  )
+    .bind(opts.per, opts.offset)
+    .all<TagRequestRow>();
+
+  return json(
+    {
+      tags: LABEL_TAGS,
+      requests: (results ?? []).map((r) => ({
+        series_id: r.series_id,
+        tag: r.tag,
+        report_count: r.report_count,
+        first_reported_at: r.first_reported_at,
+        last_reported_at: r.last_reported_at,
+        name: r.name ?? "",
+        creator: r.creator ?? "",
+        label: r.label ?? "",
+        // 今そのシリーズに出ているタグ（個別の上書きが無ければレーベル由来）と、その出どころ。
+        current_tag: r.current_tag ?? r.label_tag ?? "",
+        current_from: r.current_tag !== null ? "series" : r.label_tag ? "label" : "",
+      })),
+      total: totalRow?.n ?? 0,
+    },
+    200,
+    { "cache-control": "no-store" }
+  );
+}
+
+/** そのシリーズのタグを確定して、申請の行を片付ける。 */
+async function writeSeriesTag(env: Env, seriesId: string, tag: string): Promise<void> {
+  const now = Date.now();
+  await env.DB.batch([
+    env.DB.prepare(
+      `INSERT INTO series_tag (series_id, tag, created_at, updated_at) VALUES (?, ?, ?, ?)
+         ON CONFLICT(series_id) DO UPDATE SET tag = excluded.tag, updated_at = excluded.updated_at`
+    ).bind(seriesId, tag, now, now),
+    // 同じシリーズへの申請は、どのタグのものも処理済みとして消す。
+    env.DB.prepare(`DELETE FROM series_tag_request WHERE series_id = ?`).bind(seriesId),
+  ]);
+}
+
+/** POST /api/admin/series-tag-requests/:id/confirm — 申請を確定する。body: { tag }。 */
+export async function adminConfirmSeriesTagRequest(
+  env: Env,
+  seriesId: string,
+  body: Record<string, unknown>
+): Promise<Response> {
+  const tag = parseSeriesTag(body.tag);
+  if (tag === null) return badRequest("不明なタグです");
+  await writeSeriesTag(env, seriesId, tag);
+  return json({ ok: true, series_id: seriesId, tag }, 200, { "cache-control": "no-store" });
+}
+
+/** DELETE /api/admin/series-tag-requests/:id — 却下（そのシリーズの申請を全部消す）。
+ *  series_tag は書かないので、表示は今までどおり（レーベル由来のまま）。 */
+export async function adminDismissSeriesTagRequest(env: Env, seriesId: string): Promise<Response> {
+  const res = await env.DB.prepare(`DELETE FROM series_tag_request WHERE series_id = ?`)
+    .bind(seriesId)
+    .run();
+  return json({ ok: true, deleted: res.meta.changes ?? 0 }, 200, { "cache-control": "no-store" });
+}
+
+/** POST /api/admin/series-tags — 申請を経由せず直接設定する。
+ *  body: { series_id, tag }。tag が null（キー自体が無い）なら上書きを外してレーベルに戻す。 */
+export async function adminSetSeriesTag(env: Env, body: Record<string, unknown>): Promise<Response> {
+  const seriesId = typeof body.series_id === "string" ? body.series_id.trim().toUpperCase() : "";
+  if (!seriesId) return badRequest("シリーズ ID を指定してください");
+  if (!(await seriesExists(env, seriesId))) return notFound("シリーズが見つかりません");
+
+  // tag を省略 = 上書きを消してレーベルのタグに戻す。'' は「タグ無し」を明示する上書き。
+  if (body.tag === undefined || body.tag === null) {
+    await env.DB.batch([
+      env.DB.prepare(`DELETE FROM series_tag WHERE series_id = ?`).bind(seriesId),
+      env.DB.prepare(`DELETE FROM series_tag_request WHERE series_id = ?`).bind(seriesId),
+    ]);
+    return json({ ok: true, series_id: seriesId, tag: null }, 200, { "cache-control": "no-store" });
+  }
+  const tag = parseSeriesTag(body.tag);
+  if (tag === null) return badRequest("不明なタグです");
+  await writeSeriesTag(env, seriesId, tag);
+  return json({ ok: true, series_id: seriesId, tag }, 200, { "cache-control": "no-store" });
 }

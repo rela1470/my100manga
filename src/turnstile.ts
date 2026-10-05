@@ -11,7 +11,7 @@ import { clientIp, json } from "./util";
 
 const SITEVERIFY = "https://challenges.cloudflare.com/turnstile/v0/siteverify";
 
-const FEEDBACK_PATH = /^\/api\/series\/[A-Za-z0-9]+\/(corrections|corrections\/report|report|split-request|merge-request)$/;
+const FEEDBACK_PATH = /^\/api\/series\/[A-Za-z0-9]+\/(corrections|corrections\/report|report|split-request|merge-request|tag-request)$/;
 const LIST_REPORT_PATH = /^\/api\/lists\/[A-Za-z0-9_-]+\/reports$/;
 
 // 検証対象のリクエストなら期待する action を返す。フロントの data-action と揃える。

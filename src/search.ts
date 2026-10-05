@@ -9,7 +9,7 @@ import { attributeTitles, buildGroup, groupKey, resolveGroup, GroupRow, GroupVol
 import { edgeCacheKey, withEdgeCache } from "./edgeCache";
 import { getViewEpoch } from "./viewSnapshot";
 import { ADULT_BLOCK_MESSAGE, adultBlockMessage, findAdultIsbns, hasAdultTitleMatch } from "./adult";
-import { tagsForLabels } from "./labels";
+import { effectiveTagSql, tagsForLabels } from "./labels";
 
 interface SeriesResult {
   series_id: string;
@@ -87,7 +87,7 @@ const VOL_COUNT = `((SELECT COALESCE(SUM(MAX(nsub, 1)), 0) FROM (
          + COALESCE((SELECT COUNT(*) FROM series_correction sc
                       WHERE sc.series_id IN ${MEMBERS}), 0))`;
 const SERIES_COLS = `s.id, COALESCE(o.name, s.name) AS name, s.publisher, s.label, s.version,
-        (SELECT t.tag FROM label_tag t WHERE t.label = s.label) AS label_tag,
+        ${effectiveTagSql("s")} AS label_tag,
         (SELECT MIN(NULLIF(v.pubdate, '')) FROM volumes v WHERE v.series_id IN ${MEMBERS}) AS first_pubdate,
         COALESCE((SELECT v.creator FROM volumes v WHERE v.series_id IN ${MEMBERS} AND v.creator != ''
            ORDER BY v.vol_sort, v.pubdate LIMIT 1), s.creator) AS creator,

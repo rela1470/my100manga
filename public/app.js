@@ -2190,6 +2190,11 @@ function renderVolumes(series, volumes, opts) {
     });
     flags.appendChild(splitFlag);
   }
+  // 「廉価版・文庫版？」: シリーズ個別のタグの申請。live 検索の結果は ID が無いので出さない。
+  // 名前の通報・結合依頼と同じ collect-only で、反映は管理者が確定してから（src/labels.ts）。
+  if (series.series_id && !opts.live) {
+    flags.appendChild(buildTagRequestFlag(series, head));
+  }
   if (flags.childElementCount) head.appendChild(flags);
   // 作者・出版社（検索カードと同じ並び）。シリーズに作者が無ければ先頭巻の著者で補う。
   const byline = [series.creators || series.creator || (visible[0] && visible[0].author), series.publisher]
@@ -3382,6 +3387,120 @@ function openSplitRequest(series, volumes, opts) {
 
   refresh();
   return box;
+}
+
+// 「廉価版・文庫版？」の旗と、その場で開くタグの選択。マスタにはコンビニ廉価版・文庫版・
+// 傑作選の区別が無く、レーベル単位のタグ（管理画面）では拾えないシリーズがあるので、閲覧者から
+// 申請してもらう。名前の通報・結合依頼と同じ collect-only で、サーバは件数を積むだけ。
+// 反映は管理者が確定してから（src/labels.ts adminConfirmSeriesTagRequest）。
+const TAG_CHOICES = ["廉価版", "文庫版", "傑作選"];
+
+function buildTagRequestFlag(series, head) {
+  const flag = document.createElement("button");
+  flag.type = "button";
+  flag.className = "report-flag name-report-flag";
+  flag.title = "この作品が廉価版・文庫版・傑作選のときに申請（管理者が確認して反映します）";
+  flag.setAttribute("aria-label", "この作品の版を申請する");
+  const icon = document.createElement("span");
+  icon.className = "flag-icon";
+  icon.textContent = "◈";
+  const text = document.createElement("span");
+  text.className = "flag-text";
+  const done = isTagRequested(series.series_id);
+  text.textContent = done ? "版を申請済み" : "廉価版・文庫版？";
+  if (done) flag.classList.add("reported");
+  flag.appendChild(icon);
+  flag.appendChild(text);
+
+  flag.addEventListener("click", (e) => {
+    e.stopPropagation();
+    if (isTagRequested(series.series_id)) return;
+    // タップ端末では 1 回目で説明を出し、2 回目で開く（他の旗と同じ）。
+    if (noHover() && !flag.classList.contains("revealed")) {
+      flag.classList.add("revealed");
+      return;
+    }
+    openTagPicker(series, head, flag, text);
+  });
+  return flag;
+}
+
+// 旗の下にその場で開く選択肢。別画面にしないのは、選ぶ情報が 1 つしかないため。
+function openTagPicker(series, head, flag, text) {
+  if (head.querySelector(".tag-pick")) return;
+  const box = document.createElement("div");
+  box.className = "tag-pick";
+  const label = document.createElement("span");
+  label.className = "hint";
+  label.textContent = "この作品はどれですか？";
+  box.appendChild(label);
+
+  const send = async (tag, btn) => {
+    for (const b of box.querySelectorAll("button")) b.disabled = true;
+    btn.textContent = "送信中…";
+    try {
+      await apiFetch(`/api/series/${encodeURIComponent(series.series_id)}/tag-request`, {
+        method: "POST",
+        headers: { "content-type": "application/json", ...(await botHeaders("feedback")) },
+        body: JSON.stringify({ tag }),
+      });
+    } catch (err) {
+      uiAlert(apiErrorMessage(err, "申請に失敗しました"));
+      box.remove();
+      return;
+    }
+    markTagRequested(series.series_id);
+    box.remove();
+    flag.classList.add("reported");
+    text.textContent = "版を申請済み";
+    uiAlert("申請しました。管理者が確認して反映します。");
+  };
+
+  for (const tag of TAG_CHOICES) {
+    const btn = document.createElement("button");
+    btn.type = "button";
+    btn.className = "linkbtn";
+    btn.textContent = tag;
+    btn.addEventListener("click", () => send(tag, btn));
+    box.appendChild(btn);
+  }
+  // 既に付いている印が間違っているときの申請。tag="" は「外してほしい」の意。
+  if (series.label_tag) {
+    const off = document.createElement("button");
+    off.type = "button";
+    off.className = "linkbtn";
+    off.textContent = `「${series.label_tag}」ではない`;
+    off.addEventListener("click", () => send("", off));
+    box.appendChild(off);
+  }
+  const cancel = document.createElement("button");
+  cancel.type = "button";
+  cancel.className = "linkbtn";
+  cancel.textContent = "やめる";
+  cancel.addEventListener("click", () => box.remove());
+  box.appendChild(cancel);
+  head.appendChild(box);
+}
+
+// 版を申請したシリーズの端末ローカル台帳（localStorage）。二重申請を防ぎ、申請済み表示に使う。
+const TAG_REQUESTS_KEY = "my100manga_tag_requests_v1";
+function tagRequestedSet() {
+  try {
+    const raw = localStorage.getItem(TAG_REQUESTS_KEY);
+    return new Set(raw ? JSON.parse(raw) : []);
+  } catch {
+    return new Set();
+  }
+}
+function isTagRequested(seriesId) {
+  return !!seriesId && tagRequestedSet().has(seriesId);
+}
+function markTagRequested(seriesId) {
+  const s = tagRequestedSet();
+  s.add(seriesId);
+  try {
+    localStorage.setItem(TAG_REQUESTS_KEY, JSON.stringify([...s]));
+  } catch {}
 }
 
 // 分離を依頼したシリーズの端末ローカル台帳（localStorage）。二重依頼を防ぎ、依頼済み表示に使う。

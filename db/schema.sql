@@ -366,6 +366,28 @@ CREATE TABLE IF NOT EXISTS label_tag (
   updated_at INTEGER NOT NULL
 );
 
+-- レーベル単位では粒度が足りないとき（同じレーベルに文庫版でない本が混じる等）の、
+-- シリーズ単位の上書き。label_tag より優先する。tag = '' は「タグ無し」を明示する上書きで、
+-- レーベルのタグを打ち消す（行が無い＝レーベルに従う、と区別するため NULL ではなく空文字）。
+CREATE TABLE IF NOT EXISTS series_tag (
+  series_id  TEXT PRIMARY KEY,   -- C-id / U-id / G-id
+  tag        TEXT NOT NULL,      -- src/labels.ts LABEL_TAGS のいずれか、または ''
+  created_at INTEGER NOT NULL,
+  updated_at INTEGER NOT NULL
+);
+
+-- 閲覧者からのタグの申請。シリーズ名の通報・結合/分離依頼と同じ collect-only 方針で、
+-- ここには件数だけ積み、全体への反映は管理者が series_tag に確定したときだけ行う。
+CREATE TABLE IF NOT EXISTS series_tag_request (
+  series_id         TEXT NOT NULL,
+  tag               TEXT NOT NULL,   -- 申請されたタグ。'' = 「ついているタグを外してほしい」
+  report_count      INTEGER NOT NULL DEFAULT 0,
+  first_reported_at INTEGER NOT NULL,
+  last_reported_at  INTEGER NOT NULL,
+  PRIMARY KEY (series_id, tag)
+);
+CREATE INDEX IF NOT EXISTS idx_series_tag_request_last ON series_tag_request (last_reported_at);
+
 -- ── 巻(本)のタイトルの通報 (本のタイトルが違う？) ───────────────────────────
 -- MADB のマスタは巻ごとに schema:name を持つが、タイトル表記ゆれの分割などで一部の巻
 -- だけ変なタイトル文字列を背負うことがある（例: "Dジェネシス = D GENESIS : ダンジョン…"）。

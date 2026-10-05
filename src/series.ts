@@ -28,6 +28,7 @@ import { findSiblingVolumes, SiblingVolume } from "./siblingVolumes";
 import { getCorrectionVolumes } from "./corrections";
 import { resolveMergeTarget, mergeMembers } from "./merge";
 import { attributeTitles, isCustomSeriesId, NAME_NORM_PREFIX } from "./groups";
+import { effectiveTagSql } from "./labels";
 
 interface VolumeRow {
   isbn: string;
@@ -101,7 +102,7 @@ export async function getSeriesVolumes(
   const inMembers = members.map(() => "?").join(",");
   const meta = await env.DB.prepare(
     `SELECT s.id, s.name, s.name_norm, s.creator, s.creators, s.publisher, s.label, s.version,
-            (SELECT t.tag FROM label_tag t WHERE t.label = s.label) AS label_tag,
+            ${effectiveTagSql("s")} AS label_tag,
             o.name AS override_name
        FROM series s LEFT JOIN series_name_override o ON o.series_id = s.id
       WHERE s.id = ?`

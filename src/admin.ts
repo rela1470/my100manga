@@ -169,6 +169,7 @@ export async function adminTodo(env: Env): Promise<Response> {
     volume_title_reports,
     corrections,
     cover_suggestions,
+    series_tag_requests,
   ] = await Promise.all([
     count(`SELECT COUNT(*) AS n FROM reports WHERE resolved_at = 0`),
     count(`SELECT COUNT(*) AS n FROM volume_report`),
@@ -178,6 +179,8 @@ export async function adminTodo(env: Env): Promise<Response> {
     count(`SELECT COUNT(*) AS n FROM volume_title_report`),
     count(`SELECT COUNT(*) AS n FROM series_correction WHERE reviewed_at = 0`),
     count(`SELECT COUNT(*) AS n FROM cover_suggestion WHERE resolved_at = 0`),
+    // シリーズ個別のタグの申請。1 シリーズに複数のタグが申請されうるのでシリーズ単位で数える。
+    count(`SELECT COUNT(DISTINCT series_id) AS n FROM series_tag_request`),
   ]);
 
   return json(
@@ -191,6 +194,7 @@ export async function adminTodo(env: Env): Promise<Response> {
         volume_title_reports,
         corrections,
         cover_suggestions,
+        series_tag_requests,
       },
     },
     200,
@@ -228,6 +232,9 @@ const DEV_RESET_TABLES = [
   "series_merge",
   "series_merge_request",
   "series_split_request",
+  "label_tag",
+  "series_tag",
+  "series_tag_request",
   "series_merge_dismissed",
   "volume_title_report",
   "volume_title_override",

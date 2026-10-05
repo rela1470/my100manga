@@ -45,7 +45,7 @@ DB 側に記録されないので、この表で管理する。
 | `add-volume-subtitle.sql` | `volumes.subtitle`（巻の副題。同じ巻番号の別作品が 1 冊に畳まれるのを直す。中身は取り込み直しで埋まる）。**デプロイ前に** | × | 2026-10-04 | 2026-10-04 |
 | `add-series-version.sql` | `series.version`（版表示。同名の版違いシリーズを見分ける。中身は取り込み直しで埋まる）。**デプロイ前に** | × | 2026-10-04 | 2026-10-04 |
 | `add-label-tag.sql` | `label_tag`（レーベルの廉価版・文庫版タグ）＋ `idx_series_label`（管理画面のレーベル一覧）。**デプロイ前に** | ○ | 2026-10-05 | 2026-10-05（R18版も dev / 本番とも 2026-10-05 適用・デプロイ済み） |
-| `add-series-tag.sql` | `series_tag` / `series_tag_request`（シリーズ個別のタグと利用者申請）。**デプロイ前に** | ○ | 未適用 | 未適用（R18版も未適用） |
+| `add-series-tag.sql` | `series_tag` / `series_tag_request`（シリーズ個別のタグと利用者申請）。**デプロイ前に** | ○ | 2026-10-05 | 2026-10-05（R18版も dev / 本番とも同日 適用・デプロイ済み） |
 
 冪等: ○ = 何度流しても同じ結果。× = 2 回目はエラーになる（`ALTER TABLE ... ADD COLUMN` など。エラーで
 止まるだけで壊れはしないが、同じファイルの後続の文も流れない）。
@@ -99,6 +99,48 @@ DB 側に記録されないので、この表で管理する。
 - 索引は `series_tag_request(last_reported_at)` の 1 本だけ（管理画面のキューを新しい順に出す）。
   `series` / `volumes` への索引ではないので、取り込みの差し替え（`scripts/ingest.mjs` の `SWAP_SQL`）に
   足す必要は無い。
+
+### `add-series-tag.sql` の適用記録（2026-10-05、全 4 環境）
+
+4 つの DB すべてに適用 → 4 環境デプロイ。ingest なし。コミット `a1aeb68`。
+並行していた 2 セッション（my100manga-1f / my100manga-86）に予告して OK を得てから実施。
+
+- 適用前の Time Travel ブックマーク:
+
+  | 環境 | bookmark |
+  |---|---|
+  | 本家 本番 | `000000ef-00000000-000050fb-413cf125966a6a67800daf7de2a1bee1` |
+  | 本家 dev | `000000de-00000000-000050fb-6fc927058cb8f1cd997998a6f8aa96d4` |
+  | R18 dev | `00000010-00000000-000050fb-eec64e743641c63152b4ecdbc13e179c` |
+  | R18 本番 | `00000017-00000000-000050fb-f0091d70abcf9c0070f6a89b82f03e1c` |
+
+- ユーザデータの書き出し: `backups/prod-20261005-1736-seriestag.sql`（547KB）/
+  `backups/dev-20261005-1736-seriestag.sql`。**`--table label_tag` を足すこと**（この時点で本番に
+  344 行あり、管理画面で手作業で付けたもの＝取り込みで作り直せない）。R18 は `lists` 0 /
+  `users` 0 なので従来どおり export は取らない。
+- 4 つとも `series_tag` / `series_tag_request` / `idx_series_tag_request_last` の 3 つが出来た。
+  本番は適用前後とも `label_tag` 344 / `series` 133,606 / `lists` 1 / `users` 1 /
+  `series_merge` 194 / `series_correction` 148 で無傷、`series_tag` は 0 行。
+- デプロイ（migration の後）:
+
+  | 環境 | Version ID |
+  |---|---|
+  | 本家 dev | `7026f3be-a0a6-4678-945f-926c73c117ce` |
+  | 本家 本番 | `4643478f-c31f-4aef-a7d5-7002fe6e6022` |
+  | R18 dev | `982b0906-95de-44a3-9452-503cf442a155` |
+  | R18 本番 | `bbe586b8-724f-4f91-908c-3cffa0f867d7` |
+
+- 確認:
+
+  | 確認 | 結果 |
+  |---|---|
+  | 本家 本番 `/` `/lists` `/ranking` `/circulation` `/sales-ranking` `/l/rela1470` | すべて 200 |
+  | `GET /api/search?q=GTO` | `KPC`→廉価版 / `講談社漫画文庫`→文庫版（既存 344 件のタグが生きている） |
+  | `GET /api/series/C322586/volumes` | GTO 56 巻・`label_tag: "廉価版"` |
+  | `POST /api/series/:id/tag-request`（トークン無し） | 403 ボット確認（Turnstile の feedback グループに入っている） |
+  | R18 dev / 本番 `&all=1` の検索 | 30 件・`label_tag` を返す（`series_tag` を引く経路が通る） |
+  | R18 本番 `GET /api/series/C268196/volumes` | ONE PIECE 100 巻 |
+  | admin（4 環境・未認証） | 本家 401 / R18 403 |
 
 ### `add-label-tag.sql` の適用記録
 

@@ -1937,8 +1937,9 @@ function mountCoverFetch(barEl, entries) {
 }
 
 // シリーズに属さない巻のまとまり（書名+著者）の疑似 ID。シリーズと同じく巻一覧・結合依頼・
-// 手動追加（抜け巻・新刊）・巻の通報の対象になるが、C-id 前提のシリーズ名の通報・分離依頼・
-// 補完は出さない（src/groups.ts）。
+// 手動追加（抜け巻・新刊）・巻の通報・シリーズ名の通報（まとまりの名前は巻の書名そのもので、
+// マスタが壊していることがある）の対象になるが、C-id 前提の分離依頼・補完は出さない
+// （src/groups.ts）。
 const isGroupId = (id) => /^G\d{13}$/.test(id || "");
 
 async function openSeries(series) {
@@ -2109,8 +2110,10 @@ function renderVolumes(series, volumes, opts) {
   flags.className = "st-flags";
   // マスタのシリーズ名が壊れている場合（例: 「ハレグゥ」が「ｖ」で取り込まれている）に、
   // 閲覧者が名前の誤りを通報できる導線。live シリーズは C-id が無く通報先が無いので出さない。
-  // 通報はサーバに件数だけ記録し、全体反映（名前の修正）は管理者が確定するまで行わない。
-  if (!opts.live && series.series_id && !isGroupId(series.series_id)) {
+  // シリーズに属さない巻のまとまり（G-id）も、巻の書名がそのまま名前になる（「Dr.スランプ」が
+  // 「Dr」で入っている等）ので同じ導線で直せる。通報はサーバに件数だけ記録し、全体反映
+  // （名前の修正）は管理者が確定するまで行わない。
+  if (!opts.live && series.series_id) {
     const nameFlag = document.createElement("button");
     nameFlag.type = "button";
     nameFlag.className = "report-flag name-report-flag";

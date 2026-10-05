@@ -26,7 +26,10 @@ export const NAME_NORM_PREFIX = `name_norm >= ? AND name_norm < ? || char(111411
 // MADB の巻の ~20% は schema:isPartOf を持たず（volumes.series_id IS NULL）、どのシリーズにも
 // 入らない。検索はこれを「正規化した書名 + 著者」でまとめてカードにしている（search.ts
 // discoverUnlinked）。ここではそのまとまりに疑似 ID「G<ISBN>」を振り、シリーズと同じ
-// 導線（巻一覧・本の詳細からのリンク・結合依頼・管理者の結合）に乗せる。G の後ろはグループ内の
+// 導線（巻一覧・本の詳細からのリンク・結合依頼・管理者の結合・名前の通報と管理者の名前修正）に
+// 乗せる。まとまりの名前は巻の書名そのものなので、マスタが書名を壊していると（「Dr.スランプ」が
+// 「Dr」）名前も壊れる。管理者の修正は series_name_override に正規 ID で記録し、表示の直前に
+// applyGroupNames で被せる（鍵・寄せ判定に使う素の書名は触らない）。G の後ろはグループ内の
 // どの巻の ISBN でもよく（どれからでも同じグループを引ける）、正規形は最小の ISBN。
 //
 // 管理者が結合を確定すると、グループの巻を volume_series_link に ISBN 単位で記録し、
@@ -99,7 +102,8 @@ export interface GroupVolume {
 
 export interface UnlinkedGroup {
   id: string; // "G" + グループ内で最小の ISBN
-  title: string;
+  title: string; // マスタの書名そのもの。まとまりの鍵・既存シリーズへの寄せ判定に使う
+  name: string; // 閲覧者に見せる名前。管理者の上書き（series_name_override）があればそれ
   creator: string;
   creators: string; // 役割付きの全作者表記。無ければ creator と同じ
   publisher: string;
@@ -169,6 +173,7 @@ export function buildGroup(rows: GroupRow[], covers: Map<string, string>): Unlin
   return {
     id: "G" + [...isbns].sort()[0],
     title: first?.title ?? "",
+    name: first?.title ?? "",
     creator,
     creators,
     publisher: head?.publisher ?? "",
@@ -203,7 +208,28 @@ export async function loadGroup(env: Env, isbn: string): Promise<UnlinkedGroup |
   const rows = (res.results ?? []).filter((r) => groupKey(r) === key);
   if (!rows.length) return null;
   const covers = await readCachedCovers(env, rows.map((r) => r.isbn));
-  return buildGroup(rows, covers);
+  const g = buildGroup(rows, covers);
+  await applyGroupNames(env, [g]);
+  return g;
+}
+
+/** まとまりの表示名に管理者の上書き（series_name_override）を反映する。series 行が無くても
+ *  名前を直せるよう、まとまりの正規 ID（G + 最小 ISBN）を series_id にして同じ表から引く
+ *  （タグの series_tag と同じ扱い。db/schema.sql）。鍵・寄せ判定に使う g.title は触らない。 */
+export async function applyGroupNames(env: Env, groups: UnlinkedGroup[]): Promise<void> {
+  const ids = [...new Set(groups.map((g) => g.id))];
+  const names = new Map<string, string>();
+  for (let i = 0; i < ids.length; i += CHUNK) {
+    const chunk = ids.slice(i, i + CHUNK);
+    const res = await env.DB.prepare(
+      `SELECT series_id, name FROM series_name_override WHERE series_id IN (${chunk.map(() => "?").join(",")})`
+    )
+      .bind(...chunk)
+      .all<{ series_id: string; name: string }>();
+    for (const r of res.results ?? []) names.set(r.series_id, r.name);
+  }
+  if (!names.size) return;
+  for (const g of groups) g.name = names.get(g.id) || g.name;
 }
 
 /** シリーズ名 `name` と同じ作品かもしれない、どのシリーズにも寄せられていないグループ。
@@ -235,9 +261,11 @@ export async function unattributedGroupsFor(env: Env, name: string): Promise<Unl
   }
   if (!byKey.size) return [];
   const owner = await attributeTitles(env, [...byKey.values()].map((rows) => rows[0].title));
-  return [...byKey.values()]
+  const groups = [...byKey.values()]
     .filter((rows) => !owner.get(rows[0].title))
     .map((rows) => buildGroup(rows, new Map()));
+  await applyGroupNames(env, groups);
+  return groups;
 }
 
 /** シリーズ無しの巻の書名が、既存のどのシリーズに属すると見なせるか（書名 → シリーズ ID、
@@ -332,7 +360,7 @@ export async function getGroupVolumes(
   return json(
     {
       series_id: g.id,
-      title: g.title,
+      title: g.name,
       creator: g.creator,
       creators: g.creators,
       publisher: g.publisher,
@@ -408,7 +436,7 @@ async function withGroupCorrections(env: Env, g: UnlinkedGroup): Promise<GroupVo
       isbns: [c.isbn],
       volume_number: unifyVolumeLabel(template, c.volume_number),
       vol_sort: c.vol_sort,
-      title: g.title,
+      title: g.name,
       subtitle: "", // 利用者のデータ修正に副題の欄は無い
       author: g.creator,
       creators: g.creators,

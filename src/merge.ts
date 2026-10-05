@@ -178,7 +178,7 @@ export async function seriesInfos(env: Env, ids: string[]): Promise<Map<string, 
 function groupInfo(id: string, g: UnlinkedGroup): SeriesInfo {
   return {
     series_id: id,
-    title: g.title,
+    title: g.name,
     creator: g.creator,
     publisher: g.publisher,
     label: g.label,
@@ -599,7 +599,8 @@ export async function adminMergeSeries(request: Request, env: Env): Promise<Resp
     if (!g) return notFound(`シリーズが見つかりません: ${targetRaw}`);
     created = await nextCustomSeriesId(env);
     stmts.push(
-      ...createCustomSeriesStmts(env, created, name ? { ...g, title: name } : g, now),
+      // 名前の指定が無ければまとまりの表示名（管理者が直した名前があればそれ）を引き継ぐ。
+      ...createCustomSeriesStmts(env, created, { ...g, title: name || g.name }, now),
       ...linkStmts(env, g.isbns, created, now),
       ...moveGroupRowsStmts(env, g, created)
     );

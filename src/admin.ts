@@ -5,6 +5,7 @@ import { getMostCommonVolumeTitle } from "./series";
 import { deleteListStatements } from "./lists";
 import { devBypassActive } from "./adminAuth";
 import { invalidateListView, purgeListArtifacts } from "./viewSnapshot";
+import { isGroupId, resolveGroup } from "./groups";
 
 // 管理画面用のエンドポイント群。認証は呼び出し側（src/index.ts）が Cloudflare Access +
 // JWT 検証（src/adminAuth.ts の requireAdmin）で /admin・/api/admin/* をまとめてガードする。
@@ -572,6 +573,7 @@ interface AdminSeriesReportRow {
   name_kana: string | null;      // かな読み（正しいタイトルのヒント）
   vol_title: string | null;      // 収録巻に載る title（正しいタイトルのヒント。多くは series 名と一致）
   override_name: string | null;  // 既に修正済みなら series_name_override.name
+  group_title: string | null;    // まとまり（G-id）の通報のときだけ: その ISBN の巻の書名
 }
 
 /** シリーズ名の通報一覧。件数の多い順。管理者が正しい名前を判断できるよう、現在の
@@ -588,6 +590,8 @@ export async function adminListSeriesReports(env: Env, opts: PageOpts): Promise<
             s.name_kana AS name_kana,
             (SELECT v.title FROM volumes v
               WHERE v.series_id = r.series_id AND v.title <> '' LIMIT 1) AS vol_title,
+            (SELECT v.title FROM volumes v
+              WHERE r.series_id LIKE 'G%' AND v.isbn = substr(r.series_id, 2)) AS group_title,
             o.name AS override_name
        FROM series_report r
        LEFT JOIN series s ON s.id = r.series_id
@@ -597,19 +601,24 @@ export async function adminListSeriesReports(env: Env, opts: PageOpts): Promise<
     .bind(opts.per, opts.offset)
     .all<AdminSeriesReportRow>();
 
-  const reports = (results ?? []).map((r) => ({
-    series_id: r.series_id,
-    reported_name: r.reported_name ?? "",
-    suggested_name: r.suggested_name ?? "",
-    report_count: r.report_count ?? 0,
-    first_reported_at: r.first_reported_at ?? 0,
-    last_reported_at: r.last_reported_at ?? 0,
-    current_name: r.current_name ?? "",
-    display_name: r.display_name ?? "",
-    name_kana: r.name_kana ?? "",
-    vol_title: r.vol_title ?? "",
-    override_name: r.override_name ?? "",
-  }));
+  // シリーズに属さない巻のまとまり（G-id, src/groups.ts）は series 行が無いので、現在名も
+  // ヒントもまとまりの巻の書名（＝まとまりの名前そのもの）で代用する。
+  const reports = (results ?? []).map((r) => {
+    const master = r.current_name ?? r.group_title ?? "";
+    return {
+      series_id: r.series_id,
+      reported_name: r.reported_name ?? "",
+      suggested_name: r.suggested_name ?? "",
+      report_count: r.report_count ?? 0,
+      first_reported_at: r.first_reported_at ?? 0,
+      last_reported_at: r.last_reported_at ?? 0,
+      current_name: master,
+      display_name: r.display_name ?? r.override_name ?? master,
+      name_kana: r.name_kana ?? "",
+      vol_title: r.vol_title ?? r.group_title ?? "",
+      override_name: r.override_name ?? "",
+    };
+  });
 
   return json({ reports, total, page: opts.page, per: opts.per }, 200, { "cache-control": "no-store" });
 }
@@ -626,16 +635,26 @@ export async function adminDismissSeriesReport(env: Env, seriesId: string): Prom
 
 /** シリーズ名を修正（上書き）。正しい名前を series_name_override に記録し、read 時に
  *  COALESCE で全ユーザの検索/詳細表示へ反映する（再取り込みでマスター名が戻っても残る）。
+ *  シリーズに属さない巻のまとまり（G-id, src/groups.ts）も同じ表で直せる: series 行が無いので
+ *  まとまりの正規 ID（G + 最小 ISBN）に書き、読み出しは groups.applyGroupNames が引く。
+ *  通報のあと既存シリーズに寄せられていれば、閲覧者が見るのはそのシリーズ名なのでそちらに書く。
  *  併せて対応する通報行を片付ける。空文字は上書きにならないので拒否する。 */
 export async function adminOverrideSeriesName(
   request: Request,
   env: Env,
   seriesId: string
 ): Promise<Response> {
-  const meta = await env.DB.prepare(`SELECT id FROM series WHERE id = ?`)
-    .bind(seriesId)
-    .first<{ id: string }>();
-  if (!meta) return notFound("シリーズが見つかりません");
+  let targetId = seriesId;
+  if (isGroupId(seriesId)) {
+    const r = await resolveGroup(env, seriesId);
+    if (!r) return notFound("シリーズが見つかりません");
+    targetId = "seriesId" in r ? r.seriesId : r.group.id;
+  } else {
+    const meta = await env.DB.prepare(`SELECT id FROM series WHERE id = ?`)
+      .bind(seriesId)
+      .first<{ id: string }>();
+    if (!meta) return notFound("シリーズが見つかりません");
+  }
 
   const body = (await readJsonObject(request)) as { name?: unknown };
   const name = typeof body.name === "string" ? body.name.trim() : "";
@@ -647,10 +666,14 @@ export async function adminOverrideSeriesName(
     `INSERT INTO series_name_override (series_id, name, created_at) VALUES (?, ?, ?)
      ON CONFLICT (series_id) DO UPDATE SET name = excluded.name, created_at = excluded.created_at`
   )
-    .bind(seriesId, name, now)
+    .bind(targetId, name, now)
     .run();
-  await env.DB.prepare(`DELETE FROM series_report WHERE series_id = ?`).bind(seriesId).run();
-  return json({ ok: true, series_id: seriesId, name });
+  // 通報は通報された ID で記録されている（まとまりの正規 ID は後から動くことがある）ので、
+  // 書いた先の分と合わせて片付ける。
+  await env.DB.prepare(`DELETE FROM series_report WHERE series_id IN (?, ?)`)
+    .bind(seriesId, targetId)
+    .run();
+  return json({ ok: true, series_id: targetId, name });
 }
 
 interface AdminNameOverrideRow {
@@ -666,7 +689,9 @@ interface AdminNameOverrideRow {
 export async function adminListNameOverrides(env: Env, opts: PageOpts): Promise<Response> {
   const total = await countRows(env, `SELECT COUNT(*) AS n FROM series_name_override`);
   const { results } = await env.DB.prepare(
-    `SELECT o.series_id, o.name, o.created_at, s.name AS current_name
+    `SELECT o.series_id, o.name, o.created_at,
+            COALESCE(s.name, (SELECT v.title FROM volumes v
+                               WHERE o.series_id LIKE 'G%' AND v.isbn = substr(o.series_id, 2))) AS current_name
        FROM series_name_override o
        LEFT JOIN series s ON s.id = o.series_id
       ORDER BY o.created_at DESC LIMIT ? OFFSET ?`

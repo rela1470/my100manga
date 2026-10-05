@@ -162,12 +162,29 @@ async function bookSeries(env: Env, isbn: string): Promise<{ id: string; title: 
 
   // シリーズの無いマスタ巻: 既存シリーズに寄せられればそのシリーズ（巻一覧にもその条件で
   // 混ざる）、無ければ書名+著者のまとまり（G<ISBN>, src/groups.ts）へリンクする。
-  const v = await env.DB.prepare(`SELECT title FROM volumes WHERE isbn = ? AND series_id IS NULL`)
+  // まとまりの正規 ID（G + まとまり内で最小の ISBN）も一緒に引く。まとまり全体を集める
+  // groups.loadGroup はこの popup には重いので、同じ鍵（書名・著者・レーベル）の完全一致で
+  // 近似する（idx_volumes_unlinked_title）。表記ゆれで外した場合も素の書名に戻るだけ。
+  const v = await env.DB.prepare(
+    `SELECT v.title,
+            (SELECT MIN(w.isbn) FROM volumes w
+              WHERE w.series_id IS NULL AND w.title = v.title
+                AND w.creator IS v.creator AND w.label IS v.label) AS head
+       FROM volumes v WHERE v.isbn = ? AND v.series_id IS NULL`
+  )
     .bind(isbn13)
-    .first<{ title: string }>();
+    .first<{ title: string; head: string | null }>();
   if (!v) return null;
   const owner = (await attributeTitles(env, [v.title])).get(v.title);
-  if (!owner) return { id: "G" + isbn13, title: v.title };
+  if (!owner) {
+    // 管理者がまとまりの名前を直していれば（series_name_override を G-id で記録、
+    // src/groups.ts applyGroupNames）巻一覧と同じ名前でリンクする。
+    const id = "G" + (v.head || isbn13);
+    const o = await env.DB.prepare(`SELECT name FROM series_name_override WHERE series_id = ?`)
+      .bind(id)
+      .first<{ name: string }>();
+    return { id, title: o?.name || v.title };
+  }
   const id = await resolveMergeTarget(env, owner);
   const s = await env.DB.prepare(
     `SELECT ${seriesNameSql("s", "o")} AS name FROM series s

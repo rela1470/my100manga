@@ -815,3 +815,46 @@ ISBN がどの情報源にも無いので「ISBN が見つかりませんでし�
 
 **未対応**: `addCorrection` に「その ISBN が他シリーズの巻かどうか」の確認が無い点はそのまま。
 穴埋めと手動追加で規則が非対称なので、同じ混入は再び起こりうる。
+
+## 2026-10-05 まとまりのシリーズ名の修正（4 環境）
+
+migration なし（DDL 変更なし。`db/schema.sql` は `series_report` / `series_name_override` のキーに
+G-id を許すコメントの追記だけ）。ingest なし。新しい Queue も不要。
+
+シリーズに属さない巻のまとまり（G-id, `src/groups.ts`）の名前を直す導線。まとまりの名前は巻の書名
+そのもので、マスタが書名を壊していると直す手段が無かった（G9784088511818 ＝『Dr.スランプ』
+ジャンプ・コミックス版 18 巻が「Dr」で入っている）。シリーズ名の通報（collect-only）と管理者の
+「名前を修正」を、series 行の無いまとまりにも通した:
+
+- 巻一覧の「⚐ シリーズ名が違う？」をまとまりでも出す（`public/app.js`）。
+- `POST /api/series/G…/report` を受け付ける（`src/index.ts` / `src/corrections.ts`）。どの巻の G-id から
+  送っても、まとまりの正規 ID（G + 最小 ISBN）に集約する。
+- 管理者の「名前を修正」が G-id でも通り、`series_name_override` に正規 ID で書く（`src/admin.ts`）。
+  通報後に既存シリーズへ寄っていればそのシリーズ側に書く。series 行が無い分、通報一覧の現在名・
+  ヒントはまとまりの巻の書名で代用する。
+- 反映は read 時。`groups.applyGroupNames` が正規 ID で引き、巻一覧・検索カード・結合依頼画面・
+  本の詳細のシリーズリンクに被せる。鍵・寄せ判定に使う素の書名（`UnlinkedGroup.title`）は触らず、
+  表示名を `name` として分けてある。エッジキャッシュは admin の更新で `view_epoch` が上がって切れる。
+
+同じ作業ツリーから `5f65a92`（手動追加 `addCorrection` の MASTER-KNOWN 規則・候補ピッカー
+`/api/volume-candidates` の任意パラメータ `series`）も同梱。本家 dev には先行して出ていたので、
+本番・R18 2 環境にはこのデプロイで初めて乗る。
+
+| 環境 | Version ID |
+|---|---|
+| 本家 dev | `36eeaa88-1b16-41cd-b44d-b07a3a6cb43d` |
+| 本家 本番 | `83d3ab4e-b706-4325-a454-a8c8b1e3aae7` |
+| R18 dev | `0380c1ae-e5b3-47e5-830c-805a55fb007e` |
+| R18 本番 | `2ba937b7-d5d0-4d89-9ce9-b59f6b8af6e5` |
+
+デプロイ後の確認:
+
+| 確認 | 結果 |
+|---|---|
+| `GET /`（4 環境） | すべて 200 |
+| `GET /api/book?isbn=9784088511825`（2 巻・正規 ID ではない） | `series.id` が `G9784088511818`（＝まとまりの正規 ID）。本番で確認 |
+| `GET /api/series/G9784088511986/volumes`（18 巻の G-id） | `series_id` = `G9784088511818`、18 巻 |
+| `/api/volume-candidates`（`5f65a92` の確認） | `series` 無し → KCスペシャル版 9784061012363 が 1 件、`series=C326076` → 0 件、対照の `ONE PIECE` 110 は `series` 有無で同じ 1 件 |
+
+名前自体はまだ「Dr」のまま。**実際の修正は管理画面（シリーズ名の修正 → 名前を修正）で入れる**。
+入れると `series_name_override` に `G9784088511818` → 正しい名前が 1 行入り、全環境の閲覧者に反映される。

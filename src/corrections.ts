@@ -118,7 +118,7 @@ export async function addCorrection(
   group: UnlinkedGroup | null = null
 ): Promise<Response> {
   const meta = group
-    ? { id: group.id, name: group.title, creator: group.creator }
+    ? { id: group.id, name: group.name, creator: group.creator }
     : await env.DB.prepare(`SELECT id, name, creator FROM series WHERE id = ?`)
         .bind(seriesId)
         .first<{ id: string; name: string; creator: string | null }>();
@@ -306,23 +306,34 @@ export async function suggestCover(request: Request, env: Env): Promise<Response
 }
 
 /** POST /api/series/:id/report — flag the SERIES NAME as wrong (e.g. a corrupt master
- *  title like "ｖ" for ハレグゥ). Mirrors reportVolume's collect-only policy: it does NOT
+ *  title like "ｖ" for ハレグゥ, or "Dr" for the series-less まとまり of Dr.スランプ). Mirrors reportVolume's collect-only policy: it does NOT
  *  rewrite the name globally, only bumps report_count (+timestamps) in series_report for
  *  the admin audit. Nothing is trusted from the client — the name snapshot is read from
  *  the series row server-side. The admin later 却下 (deletes) or 名前修正 (writes an
  *  override applied at read time). Repeated flags just bump the count. */
-export async function reportSeriesName(request: Request, env: Env, seriesId: string): Promise<Response> {
+export async function reportSeriesName(
+  request: Request,
+  env: Env,
+  seriesId: string,
+  group: UnlinkedGroup | null = null
+): Promise<Response> {
   // 記録するのは閲覧者に見えている名前（override → name_display → name）。管理画面の通報一覧は
   // この snapshot を「通報された名前」として出すので、マスタの素の name を入れると、通報者が
   // 見た名前（「釣りキチ三平 作者自選集」）と管理者が見る名前（「釣りキチ三平」）がずれる。
-  const meta = await env.DB.prepare(
-    `SELECT s.id, ${seriesNameSql("s", "o")} AS name
-       FROM series s LEFT JOIN series_name_override o ON o.series_id = s.id
-      WHERE s.id = ?`
-  )
-    .bind(seriesId)
-    .first<{ id: string; name: string }>();
+  // `group` はシリーズに属さない巻のまとまり（G-id, src/groups.ts）。series 行が無いので名前は
+  // まとまりの表示名（上書き適用済み）を使い、通報はまとまりの正規 ID に記録する。管理者の
+  // 「名前を修正」も同じ ID で series_name_override に書く（src/admin.ts）。
+  const meta = group
+    ? { id: group.id, name: group.name }
+    : await env.DB.prepare(
+        `SELECT s.id, ${seriesNameSql("s", "o")} AS name
+           FROM series s LEFT JOIN series_name_override o ON o.series_id = s.id
+          WHERE s.id = ?`
+      )
+        .bind(seriesId)
+        .first<{ id: string; name: string }>();
   if (!meta) return notFound("シリーズが見つかりません");
+  seriesId = meta.id;
 
   // Optional free-text suggestion of the correct name. Only a hint for the admin
   // (never applied automatically), but still length-capped and NG-word checked since

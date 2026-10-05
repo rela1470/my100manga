@@ -5,7 +5,16 @@ import { liveSearchByKeyword, SupplementVolume } from "./madbLive";
 import { rakutenComicByIsbn } from "./rakuten";
 import { adultOnlySearch, excludeAdult } from "./site";
 import { mergeTargetsFor } from "./merge";
-import { attributeTitles, buildGroup, groupKey, resolveGroup, GroupRow, GroupVolume, UnlinkedGroup } from "./groups";
+import {
+  applyGroupNames,
+  attributeTitles,
+  buildGroup,
+  groupKey,
+  resolveGroup,
+  GroupRow,
+  GroupVolume,
+  UnlinkedGroup,
+} from "./groups";
 import { edgeCacheKey, withEdgeCache } from "./edgeCache";
 import { getViewEpoch } from "./viewSnapshot";
 import { ADULT_BLOCK_MESSAGE, adultBlockMessage, findAdultIsbns, hasAdultTitleMatch } from "./adult";
@@ -373,7 +382,7 @@ function toUnlinkedCard(g: UnlinkedGroup, labelTag = ""): UnlinkedCard {
   const first = g.volumes[0];
   return {
     series_id: g.id,
-    title: g.title,
+    title: g.name,
     creator: g.creator,
     creators: g.creators,
     publisher: g.publisher,
@@ -551,6 +560,8 @@ async function discoverUnlinked(
 
   const covers = await readCachedCovers(env, standaloneGroups.flat().map((r) => r.isbn));
   const built = standaloneGroups.map((rows) => buildGroup(rows, covers));
+  // 管理者が直したまとまりの名前（series_name_override を G-id で引く）をカードにも反映する。
+  await applyGroupNames(env, built);
   const groupTags = await tagsForLabels(env, built.map((g) => g.label));
   const standalone = built.map((g) => toUnlinkedCard(g, groupTags.get(g.label) ?? ""));
 

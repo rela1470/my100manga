@@ -344,8 +344,10 @@ CREATE INDEX IF NOT EXISTS idx_volume_hidden_series ON volume_hidden (series_id)
 -- reported_name is a best-effort snapshot of the wrong name at report time. Keyed per
 -- series_id; repeated flags bump the count. See src/corrections.ts (reportSeriesName)
 -- and src/admin.ts (list / dismiss / override).
+-- シリーズに属さない巻のまとまり（G-id, src/groups.ts。名前は巻の書名そのもので、「Dr.スランプ」
+-- が「Dr」で入っている等）も同じ導線で通報でき、まとまりの正規 ID（G + 最小 ISBN）で記録する。
 CREATE TABLE IF NOT EXISTS series_report (
-  series_id         TEXT PRIMARY KEY,          -- MADB collection C-id reported
+  series_id         TEXT PRIMARY KEY,          -- 通報されたシリーズ: C-id / U-id / G-id
   reported_name     TEXT NOT NULL DEFAULT '',  -- name snapshot at report time
   suggested_name    TEXT NOT NULL DEFAULT '',  -- 通報者が任意で入力した正しい名前の提案（最新の非空値）
   report_count      INTEGER NOT NULL DEFAULT 0,
@@ -360,9 +362,11 @@ CREATE INDEX IF NOT EXISTS idx_series_report_last ON series_report (last_reporte
 -- otherwise restore the corrupt master name. Display-only: search matching still runs
 -- against the original name_norm / name_kana_norm columns (the kana reading already
 -- carries the real title, so corrupt-named series remain findable). One row per series.
+-- シリーズに属さない巻のまとまり（G-id）の名前もここで直す（series_tag と同じ扱い）。series 行が
+-- 無いので COALESCE では畳めず、src/groups.ts applyGroupNames がまとまりの正規 ID で引く。
 -- See src/admin.ts (adminOverrideSeriesName), src/search.ts and src/series.ts.
 CREATE TABLE IF NOT EXISTS series_name_override (
-  series_id  TEXT PRIMARY KEY,   -- MADB collection C-id whose display name is overridden
+  series_id  TEXT PRIMARY KEY,   -- 表示名を上書きするシリーズ: C-id / U-id / G-id
   name       TEXT NOT NULL,      -- corrected series title shown to everyone
   created_at INTEGER NOT NULL
 );

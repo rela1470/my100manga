@@ -308,7 +308,9 @@ const worker = {
       // シリーズに属さない巻のまとまり（G<ISBN>, see src/groups.ts）。巻一覧・取得ボタンは
       // グループの巻を返す。手動追加（抜け巻・新刊）と巻の通報はグループの正規 ID に記録し、
       // 既存シリーズに寄せられる・紐付け済みのグループならそのシリーズに記録する。
-      // シリーズ名の通報は C-id 前提なので受け付けない（結合依頼は merge.ts 側で対応）。
+      // まとまりの名前（＝巻の書名。マスタが「Dr.スランプ」を「Dr」で持つなど壊れていること
+      // がある）の通報も同じく正規 ID に記録する。管理者はその ID に series_name_override を
+      // 書いて直す（src/admin.ts adminOverrideSeriesName、読み出しは groups.applyGroupNames）。
       const groupMatch = path.match(/^\/api\/series\/(G\d{13})\/(volumes|supplement|corrections|corrections\/report|report)$/);
       if (groupMatch) {
         const groupVolumes = () =>
@@ -331,6 +333,13 @@ const worker = {
           // キャッシュ（たどってきた G<ISBN> の分と、寄せ先のシリーズの分）を消す。
           if (res.ok) await Promise.all([groupMatch[1], id].map((k) => purgeSeriesVolumesCache(env, k)));
           return res;
+        }
+        if (groupMatch[2] === "report" && request.method === "POST") {
+          const r = await resolveGroup(env, groupMatch[1]);
+          if (!r) return notFound("シリーズが見つかりません");
+          return "seriesId" in r
+            ? await reportSeriesName(request, env, r.seriesId)
+            : await reportSeriesName(request, env, r.group.id, r.group);
         }
         return badRequest("このまとまりはシリーズに属していないため、この操作はできません");
       }

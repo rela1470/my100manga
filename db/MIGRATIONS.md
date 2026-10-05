@@ -44,7 +44,7 @@ DB 側に記録されないので、この表で管理する。
 | `add-is-adult.sql` | `series.is_adult` / `volumes.is_adult`（R18版が成年向けを収録するための印。本家では常に 0）。**R18版の D1 では ingest の前に** | × | 未適用 | 未適用（本家は次の月次 ingest で shadow テーブルごと入れ替わるときに入る。R18版は dev 2026-10-04 適用済み・本番未適用） |
 | `add-volume-subtitle.sql` | `volumes.subtitle`（巻の副題。同じ巻番号の別作品が 1 冊に畳まれるのを直す。中身は取り込み直しで埋まる）。**デプロイ前に** | × | 2026-10-04 | 2026-10-04 |
 | `add-series-version.sql` | `series.version`（版表示。同名の版違いシリーズを見分ける。中身は取り込み直しで埋まる）。**デプロイ前に** | × | 2026-10-04 | 2026-10-04 |
-| `add-label-tag.sql` | `label_tag`（レーベルの廉価版・文庫版タグ）＋ `idx_series_label`（管理画面のレーベル一覧）。**デプロイ前に** | ○ | 2026-10-05 | 未適用 |
+| `add-label-tag.sql` | `label_tag`（レーベルの廉価版・文庫版タグ）＋ `idx_series_label`（管理画面のレーベル一覧）。**デプロイ前に** | ○ | 2026-10-05 | 2026-10-05（**R18版は dev / 本番とも未適用**。次に R18版をデプロイする前に流すこと） |
 
 冪等: ○ = 何度流しても同じ結果。× = 2 回目はエラーになる（`ALTER TABLE ... ADD COLUMN` など。エラーで
 止まるだけで壊れはしないが、同じファイルの後続の文も流れない）。
@@ -120,6 +120,46 @@ DB 側に記録されないので、この表で管理する。
   | `GET /api/series/C322586/volumes` | `label_tag: "廉価版"` |
   | `GET /api/search?q=9784063780390`（ISBN） | C322586 / `label_tag: "廉価版"` |
 
+
+**本番（2026-10-05）**
+
+- 適用前の Time Travel ブックマーク: `000000e1-00000000-000050fb-ecbadce63242a0e0dd9b9be7ba72682d`
+- ユーザデータの書き出し: `backups/prod-20261005-1539-labeltag.sql`（`lists` 1 / `users` 1 /
+  `user_drafts` 1 / `volume_series_link` 430 / `circulation_link` 200 / `series_merge` 194 /
+  `series_correction` 148 / `list_item_events` 100 / `series_name_override` 51 /
+  `cover_suggestion` 23 / `custom_series` 20）
+- dev と同じ順: `db/add-label-tag.sql`（`rows_read` 269,028 / `rows_written` 133,607、923ms）→
+  `npm run deploy:prod` → Version ID `eb0f1745-ca88-467f-8fac-d467109b2bba`。ingest は不要。
+- 適用後: `label_tag` 0 行。`series` 133,603 / `volumes` 349,020 / `lists` 1 / `users` 1 /
+  `series_merge` 194 / `custom_series` 20 / `volume_series_link` 430 / `series_correction` 148 /
+  `series_name_override` 51 は適用前後とも同数。レーベルは 7,811 種。
+- **本番の `label_tag` は空のまま**（タグ付けは管理画面から行う運用）。
+- デプロイ後の確認:
+
+  | 確認 | 結果 |
+  |---|---|
+  | `GET /` `/lists` `/ranking` `/circulation` `/sales-ranking` `/api/version` | すべて 200（`version` = `eb0f1745`） |
+  | `GET /api/search?q=三国志` | カードが `label_tag` を返す（未設定なので全部 `""`）。版ごとの分離は回帰なし（希望コミックス / 愛蔵版 / 文庫版 / 大判 / 中国歴史コミック / MF文庫） |
+  | `GET /api/series/C268196/volumes` | ONE PIECE 115 巻（回帰なし） |
+  | `GET /l/rela1470` / `GET /api/lists/rela1470` | 200 / 100 冊（本番の実リスト） |
+  | `GET /api/admin/labels`（未認証） | 401 |
+  | `GET /admin`（未認証） | 302（Access のログインへ） |
+
+### R18版（my100shunga）への適用
+
+**未適用（dev / 本番とも）。次に `npm run deploy:r18:*` を行う前に必ず流すこと。**
+R18版は同じコードで動くので、表が無いまま新しいコードを出すと検索と巻一覧が
+`no such table: label_tag` で落ちる（`add-series-version.sql` のときと同じ事故）。
+
+```bash
+npx wrangler d1 time-travel info DB --env r18dev   # ブックマークを控える
+npx wrangler d1 execute DB --env r18dev --remote --file db/add-label-tag.sql
+npx wrangler d1 time-travel info DB --env r18
+npx wrangler d1 execute DB --env r18    --remote --file db/add-label-tag.sql
+```
+
+今 R18版が動いている版は `label_tag` を参照しない旧コードなので、デプロイしない限り
+この未適用で壊れることはない。
 
 ### `add-indexes-2026-10.sql` の注意
 

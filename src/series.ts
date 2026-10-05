@@ -373,6 +373,9 @@ export async function getSeriesVolumes(
   let supplement: SupplementVolume[] = [];
   let probed: boolean;
   let checkedAt = 0;
+  // MADB にはあるのに ISBN がどこにも無く、埋めようが無い抜け巻の巻数（src/gapFill.ts）。
+  // volumes_elsewhere と同じく取得ボタンのときだけ入る揮発データで、D1 には持たない。
+  let noIsbnGaps: number[] = [];
   if (probe) {
     // 前回までに貯まっている補完。穴埋めは楽天のレート制限（高優先の待ち上限 4 秒 ＝
     // 1 回の押下で引けるのは数ページ）で 1 回では全部埋まらないので、押すたびに積み上がる
@@ -396,7 +399,7 @@ export async function getSeriesVolumes(
     // 引き当てて足す（src/gapFill.ts）。上の eligible とは独立に走らせる: あちらが
     // 書名一致で同名別シリーズを恐れて末尾追加しかできないのに対し、こちらの穴の確定は
     // schema:isPartOf による C-id の厳密結合なので取り違えが起きない。
-    const filled = await findGapFillVolumes(env, {
+    const { filled, noIsbn } = await findGapFillVolumes(env, {
       seriesId: meta.id,
       name: meta.name,
       creator: meta.creator ?? "",
@@ -405,6 +408,8 @@ export async function getSeriesVolumes(
       knownIsbns: [...masterIsbns],
       knownSorts: masterSorts,
     });
+    // null = SPARQL が落ちて判定できなかった。断定できないので何も言わない（[] のまま）。
+    noIsbnGaps = noIsbn ?? [];
     // 前回ぶん → 今回の SPARQL 補完（末尾の新刊。こちらが新しければ勝たせる）→ 今回の穴埋め
     // （空いている巻にだけ入れる）の順に合流する。穴埋めが既にある巻を上書きしないのは、
     // 押すたびに同じ巻の ISBN が入れ替わってちらつくのを避けるため。
@@ -627,6 +632,9 @@ export async function getSeriesVolumes(
       // 抜け巻のうち、別シリーズ・迷子に在ると分かったもの。結合／分離依頼の導線に使う。
       // データは書き換えていない（確定は管理者）。取得ボタンのときだけ中身が入る。
       volumes_elsewhere: elsewhere,
+      // MADB には巻として在るが ISBN がどこにも無い抜け巻。足しようが無いので、巻一覧では
+      // 「＋N巻を追加」ボタンではなく 1 行の説明にまとめる（public/app.js）。取得時のみ。
+      volumes_no_isbn: noIsbnGaps,
       master_updated_at: await getMasterUpdatedAt(env),
       volumes,
     },

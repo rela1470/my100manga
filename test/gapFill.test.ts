@@ -115,34 +115,49 @@ describe("findGapFillVolumes", () => {
     mockUpstream();
     const out = await findGapFillVolumes(testEnv, input());
     // 4 巻だけが埋まる。5 巻の候補は master が別シリーズの巻として知っているので落ちる。
-    expect(out.map((v) => v.vol_sort)).toEqual([4]);
-    expect(out[0].isbn).toBe(RIGHT_V4);
-    expect(out[0].volume_number).toBe("4");
+    expect(out.filled.map((v) => v.vol_sort)).toEqual([4]);
+    expect(out.filled[0].isbn).toBe(RIGHT_V4);
+    expect(out.filled[0].volume_number).toBe("4");
   });
 
   it("master が既に持つ ISBN は、どのシリーズのものでも採らない", async () => {
     mockUpstream();
     const out = await findGapFillVolumes(testEnv, input());
-    expect(out.map((v) => v.isbn)).not.toContain(TAKEN_V5);
-    expect(out.map((v) => v.isbn)).not.toContain(WRONG_V4); // 文庫版は 4 巻の対抗馬として負ける
+    expect(out.filled.map((v) => v.isbn)).not.toContain(TAKEN_V5);
+    // 文庫版は 4 巻の対抗馬として負ける
+    expect(out.filled.map((v) => v.isbn)).not.toContain(WRONG_V4);
+  });
+
+  it("埋まらなかった穴は noIsbn で返す（追加ボタンを出さない根拠）", async () => {
+    mockUpstream();
+    const out = await findGapFillVolumes(testEnv, input());
+    // 5 巻は MADB に在るが ISBN が無く、楽天の候補も採れなかった ＝ 足しようが無い。
+    expect(out.noIsbn).toEqual([5]);
   });
 
   it("master に既にある巻は穴として扱わない", async () => {
     mockUpstream();
     const out = await findGapFillVolumes(testEnv, { ...input(), knownSorts: new Set([1, 2, 3, 4, 5]) });
-    expect(out).toEqual([]);
+    expect(out).toEqual({ filled: [], noIsbn: [] });
   });
 
   it("SPARQL が落ちたら何も返さない（既存の補完を壊さない）", async () => {
     vi.spyOn(globalThis, "fetch").mockRejectedValue(new Error("boom"));
-    expect(await findGapFillVolumes(testEnv, input())).toEqual([]);
+    // noIsbn は null ＝「判定できなかった」。[] （＝そんな巻は無い）と区別する: 呼び手が
+    // 「ISBN が無いので追加できません」と誤って断定しないように。
+    expect(await findGapFillVolumes(testEnv, input())).toEqual({ filled: [], noIsbn: null });
   });
 
-  it("楽天の鍵が無ければ経路ごと使わない（R18版はここで止まる）", async () => {
+  it("楽天の鍵が無ければ引き当てはしないが、ISBN の無い巻は返す（R18版）", async () => {
     // .dev.vars に鍵がある環境でも結果が変わらないよう、明示的に空にした env で見る。
     const noKeys = { ...env, RAKUTEN_APP_ID: "", RAKUTEN_ACCESS_KEY: "" } as unknown as Env;
-    const spy = vi.spyOn(globalThis, "fetch");
-    expect(await findGapFillVolumes(noKeys, input())).toEqual([]);
-    expect(spy).not.toHaveBeenCalled(); // SPARQL すら引かない
+    mockUpstream();
+    const out = await findGapFillVolumes(noKeys, input());
+    expect(out.filled).toEqual([]);
+    expect(out.noIsbn).toEqual([4, 5]); // MADB だけで分かるので説明は出せる
+    // 外部ストアの API は 1 回も叩かない（R18版の方針）。
+    const urls = vi.mocked(globalThis.fetch).mock.calls.map((c) => String(c[0]));
+    expect(urls.some((u) => u.includes("openapi.rakuten.co.jp"))).toBe(false);
+    expect(urls.some((u) => u.includes("/sparql"))).toBe(true);
   });
 });

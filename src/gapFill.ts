@@ -33,7 +33,8 @@ import { plainVolumeNumber, volSort } from "./util";
 //   - 巻数の多いシリーズ。1req/s の枠内に収めるためページ送りを MAX_PAGES で打ち切る
 //     ので、『ゴルゴ13』（楽天側 656 件）の 1970 年代の巻には届かない。
 //   - R18 版（my100shunga）は外部ストアの API を使わない方針なので rakutenReady() が
-//     false になり、この経路ごと無効になる。
+//     false になり、引き当て（2・3）は行わない。MADB だけで分かる「ISBN が無い巻」の
+//     一覧（1）はそのまま返すので、抜け巻の説明は R18 版でも出る。
 
 // 1 回のボタン押下で投げる楽天のページ数の上限。ただし実際に効く制約はこちらではなく
 // レートリミッタで、高優先レーンの待ち上限が 4 秒（src/ratelimiter.ts MAX_WAIT_MS）なので
@@ -101,16 +102,28 @@ export interface GapFillInput {
   knownSorts: Set<number>;
 }
 
-/** 抜け巻を楽天から引き当てて返す。ネットワークや D1 の失敗は握りつぶして [] を返す
- *  （呼び手が既存の補完ごと落とさないように）。呼ぶのは取得ボタンの経路だけ。 */
-export async function findGapFillVolumes(env: Env, input: GapFillInput): Promise<SupplementVolume[]> {
-  if (!rakutenReady(env)) return [];
+export interface GapFillResult {
+  /** 楽天から引き当てられた巻。 */
+  filled: SupplementVolume[];
+  /** MADB にはあるのに ISBN がどこにも無く、埋められなかった巻の巻数（昇順）。
+   *  null = 判定できなかった（SPARQL が落ちた）。[] = そういう巻は無い。 */
+  noIsbn: number[] | null;
+}
 
+/** 抜け巻を楽天から引き当てて返す。ネットワークや D1 の失敗は握りつぶして空の結果を返す
+ *  （呼び手が既存の補完ごと落とさないように）。呼ぶのは取得ボタンの経路だけ。
+ *
+ *  埋まらなかった穴は noIsbn で返す。MADB が巻として持っているのに ISBN がどこにも無い巻は、
+ *  ISBN を鍵にしたこのサイトには原理的に足せない。実例は C326076「釣りキチ三平」(講談社
+ *  コミックス・全65巻) の 1〜44 巻で、1974〜1980 年刊。MADB にも国会図書館サーチにも ISBN が
+ *  無く（日本で ISBN が使われ出すより前の刊行）、楽天の取り扱いも 45 巻以降しか無い。そういう
+ *  巻に「＋N巻を追加」ボタンを出しても必ず空振りするので、呼び手が区別できるよう巻数を返す。 */
+export async function findGapFillVolumes(env: Env, input: GapFillInput): Promise<GapFillResult> {
   let members;
   try {
     members = await queryVolumesInSeries(input.seriesId, excludeAdult(env));
   } catch {
-    return []; // SPARQL が落ちた: 穴が確定できないので何もしない
+    return { filled: [], noIsbn: null }; // SPARQL が落ちた: 穴が確定できないので何も言わない
   }
 
   // ISBN を持たない巻だけが対象。master に既にある巻番号は穴ではない。
@@ -122,14 +135,19 @@ export async function findGapFillVolumes(env: Env, input: GapFillInput): Promise
     if (input.knownSorts.has(volSort(m.volume_number))) continue;
     if (!gaps.has(n)) gaps.set(n, { label: m.volume_number, pubdate: m.pubdate });
   }
-  if (gaps.size === 0) return [];
+  if (gaps.size === 0) return { filled: [], noIsbn: [] };
+
+  // 楽天を使わない構成（R18版）では引き当てはできないが、「MADB にはあるが ISBN が無い」ことは
+  // MADB だけで分かるので、そこまでは返す。楽天は 1 回も叩かない。
+  const allGaps = [...gaps.keys()].sort((a, b) => a - b);
+  if (!rakutenReady(env)) return { filled: [], noIsbn: allGaps };
 
   // 楽天を引く。著者で絞って空振りしたら著者を外して引き直す（「さいとう・たかを」の
   // ような表記揺れで 0 件になることがある）。
   const base = { title: input.name, publisher: input.publisher || undefined };
   let items = await collect(env, { ...base, author: input.creator || undefined }, gaps);
   if (items.length === 0 && input.creator) items = await collect(env, base, gaps);
-  if (items.length === 0) return [];
+  if (items.length === 0) return { filled: [], noIsbn: allGaps };
 
   const taken = await alreadyTaken(env, input.seriesId, [...new Set(items.map((i) => i.isbn))]);
 
@@ -169,7 +187,9 @@ export async function findGapFillVolumes(env: Env, input: GapFillInput): Promise
     });
   }
   out.sort((a, b) => a.vol_sort - b.vol_sort);
-  return out;
+  // 埋まったかどうかは byVol の鍵（MADB の巻数）で見る。out の vol_sort は MADB のラベル表記
+  // 由来なので、巻数と一致しない表記があっても取りこぼさないように。
+  return { filled: out, noIsbn: allGaps.filter((n) => !byVol.has(n)) };
 }
 
 /** 穴が全部埋まるか、ページが尽きるか、MAX_PAGES に達するまでページ送りする。

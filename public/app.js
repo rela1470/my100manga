@@ -2018,6 +2018,8 @@ async function fetchSupplement(series, btn) {
       masterAt: data.master_updated_at || 0,
       // 抜け巻が別シリーズ・どのシリーズにも属さない巻として DB に在るもの（取得時のみ）。
       elsewhere: data.volumes_elsewhere || [],
+      // 抜け巻のうち、MADB には在るが ISBN が無く足しようが無い巻の巻数（取得時のみ）。
+      noIsbn: data.volumes_no_isbn || [],
     });
   } catch (e) {
     btn.disabled = false;
@@ -2210,22 +2212,49 @@ function renderVolumes(series, volumes, opts) {
   // マスタに欠けている巻（例: ONE PIECE 巻110）を検出して手動追加の導線を出す。
   // live シリーズは C-id が無く訂正保存(/corrections)できないので抜け巻ピッカーは出さない。
   const gaps = opts.live ? [] : detectGaps(visible);
-  if (gaps.length) {
+  // 「最新データを取得」で分かった、MADB には巻として在るのに ISBN がどこにも無い巻
+  // （src/gapFill.ts）。ISBN を鍵にしたこのサイトには足しようが無いので追加ボタンは出さず、
+  // まとめて 1 行の説明にする。取得前は空なので、そのときは従来どおり全部ボタン側に出る。
+  const noIsbn = new Set(opts.noIsbn || []);
+  const addable = gaps.filter((g) => !noIsbn.has(g.n));
+  const unaddable = gaps.filter((g) => noIsbn.has(g.n));
+  if (addable.length) {
     const gapBox = document.createElement("div");
     gapBox.className = "gap-box";
     const label = document.createElement("span");
     label.className = "gap-label";
     label.textContent = "DBから抜けていそうな巻:";
     gapBox.appendChild(label);
-    for (const g of gaps) {
-      const btn = document.createElement("button");
-      btn.type = "button";
-      btn.className = "linkbtn gap-btn";
-      btn.textContent = `＋${g.disp}を追加`;
-      btn.addEventListener("click", () => openGapPicker(series, g, volumes));
-      gapBox.appendChild(btn);
+    // 旧作は抜けが数十巻になることがあるので、先頭だけ出して残りは「…ほかN巻」に畳む。
+    // 取得前（noIsbn が空）でも巻一覧がボタンで埋まらないように、こちらは常に効かせる。
+    const rest = addable.slice(GAP_BTN_MAX);
+    for (const g of addable.slice(0, GAP_BTN_MAX)) {
+      gapBox.appendChild(buildGapBtn(series, g, volumes, opts));
+    }
+    if (rest.length) {
+      const more = document.createElement("button");
+      more.type = "button";
+      more.className = "linkbtn gap-btn";
+      more.textContent = `…ほか${rest.length}巻`;
+      more.addEventListener("click", () => {
+        for (const g of rest) gapBox.insertBefore(buildGapBtn(series, g, volumes, opts), more);
+        more.remove();
+      });
+      gapBox.appendChild(more);
     }
     box.appendChild(gapBox);
+  }
+  if (unaddable.length) {
+    const noBox = document.createElement("div");
+    noBox.className = "gap-box";
+    const note = document.createElement("span");
+    note.className = "gap-label";
+    // 断定できるのは「MADB に在る」「ISBN が無い」の 2 点だけなので、理由の推測は書かない。
+    note.textContent =
+      `${formatVolRanges(unaddable.map((g) => g.n))}巻は最新DBに収録されていますが、` +
+      `ISBN が無いため追加できません（${unaddable.length}巻）。`;
+    noBox.appendChild(note);
+    box.appendChild(noBox);
   }
 
   // 抜け巻が「別のシリーズに紛れている」「どのシリーズにも入っていない」形で DB に既に在る
@@ -2418,6 +2447,34 @@ function volLabel(v) {
 // numbering than a hole. Bails on genuinely mixed clean formats or too little numbering.
 // Returns [{ n, vol, disp }] where `vol` is the server-accepted volume_number to
 // store ("巻110" / "110") and `disp` is the human label ("110巻").
+// 抜け巻の「＋N巻を追加」ボタンを一度に出す上限。超えた分は「…ほかN巻」で畳む。
+// C326076「釣りキチ三平」は抜けが 32 巻あり、全部ボタンにすると巻一覧が埋まる。
+const GAP_BTN_MAX = 5;
+
+function buildGapBtn(series, g, volumes, opts) {
+  const btn = document.createElement("button");
+  btn.type = "button";
+  btn.className = "linkbtn gap-btn";
+  btn.textContent = `＋${g.disp}を追加`;
+  // opts を渡す: 候補ピッカーの「‹ 巻一覧へ戻る」で取得バーの状態・名指し・この抜け巻の
+  // 内訳（opts.noIsbn）が戻った時点で消えないように。
+  btn.addEventListener("click", () => openGapPicker(series, g, volumes, opts));
+  return btn;
+}
+
+/** 巻数の並びを連番でまとめて「12〜15・17〜44」にする。抜けが数十巻あっても 1 行で言える。 */
+function formatVolRanges(ns) {
+  const sorted = [...new Set(ns)].sort((a, b) => a - b);
+  const parts = [];
+  for (let i = 0; i < sorted.length; ) {
+    let j = i;
+    while (j + 1 < sorted.length && sorted[j + 1] === sorted[j] + 1) j++;
+    parts.push(i === j ? `${sorted[i]}` : `${sorted[i]}〜${sorted[j]}`);
+    i = j + 1;
+  }
+  return parts.join("・");
+}
+
 function detectGaps(volumes) {
   let kan = 0;
   let num = 0;

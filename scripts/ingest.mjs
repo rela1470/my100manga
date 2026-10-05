@@ -54,7 +54,7 @@ const ID_PREFIX = "https://mediaarts-db.artmuseums.go.jp/id/";
 const SERIES_COLS =
   "id TEXT PRIMARY KEY, name TEXT NOT NULL, name_norm TEXT NOT NULL, name_kana TEXT, " +
   "name_kana_norm TEXT, name_search TEXT, creator TEXT, creators TEXT, creators_norm TEXT, publisher TEXT, label TEXT, num_items INTEGER, " +
-  "is_adult INTEGER NOT NULL DEFAULT 0, version TEXT";
+  "is_adult INTEGER NOT NULL DEFAULT 0, version TEXT, name_display TEXT";
 const VOLUMES_COLS =
   "isbn TEXT PRIMARY KEY, series_id TEXT, volume_number TEXT, vol_sort INTEGER, " +
   "title TEXT NOT NULL, subtitle TEXT, title_search TEXT, creator TEXT, creators TEXT, creators_norm TEXT, publisher TEXT, label TEXT, pubdate TEXT, " +
@@ -686,13 +686,17 @@ async function main() {
   const seriesWriter = new SqlChunkWriter(
     a.out,
     "series_new",
-    ["id", "name", "name_norm", "name_kana", "name_kana_norm", "name_search", "creator", "creators", "creators_norm", "publisher", "label", "num_items", "version"],
+    ["id", "name", "name_norm", "name_kana", "name_kana_norm", "name_search", "creator", "creators", "creators_norm", "publisher", "label", "num_items", "version", "name_display"],
     a.chunk
   );
   let seriesCount = 0;
   // シリーズ名の引き当て用（成年向けの巻の series_name。成年向けだけのシリーズは series から
   // 消すので、ここで覚えておかないと名前が残らない）。
   const seriesNames = new Map();
+  // 同名シリーズの検出用（name_display、下の「3.5」）。MADB の素のシリーズ名だけでは
+  // 区別が付かないシリーズがどれかを、正規化した名前の重複で見る。数えるのは巻を読み終えてから
+  // （巻が 1 冊も残らないシリーズは検索にも出ないので、同名として数えない）。
+  const seriesNameNorms = new Map(); // id → name_norm
   await streamGraph(seriesJson, (node) => {
     if (node["@type"] !== "class:MangaBookSeries") return;
     const id = (node["@id"] || "").startsWith(ID_PREFIX)
@@ -701,6 +705,7 @@ async function main() {
     const name = primary(node["schema:name"]) || node["rdfs:label"] || "";
     if (!id || !name) return;
     seriesNames.set(id, name);
+    seriesNameNorms.set(id, normTitle(name));
     const readings = kanaReadings(node["schema:name"]);
     const nameKana = readings.join(" / ");
     // Store each reading normalized and "|"-delimited so search can match either a
@@ -721,6 +726,8 @@ async function main() {
       sqlStr(firstVariant(primary(node["schema:brand"]))),
       sqlInt(node["schema:numberOfItems"] ? parseInt(node["schema:numberOfItems"], 10) : null),
       sqlStr(editionVersion(node["schema:version"], name, primary(node["schema:brand"]))),
+      // name_display は巻を全部読まないと決まらないので、ここでは NULL。下の「3.5」で埋める。
+      "NULL",
     ]);
     seriesCount++;
   });
@@ -741,6 +748,9 @@ async function main() {
   const adultWriter = new SqlChunkWriter(a.out, "adult_volumes_new", ["isbn", "title", "title_norm", "series_name"], a.chunk);
   const adultSeries = new Set(); // 成年向けの巻を持つシリーズ
   const keptSeries = new Set(); // 取り込んだ巻を持つシリーズ
+  // シリーズごとの「全巻に共通する副題」（name_display、下の「3.5」）。値は副題の文字列、
+  // null = 共通しない（副題の無い巻がある／複数種類ある）。取り込む巻だけを見る。
+  const commonSubtitle = new Map();
   await streamGraph(volumesJson, (node) => {
     if (a.limit && processed >= a.limit) return;
     processed++;
@@ -766,6 +776,13 @@ async function main() {
       if (seriesId) adultSeries.add(seriesId); // 下で series_new に印を付ける
     }
     if (seriesId) keptSeries.add(seriesId);
+    const sub = subtitle(node["schema:alternateName"]);
+    if (seriesId) {
+      // 1 冊でも副題が無い／違えば、そのシリーズは共通副題なし。null は上書きされない
+      // （null !== sub なので、一度 null になったらそのまま）。
+      if (!commonSubtitle.has(seriesId)) commonSubtitle.set(seriesId, sub || null);
+      else if (commonSubtitle.get(seriesId) !== sub) commonSubtitle.set(seriesId, null);
+    }
     const vnum = primary(node["schema:volumeNumber"]);
     volumesWriter.add([
       sqlStr(isbn),
@@ -773,7 +790,7 @@ async function main() {
       sqlStr(vnum),
       sqlInt(volSort(vnum)),
       sqlStr(title),
-      sqlStr(subtitle(node["schema:alternateName"])),
+      sqlStr(sub),
       sqlStr(searchKey(title)),
       sqlStr(cleanCreator(pickCreator(node["schema:creator"]))),
       sqlStr(creatorsDisplay(node["schema:creator"])),
@@ -819,6 +836,41 @@ async function main() {
       : `series: 成年向けの巻だけのシリーズ ${pruneIds.length} 件を除外予定`
   );
 
+  // 3.5 表示用のシリーズ名（series_new.name_display）。MADB のシリーズ名だけでは同名シリーズを
+  // 見分けられないので（「釣りキチ三平」は 6 件ある）、全ての巻が同じ副題を名乗るシリーズには
+  // その副題を足した名前を持たせる（C328373 →「釣りキチ三平 作者自選集」）。本の表示タイトルは
+  // 「書名 + 巻 + 副題」なので（public/app.js bookTitle）、本が「釣りキチ三平 1 作者自選集」と
+  // 出るのにシリーズ名だけ素の「釣りキチ三平」、という状態を無くすのが目的。
+  // 同名シリーズが無ければ足さない: 副題は惹句や英語別名のことも多く（「HEAT」の「灼熱」、
+  // 「SWAN」の「白鳥」）、もともと曖昧でない名前を長くするだけになる。
+  // 表示専用で、照合（name_norm / name_search）にも迷子巻の引き当て（巻の title との完全一致）
+  // にも使わない。see db/schema.sql series.name_display / db/add-series-name-display.sql
+  const displayFile = path.join(a.out, "series_new_name_display.sql");
+  // 同名かどうかは、巻が 1 冊でも残るシリーズ（keptSeries）だけで数える。巻の無いシリーズと
+  // 成年向けだけで消えるシリーズは検索にも巻一覧にも出てこないので、同名の相手にならない。
+  const nameNormCounts = new Map();
+  for (const id of keptSeries) {
+    const norm = seriesNameNorms.get(id);
+    if (norm) nameNormCounts.set(norm, (nameNormCounts.get(norm) ?? 0) + 1);
+  }
+  const displayStmts = [];
+  for (const [id, sub] of commonSubtitle) {
+    if (!sub) continue;
+    const name = seriesNames.get(id);
+    if (!name) continue;
+    // 「：」は、1 冊に複数の schema:alternateName がある合本を上の subtitle() が繋いだ印。
+    // その巻の収録内容であってシリーズの副題ではない。
+    if (sub.includes("：")) continue;
+    if ((nameNormCounts.get(seriesNameNorms.get(id)) ?? 0) < 2) continue;
+    // 名前が既に副題を含むなら足さない（「あした天気になあれ 全英オープン編」）。
+    if (normTitle(name).includes(normTitle(sub))) continue;
+    displayStmts.push(
+      `UPDATE series_new SET name_display = ${sqlStr(`${name} ${sub}`)} WHERE id = ${sqlStr(id)};\n`
+    );
+  }
+  fs.writeFileSync(displayFile, displayStmts.join(""));
+  log(`series: 同名シリーズと見分けるため ${displayStmts.length} 件に副題付きの表示名を付ける`);
+
   // Emit a manifest so a resumable per-day loader (scripts/seed-daily.mjs) can
   // budget exactly how many rows each file writes, in apply order.
   const manifest = {
@@ -835,6 +887,8 @@ async function main() {
         table: a.includeAdult ? "series_mark_adult" : "series_prune",
         rows: a.includeAdult ? markIds.length : pruneIds.length,
       },
+      // 書き込みではなく更新。series・volumes の後に流す。
+      { file: path.basename(displayFile), table: "series_name_display", rows: displayStmts.length },
     ],
   };
   fs.writeFileSync(path.join(a.out, "manifest.json"), JSON.stringify(manifest, null, 2));
@@ -865,6 +919,7 @@ async function main() {
   //    代わりに通常のクエリ API（/query）へ小分けに投げ、利用者のクエリと交互に処理させる。
   const loadFiles = [...seriesFiles, ...volumeFiles, ...adultFiles].map((f) => f.path);
   if (pruneStmts.length) loadFiles.push(pruneFile);
+  if (displayStmts.length) loadFiles.push(displayFile);
   if (a.target === "remote") {
     const conn = await remoteD1(envArgs);
     for (const file of loadFiles) {

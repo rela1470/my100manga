@@ -46,6 +46,7 @@ DB 側に記録されないので、この表で管理する。
 | `add-series-version.sql` | `series.version`（版表示。同名の版違いシリーズを見分ける。中身は取り込み直しで埋まる）。**デプロイ前に** | × | 2026-10-04 | 2026-10-04 |
 | `add-label-tag.sql` | `label_tag`（レーベルの廉価版・文庫版タグ）＋ `idx_series_label`（管理画面のレーベル一覧）。**デプロイ前に** | ○ | 2026-10-05 | 2026-10-05（R18版も dev / 本番とも 2026-10-05 適用・デプロイ済み） |
 | `add-series-tag.sql` | `series_tag` / `series_tag_request`（シリーズ個別のタグと利用者申請）。**デプロイ前に** | ○ | 2026-10-05 | 2026-10-05（R18版も dev / 本番とも同日 適用・デプロイ済み） |
+| `add-series-name-display.sql` | `series.name_display`（同名シリーズを見分ける表示用名。ALTER + 今のデータへのバックフィル）。**デプロイ前に** | × | 未適用 | 未適用 |
 
 冪等: ○ = 何度流しても同じ結果。× = 2 回目はエラーになる（`ALTER TABLE ... ADD COLUMN` など。エラーで
 止まるだけで壊れはしないが、同じファイルの後続の文も流れない）。
@@ -99,6 +100,26 @@ DB 側に記録されないので、この表で管理する。
 - 索引は `series_tag_request(last_reported_at)` の 1 本だけ（管理画面のキューを新しい順に出す）。
   `series` / `volumes` への索引ではないので、取り込みの差し替え（`scripts/ingest.mjs` の `SWAP_SQL`）に
   足す必要は無い。
+
+### `add-series-name-display.sql` の注意
+
+- 同名シリーズを見分けるための表示用シリーズ名（`series.name_display`）。全ての巻が同じ副題
+  （`volumes.subtitle`）を名乗り、かつ同じ `name_norm` のシリーズが他にもあるときだけ、その副題を
+  足した名前が入る。例: C328373「釣りキチ三平」→「釣りキチ三平 作者自選集」（同名が 6 件あり、
+  うち全巻一致の副題を持つのはこれだけ）。
+- **必ずデプロイより前に流すこと。** 検索（`src/search.ts` の `SERIES_COLS`）・巻一覧・本の詳細・
+  管理画面が `src/util.ts` の `seriesNameSql()` 越しに `s.name_display` を読むので、列が無いまま
+  新しいコードを出すと `no such column: s.name_display` で**検索と巻一覧が全部落ちる**。
+- 本家・R18版の両方に要る（同じコードで動くため）。dev / 本番それぞれ、計 4 つ。
+- `ALTER TABLE ... ADD COLUMN` なので**冪等ではない**（2 回目は "duplicate column name" で止まり、
+  後続の `UPDATE` も流れない）。流し直すときは `UPDATE` 以降だけを流す。
+- ファイルの後半の `UPDATE` は、取り込みを待たずに今のデータへ反映するためのバックフィル。
+  `series`（約 14 万行）と `volumes`（約 35 万行）を引くが索引が効くので、ローカル実測で 2 秒。
+- 月次取り込み（`scripts/ingest.mjs`）が毎回 `name_display` を入れ直すので、以後は取り込みに任せる。
+  取り込み側の判定が本体で、このファイルの SQL はそれに合わせた写し（SQLite の `LOWER` が ASCII しか
+  畳まないぶん、全角英字の重複判定だけがゆるい）。
+- `series_name_override`（管理者の名前修正）があればそちらが優先なので、既に手で直したシリーズの
+  表示は変わらない。
 
 ### `add-series-tag.sql` の適用記録（2026-10-05、全 4 環境）
 

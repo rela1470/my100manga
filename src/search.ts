@@ -1,5 +1,5 @@
 import { Env } from "./types";
-import { badRequest, json, normTitle, searchKey, hiraToKata, vuFold, escapeLikeClamped, LIKE_MAX_BYTES, toIsbn13, workKeySql, titleKeySql } from "./util";
+import { badRequest, json, normTitle, searchKey, hiraToKata, vuFold, escapeLikeClamped, LIKE_MAX_BYTES, toIsbn13, workKeySql, titleKeySql, seriesNameSql } from "./util";
 import { readCachedCovers } from "./covers";
 import { liveSearchByKeyword, SupplementVolume } from "./madbLive";
 import { rakutenComicByIsbn } from "./rakuten";
@@ -86,7 +86,7 @@ const VOL_COUNT = `((SELECT COALESCE(SUM(MAX(nsub, 1)), 0) FROM (
                       FROM series_supplement sp WHERE sp.series_id = s.id), 0)
          + COALESCE((SELECT COUNT(*) FROM series_correction sc
                       WHERE sc.series_id IN ${MEMBERS}), 0))`;
-const SERIES_COLS = `s.id, COALESCE(o.name, s.name) AS name, s.publisher, s.label, s.version,
+const SERIES_COLS = `s.id, ${seriesNameSql("s", "o")} AS name, s.publisher, s.label, s.version,
         ${effectiveTagSql("s")} AS label_tag,
         (SELECT MIN(NULLIF(v.pubdate, '')) FROM volumes v WHERE v.series_id IN ${MEMBERS}) AS first_pubdate,
         COALESCE((SELECT v.creator FROM volumes v WHERE v.series_id IN ${MEMBERS} AND v.creator != ''

@@ -3,7 +3,7 @@ import { badRequest, json } from "./util";
 import { rakutenResolveFull, RakutenBookFull } from "./rakuten";
 import { redactedCoverUrls } from "./covers";
 import { resolveBooks } from "./listItems";
-import { isValidIsbn, toIsbn13, workKeySql } from "./util";
+import { isValidIsbn, toIsbn13, workKeySql, seriesNameSql } from "./util";
 import { attributeTitles } from "./groups";
 import { resolveMergeTarget } from "./merge";
 
@@ -170,7 +170,7 @@ async function bookSeries(env: Env, isbn: string): Promise<{ id: string; title: 
   if (!owner) return { id: "G" + isbn13, title: v.title };
   const id = await resolveMergeTarget(env, owner);
   const s = await env.DB.prepare(
-    `SELECT COALESCE(o.name, s.name) AS name FROM series s
+    `SELECT ${seriesNameSql("s", "o")} AS name FROM series s
        LEFT JOIN series_name_override o ON o.series_id = s.id WHERE s.id = ?`
   )
     .bind(id)

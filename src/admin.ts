@@ -1,6 +1,6 @@
 import { Env, StoredListItem } from "./types";
 import { parseStoredItems, resolveBooks, resolveListItems } from "./listItems";
-import { json, notFound, readJsonObject, toIsbn13 } from "./util";
+import { json, notFound, readJsonObject, toIsbn13, seriesNameSql } from "./util";
 import { getMostCommonVolumeTitle } from "./series";
 import { deleteListStatements } from "./lists";
 import { devBypassActive } from "./adminAuth";
@@ -699,7 +699,7 @@ export async function adminListVolumeTitleReports(env: Env, opts: PageOpts): Pro
     `SELECT r.isbn, r.series_id, r.reported_title, r.report_count,
             r.first_reported_at, r.last_reported_at,
             v.volume_number AS volume_number, v.title AS current_title,
-            COALESCE(so.name, s.name) AS series_name,
+            ${seriesNameSql("s", "so")} AS series_name,
             (SELECT v2.title FROM volumes v2
               WHERE v2.series_id = r.series_id AND v2.title <> ''
               GROUP BY v2.title
@@ -823,7 +823,7 @@ export async function adminListVolumeTitleOverrides(env: Env, opts: PageOpts): P
     `SELECT o.isbn, o.title, o.created_at,
             v.volume_number AS volume_number, v.title AS current_title,
             v.series_id AS series_id,
-            COALESCE(so.name, s.name) AS series_name,
+            ${seriesNameSql("s", "so")} AS series_name,
             cov.cover_url AS cover_url
        FROM volume_title_override o
        LEFT JOIN volumes v ON v.isbn = o.isbn

@@ -64,6 +64,20 @@ function sqlFold(expr: string): string {
   return `REPLACE(REPLACE(REPLACE(REPLACE(LOWER(${expr}), ' ', ''), '　', ''), ':', ''), '：', '')`;
 }
 
+/** 画面に出すシリーズ名の SQL 式。優先順は
+ *    1. series_name_override.name … 管理者が直した名前。何よりも優先する。
+ *    2. series.name_display … 同名シリーズと見分けるために取り込みが副題を足した名前
+ *       （「釣りキチ三平 作者自選集」。db/add-series-name-display.sql）。同名が無ければ NULL。
+ *    3. series.name … MADB の素のシリーズ名。
+ *  `s` は series の別名、`o` は series_name_override を LEFT JOIN したときの別名。両方の
+ *  JOIN がある場所で使う（override を引いていない所では o を省いて 2 段で使ってよい）。
+ *  照合（name_norm / name_search / name_kana_norm）と、シリーズ無しの巻の引き当て（巻の
+ *  title との完全一致）は素の name のままなので、ここを通してはいけない。 */
+export function seriesNameSql(s = "s", o?: string): string {
+  const parts = [o ? `${o}.name` : null, `${s}.name_display`, `${s}.name`].filter(Boolean);
+  return `COALESCE(${parts.join(", ")})`;
+}
+
 /** Escape LIKE wildcards so a value containing % or _ matches literally (ESCAPE '\'). */
 export function escapeLike(s: string): string {
   return s.replace(/[\\%_]/g, (m) => "\\" + m);

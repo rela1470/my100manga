@@ -1,5 +1,5 @@
 import { Env } from "./types";
-import { badRequest, json, notFound, normTitle, readJsonObject } from "./util";
+import { badRequest, json, notFound, normTitle, readJsonObject, seriesNameSql } from "./util";
 import type { PageOpts } from "./admin";
 import {
   isGroupId,
@@ -121,7 +121,7 @@ export async function seriesInfos(env: Env, ids: string[]): Promise<Map<string, 
   for (let i = 0; i < uniq.length; i += CHUNK) {
     const chunk = uniq.slice(i, i + CHUNK);
     const res = await env.DB.prepare(
-      `SELECT s.id, COALESCE(o.name, s.name) AS name, s.creator, s.publisher, s.label
+      `SELECT s.id, ${seriesNameSql("s", "o")} AS name, s.creator, s.publisher, s.label
          FROM series s LEFT JOIN series_name_override o ON o.series_id = s.id
         WHERE s.id IN (${chunk.map(() => "?").join(",")})`
     )
@@ -634,7 +634,7 @@ export async function adminListMerges(env: Env, opts: PageOpts): Promise<Respons
   const total = (await env.DB.prepare(`SELECT COUNT(*) AS n FROM series_merge`).first<{ n: number }>())?.n ?? 0;
   const res = await env.DB.prepare(
     `SELECT m.absorbed_id, m.target_id, m.created_at,
-            COALESCE(oa.name, sa.name) AS absorbed_name, COALESCE(ot.name, st.name) AS target_name
+            ${seriesNameSql("sa", "oa")} AS absorbed_name, ${seriesNameSql("st", "ot")} AS target_name
        FROM series_merge m
        LEFT JOIN series sa ON sa.id = m.absorbed_id
        LEFT JOIN series_name_override oa ON oa.series_id = m.absorbed_id
@@ -671,10 +671,10 @@ export async function adminListLinks(env: Env, opts: PageOpts): Promise<Response
       ).first<{ n: number }>()
     )?.n ?? 0;
   const res = await env.DB.prepare(
-    `SELECT g.*, COALESCE(fo.name, fs.name) AS from_series_name
+    `SELECT g.*, ${seriesNameSql("fs", "fo")} AS from_series_name
        FROM (SELECT l.series_id, l.created_at, COUNT(*) AS isbn_count,
                     json_group_array(DISTINCT v.title) AS titles,
-                    COALESCE(o.name, s.name) AS series_name,
+                    ${seriesNameSql("s", "o")} AS series_name,
                     EXISTS(SELECT 1 FROM custom_series cs WHERE cs.id = l.series_id) AS custom,
                     MAX(l.from_series_id) AS from_series_id
                FROM volume_series_link l
@@ -766,7 +766,7 @@ export async function adminSplitSourceVolumes(env: Env, seriesId: string): Promi
   if (isGroupId(seriesId)) return badRequest("シリーズに属さないまとまりは分離できません");
   const target = await resolveMergeTarget(env, seriesId);
   const meta = await env.DB.prepare(
-    `SELECT s.id, COALESCE(o.name, s.name) AS name, s.creator, s.publisher, s.label
+    `SELECT s.id, ${seriesNameSql("s", "o")} AS name, s.creator, s.publisher, s.label
        FROM series s LEFT JOIN series_name_override o ON o.series_id = s.id WHERE s.id = ?`
   )
     .bind(target)
@@ -878,7 +878,7 @@ export async function adminListSplitRequests(env: Env, opts: PageOpts): Promise<
       ?.n ?? 0;
   const res = await env.DB.prepare(
     `SELECT g.series_id, g.report_count, g.isbn_count, g.first_reported_at, g.last_reported_at,
-            COALESCE(o.name, s.name) AS name, s.label,
+            ${seriesNameSql("s", "o")} AS name, s.label,
             (SELECT COUNT(*) FROM volumes v WHERE v.series_id = g.series_id
                 OR v.series_id IN (SELECT absorbed_id FROM series_merge WHERE target_id = g.series_id)) AS volume_count
        FROM (SELECT series_id, MAX(report_count) AS report_count, COUNT(*) AS isbn_count,

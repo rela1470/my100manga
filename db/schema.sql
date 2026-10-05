@@ -169,7 +169,20 @@ CREATE TABLE IF NOT EXISTS series (
   -- 同名のカードだらけになる。13.9 万シリーズ中 3,923 件が持つ。表示専用で、検索の照合には
   -- 使わない（name_norm / name_kana_norm はそのまま）。外国語の版表示（"1st ed." 等）や、
   -- 既に名前・レーベルに入っている値は取り込みで落とす（scripts/ingest.mjs editionVersion）。
-  version        TEXT
+  version        TEXT,
+  -- 表示用のシリーズ名。MADB のシリーズ名だけでは区別が付かない同名シリーズのうち、全ての巻が
+  -- 同じ副題 (volumes.subtitle = schema:alternateName) を名乗るものに、その副題を足した名前。
+  -- 例: C328373「釣りキチ三平」は全 10 巻が副題「作者自選集」を持ち、同名の「釣りキチ三平」が
+  -- ほかに 5 件（C326076 / C327929 / C327974 / C328178 / C328197）あるので「釣りキチ三平 作者
+  -- 自選集」になる。本の表示タイトルが「釣りキチ三平 1 作者自選集」なのに、シリーズ名だけが
+  -- 素の「釣りキチ三平」でレーベルも空欄、という状態を避けるのが目的。
+  -- 同名シリーズが無ければ副題は足さない（NULL のまま）: 副題は作品の惹句や英語別名のことも
+  -- 多く（「HEAT」の「灼熱」「SWAN」の「白鳥」）、曖昧でない名前に足しても冗長なだけ。
+  -- version と同じく表示専用で、検索の照合（name_norm / name_search / name_kana_norm）にも、
+  -- 迷子巻の引き当て（巻の title との完全一致）にも使わない。管理者の名前修正
+  -- (series_name_override) があればそちらが優先。読み出しは src/util.ts seriesNameSql。
+  -- 埋めるのは取り込み (scripts/ingest.mjs)。see db/add-series-name-display.sql
+  name_display   TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_series_name_norm ON series (name_norm);
 CREATE INDEX IF NOT EXISTS idx_series_kana_norm ON series (name_kana_norm);

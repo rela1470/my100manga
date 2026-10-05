@@ -101,7 +101,7 @@ export async function getSeriesVolumes(
   const members = await mergeMembers(env, targetId);
   const inMembers = members.map(() => "?").join(",");
   const meta = await env.DB.prepare(
-    `SELECT s.id, s.name, s.name_norm, s.creator, s.creators, s.publisher, s.label, s.version,
+    `SELECT s.id, s.name, s.name_norm, s.name_display, s.creator, s.creators, s.publisher, s.label, s.version,
             ${effectiveTagSql("s")} AS label_tag,
             o.name AS override_name
        FROM series s LEFT JOIN series_name_override o ON o.series_id = s.id
@@ -112,6 +112,7 @@ export async function getSeriesVolumes(
       id: string;
       name: string;
       name_norm: string;
+      name_display: string | null;
       creator: string | null;
       creators: string | null;
       publisher: string | null;
@@ -126,6 +127,13 @@ export async function getSeriesVolumes(
   // matching below (unlinked-volume merge, live supplement) keeps using the master
   // meta.name, since the volumes' schema:name still carries the original title.
   const displayName = meta.override_name || meta.name;
+
+  // 画面に出すシリーズ名。displayName との違いは、同名シリーズと見分けるために取り込みが
+  // 足した副題（name_display、「釣りキチ三平 作者自選集」。src/util.ts seriesNameSql と同じ
+  // 優先順）が入ること。これを巻のタイトル（下の titleFor）に使ってはいけない: 巻は
+  // 「書名 + 巻 + 副題」で出すので（public/app.js bookTitle）、副題が二重に付く
+  // （「釣りキチ三平 作者自選集 1 作者自選集」）。
+  const seriesName = meta.override_name || meta.name_display || meta.name;
 
   const res = await env.DB.prepare(
     `SELECT isbn, volume_number, vol_sort, title, subtitle, creator, creators, publisher, label, pubdate
@@ -614,7 +622,7 @@ export async function getSeriesVolumes(
   return json(
     {
       series_id: meta.id,
-      title: displayName,
+      title: seriesName,
       // 版表示（schema:version）。検索カードと同じく書名に添える（src/search.ts SERIES_COLS）。
       // 巻一覧は検索を経由せずに開けるので（/s/:id の直リンク・リストからの遷移）、カードが
       // 持っている値に頼らずここでも返す。管理者が名前を直していても版は版なので併記する。

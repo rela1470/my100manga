@@ -11,7 +11,7 @@
 // マスタ側に印を書くと毎月消えるため。db/add-label-tag.sql。
 import type { PageOpts } from "./admin";
 import { Env } from "./types";
-import { badRequest, json, notFound, escapeLikeClamped, readJsonObject, LIKE_MAX_BYTES } from "./util";
+import { badRequest, json, notFound, escapeLikeClamped, readJsonObject, LIKE_MAX_BYTES, seriesNameSql } from "./util";
 
 /** レーベルに付けられるタグ。増やすときはここに足すだけでよい（管理画面の選択肢・検索の
  *  絞り込み・表示は全部この配列から作る。DB の tag は素の TEXT なので migration も要らない）。
@@ -351,7 +351,7 @@ export async function adminListSeriesTagRequests(env: Env, opts: PageOpts): Prom
 
   const { results } = await env.DB.prepare(
     `SELECT r.series_id, r.tag, r.report_count, r.first_reported_at, r.last_reported_at,
-            COALESCE(o.name, s.name) AS name, s.creator, s.label,
+            ${seriesNameSql("s", "o")} AS name, s.creator, s.label,
             (SELECT st.tag FROM series_tag st WHERE st.series_id = r.series_id) AS current_tag,
             (SELECT lt.tag FROM label_tag lt WHERE lt.label = s.label) AS label_tag
        FROM series_tag_request r

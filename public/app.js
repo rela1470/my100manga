@@ -2639,8 +2639,11 @@ async function openGapPicker(series, gap, volumes, opts) {
 
   let candidates = [];
   try {
+    // series を渡すと、別シリーズの巻として既に登録されている ISBN が候補から外れる
+    // （選んでもサーバが弾くので出さない。src/candidates.ts）。live 検索の結果には ID が無い。
+    const sid = series.series_id ? `&series=${encodeURIComponent(series.series_id)}` : "";
     const data = await apiFetch(
-      `/api/volume-candidates?title=${encodeURIComponent(series.title)}&volume=${gap.n}`
+      `/api/volume-candidates?title=${encodeURIComponent(series.title)}&volume=${gap.n}${sid}`
     );
     candidates = data.candidates || [];
     // 新刊の追加では、一覧にある巻（検索に既刊も混ざる）は候補から外す。

@@ -4,6 +4,7 @@ import { findNgWord } from "./ngwords";
 import { isTrustedCoverUrl, readCachedCovers, resolveCovers } from "./covers";
 import type { UnlinkedGroup } from "./groups";
 import { adultBlockMessage, findAdultIsbns } from "./adult";
+import { mergeMembers, resolveMergeTarget } from "./merge";
 
 // A correction volume as merged into the series volume list. title/author are filled
 // from the series row by the caller, not stored, so they always track the master.
@@ -55,9 +56,59 @@ export async function getCorrectionVolumes(env: Env, seriesId: string): Promise<
   return res.results ?? [];
 }
 
+/** `isbns` のうち「このシリーズ以外の巻」として master か補完が既に持っているものを、相手の
+ *  シリーズ名（無ければその id）に対応付けて返す。手動追加の門番（下の addCorrection）と、
+ *  候補ピッカーの絞り込み（src/candidates.ts volumeCandidates）の両方がこれを使う。
+ *
+ *  穴埋め（src/gapFill.ts の alreadyTaken, MASTER-KNOWN）と同じ規則を手動追加にも効かせる。
+ *  同じ出版社の別版は ISBN 接頭辞が共通で接頭辞では分離できないので、「その ISBN が既に別の
+ *  シリーズの巻として登録されているか」が実質唯一の確実な判別になる。穴埋めだけに規則があり
+ *  手動追加に無かったため、C326076『釣りキチ三平』(講談社コミックス) の 12〜25 巻に
+ *  KCスペシャル版（＝別シリーズ C328178 の巻）の ISBN が 13 件入っていた
+ *  （db/fix-tsurikichi-sanpei-corrections.sql で取り消し済み）。
+ *
+ *  このシリーズ自身の巻は弾かない: 同じ ISBN が巻番号なしでこのシリーズに在るとき、その巻に
+ *  番号を付ける追加として受け付けるのが抜け巻の導線（public/app.js openGapPicker）。結合済みの
+ *  シリーズは 1 つの単位として見るので、吸収された側の id で来ても別物にはしない。
+ *
+ *  まとまり（G-id, src/groups.ts）はシリーズ無しの巻（volumes.series_id IS NULL）の集まりなので
+ *  ここには当たらない。当たる ＝ その巻は既にどこかのシリーズに属している、ということなので
+ *  やはり弾いてよい（直し方は結合依頼）。 */
+export async function ownersOfOtherSeries(
+  env: Env,
+  seriesId: string,
+  isbns: string[]
+): Promise<Map<string, string>> {
+  const out = new Map<string, string>();
+  const list = [...new Set(isbns.filter(Boolean))];
+  if (list.length === 0) return out;
+  const unit = await mergeMembers(env, await resolveMergeTarget(env, seriesId));
+  const up = unit.map(() => "?").join(",");
+  // D1 の bind パラメータ上限（100）に当たらない刻み。1 文につき isbn と unit を 2 組ずつ bind する。
+  const CHUNK = 40;
+  for (let i = 0; i < list.length; i += CHUNK) {
+    const part = list.slice(i, i + CHUNK);
+    const ip = part.map(() => "?").join(",");
+    const res = await env.DB.prepare(
+      `SELECT v.isbn AS isbn, COALESCE(NULLIF(s.name, ''), v.series_id) AS name
+         FROM volumes v LEFT JOIN series s ON s.id = v.series_id
+        WHERE v.isbn IN (${ip}) AND v.series_id IS NOT NULL AND v.series_id NOT IN (${up})
+        UNION ALL
+       SELECT i.isbn AS isbn, COALESCE(NULLIF(s.name, ''), i.series_id) AS name
+         FROM series_supplement_isbn i LEFT JOIN series s ON s.id = i.series_id
+        WHERE i.isbn IN (${ip}) AND i.series_id NOT IN (${up})`
+    )
+      .bind(...part, ...unit, ...part, ...unit)
+      .all<{ isbn: string; name: string }>();
+    for (const r of res.results ?? []) if (!out.has(r.isbn)) out.set(r.isbn, r.name);
+  }
+  return out;
+}
+
 /** POST /api/series/:id/corrections — add a manually-found missing volume. Accepts
  *  only { isbn, volume_number }; the cover is re-resolved server-side and must exist
  *  (rejects fabricated ISBNs), so no client-supplied strings or images are trusted.
+ *  既に別シリーズの巻として登録されている ISBN も入れない（ownersOfOtherSeries）。
  *  `group` is set for a series-less group (G-id, src/groups.ts): the correction is
  *  stored under the group's canonical id and merged by getGroupVolumes. */
 export async function addCorrection(
@@ -82,6 +133,17 @@ export async function addCorrection(
   // 成年向けとして取り込みから外した巻（adult_volumes）は手動追加でも入れない。
   const adultTitle = (await findAdultIsbns(env, [isbn])).get(isbn);
   if (adultTitle !== undefined) return badRequest(adultBlockMessage(adultTitle));
+
+  // 既に別のシリーズの巻として登録されている ISBN は入れない（穴埋めと同じ MASTER-KNOWN 規則）。
+  // 表紙の引き直し（外部 API）より手前に置く。
+  const owner = (await ownersOfOtherSeries(env, seriesId, [isbn])).get(isbn);
+  if (owner) {
+    const who = `「${owner}」`;
+    return badRequest(
+      `この ISBN は別のシリーズ${who}の巻として登録されています。同じ本を 2 つのシリーズに重ねては置けません。` +
+        `版が違うなら そちらのシリーズで探してください。同じ作品が分かれているなら「シリーズが分かれている？」から結合を依頼してください。`
+    );
+  }
 
   const count = await env.DB.prepare(
     `SELECT COUNT(*) AS n FROM series_correction WHERE series_id = ?`

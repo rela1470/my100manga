@@ -1,6 +1,6 @@
 import { Env } from "./types";
 import { badRequest, isValidIsbn, json } from "./util";
-import { coverSuggestionsEnabled } from "./corrections";
+import { coverSuggestionsEnabled, ownersOfOtherSeries } from "./corrections";
 import { probeGoogleCover } from "./covers";
 import { probeYahooCover } from "./yahoo";
 import { ichibaCovers } from "./ichiba";
@@ -121,13 +121,19 @@ export async function volumeCandidates(request: Request, env: Env): Promise<Resp
   const title = (url.searchParams.get("title") ?? "").trim().slice(0, 200);
   const volume = (url.searchParams.get("volume") ?? "").trim().slice(0, 10);
   const vnum = parseInt(volume, 10);
+  // 追加先のシリーズ（C-id / U-id / G-id）。候補の絞り込みにだけ使う任意パラメータ。
+  const seriesId = (url.searchParams.get("series") ?? "").trim().slice(0, 32);
   if (!title || !Number.isFinite(vnum)) return badRequest("title と volume を指定してください");
 
   const found = await searchVolume(env, title, String(vnum));
   await cacheBookMetaBatch(env, found);
   // 成年向けとして取り込みから外した巻（adult_volumes）は候補に出さない（選んでも追加で弾かれる）。
   const adult = await findAdultIsbns(env, found.map((b) => b.isbn));
-  const hits = found.filter((b) => !adult.has(b.isbn));
+  // 同じ理由で、既に別のシリーズの巻として登録されている ISBN も出さない（src/corrections.ts の
+  // MASTER-KNOWN 規則で追加が弾かれる）。同じ巻番号で別版が並ぶ旧作ほどここに引っかかる。
+  // series を渡せない経路（live 検索の結果には C-id が無い）では絞り込まない。
+  const owned = seriesId ? await ownersOfOtherSeries(env, seriesId, found.map((b) => b.isbn)) : new Map();
+  const hits = found.filter((b) => !adult.has(b.isbn) && !owned.has(b.isbn));
   const candidates: VolumeCandidate[] = hits.map((b) => ({
     isbn: b.isbn,
     title: b.title,

@@ -1,6 +1,7 @@
 import { Env } from "./types";
 import { SupplementVolume, queryVolumesInSeries } from "./madbLive";
 import { rakutenReady, rakutenSeriesPage, RakutenCandidate } from "./rakuten";
+import { yahooReady, yahooVolumeIsbns } from "./yahoo";
 import { excludeAdult } from "./site";
 import { plainVolumeNumber, volSort } from "./util";
 
@@ -21,6 +22,10 @@ import { plainVolumeNumber, volSort } from "./util";
 //   3. 候補を順位付けて 1 件選ぶ。ゲートではなく順位付けなのは、楽天の salesDate が
 //      重版日のことがあり（『三国志』35 巻は初版 1983-11 に対し 1996-08）、年で
 //      足切りすると正解を落とすため。
+//   4. それでも埋まらない巻を Yahoo!ショッピングの商品名検索で引く（src/yahoo.ts）。
+//      楽天ブックスは新刊書店なので絶版の古い巻を持たない（『釣りキチ三平』講談社コミックス版
+//      は 45 巻以降だけ）。Yahoo は中古書店の出品が JAN ＝ ISBN-13 付きで並ぶので、そこだけが
+//      ISBN の在りかになる。
 //
 // 精度の要（下の MASTER-KNOWN）: master が既に知っている ISBN は、どのシリーズの
 // ものであっても候補から落とす。同一出版社の別版は ISBN 接頭辞が共通で接頭辞では
@@ -29,12 +34,14 @@ import { plainVolumeNumber, volSort } from "./util";
 // 誤り 0 件になった。
 //
 // 取れないもの（既知の限界）:
-//   - 楽天が扱っていない作品（『沈黙の艦隊 大望総集編』『爆弾小娘鈴!』は候補 0 件）。
-//   - 巻数の多いシリーズ。1req/s の枠内に収めるためページ送りを MAX_PAGES で打ち切る
-//     ので、『ゴルゴ13』（楽天側 656 件）の 1970 年代の巻には届かない。
-//   - R18 版（my100shunga）は外部ストアの API を使わない方針なので rakutenReady() が
-//     false になり、引き当て（2・3）は行わない。MADB だけで分かる「ISBN が無い巻」の
-//     一覧（1）はそのまま返すので、抜け巻の説明は R18 版でも出る。
+//   - 楽天にも Yahoo にも出品が無い巻（『沈黙の艦隊 大望総集編』『爆弾小娘鈴!』は候補 0 件）。
+//     ISBN 制度より前の刊行で ISBN 自体が無い巻もここに入る。
+//   - 巻数の多いシリーズ。1req/s の枠内に収めるためページ送りを MAX_PAGES で、Yahoo の
+//     1 巻 1 リクエストを MAX_YAHOO_PROBES で打ち切るので、1 回の押下では埋まりきらない。
+//     押すたびに少しずつ積み上がる（合流は src/series.ts 側）。
+//   - R18 版（my100shunga）は外部ストアの API を使わない方針なので rakutenReady() /
+//     yahooReady() が false になり、引き当て（2〜4）は行わない。MADB だけで分かる
+//     「ISBN が無い巻」の一覧（1）はそのまま返すので、抜け巻の説明は R18 版でも出る。
 
 // 1 回のボタン押下で投げる楽天のページ数の上限。ただし実際に効く制約はこちらではなく
 // レートリミッタで、高優先レーンの待ち上限が 4 秒（src/ratelimiter.ts MAX_WAIT_MS）なので
@@ -103,21 +110,22 @@ export interface GapFillInput {
 }
 
 export interface GapFillResult {
-  /** 楽天から引き当てられた巻。 */
+  /** 楽天・Yahoo から引き当てられた巻。 */
   filled: SupplementVolume[];
-  /** MADB にはあるのに ISBN がどこにも無く、埋められなかった巻の巻数（昇順）。
+  /** MADB にはあるのに ISBN が見つからず、埋められなかった巻の巻数（昇順）。
    *  null = 判定できなかった（SPARQL が落ちた）。[] = そういう巻は無い。 */
   noIsbn: number[] | null;
 }
 
-/** 抜け巻を楽天から引き当てて返す。ネットワークや D1 の失敗は握りつぶして空の結果を返す
- *  （呼び手が既存の補完ごと落とさないように）。呼ぶのは取得ボタンの経路だけ。
+/** 抜け巻を楽天・Yahoo から引き当てて返す。ネットワークや D1 の失敗は握りつぶして空の結果を
+ *  返す（呼び手が既存の補完ごと落とさないように）。呼ぶのは取得ボタンの経路だけ。
  *
- *  埋まらなかった穴は noIsbn で返す。MADB が巻として持っているのに ISBN がどこにも無い巻は、
- *  ISBN を鍵にしたこのサイトには原理的に足せない。実例は C326076「釣りキチ三平」(講談社
- *  コミックス・全65巻) の 1〜44 巻で、1974〜1980 年刊。MADB にも国会図書館サーチにも ISBN が
- *  無く（日本で ISBN が使われ出すより前の刊行）、楽天の取り扱いも 45 巻以降しか無い。そういう
- *  巻に「＋N巻を追加」ボタンを出しても必ず空振りするので、呼び手が区別できるよう巻数を返す。 */
+ *  埋まらなかった穴は noIsbn で返す。これは「この 2 つのストアで ISBN を見つけられなかった」
+ *  であって「ISBN が存在しない」ではない。C326076「釣りキチ三平」(講談社コミックス・全65巻) の
+ *  26 巻は MADB にも国会図書館サーチにも ISBN が無く、楽天の取り扱いも 45 巻以降だが、講談社の
+ *  公式サイトには 9784061735057 が載っている（Yahoo の中古出品にも同じ JAN がある）。呼び手は
+ *  候補検索が空振りすることの予告としてだけ使い、ISBN の直接指定の導線は残すこと
+ *  （public/app.js の renderVolumes）。 */
 export async function findGapFillVolumes(env: Env, input: GapFillInput): Promise<GapFillResult> {
   let members;
   try {
@@ -147,49 +155,108 @@ export async function findGapFillVolumes(env: Env, input: GapFillInput): Promise
   const base = { title: input.name, publisher: input.publisher || undefined };
   let items = await collect(env, { ...base, author: input.creator || undefined }, gaps);
   if (items.length === 0 && input.creator) items = await collect(env, base, gaps);
-  if (items.length === 0) return { filled: [], noIsbn: allGaps };
 
-  const taken = await alreadyTaken(env, input.seriesId, [...new Set(items.map((i) => i.isbn))]);
+  // 巻ごとに 1 件まで選ぶ。鍵は MADB の巻数なので、ラベル表記が巻数と一致しなくても
+  // 「埋まったか」の判定を取りこぼさない。
+  const picked = new Map<number, SupplementVolume>();
+  if (items.length) {
+    const taken = await alreadyTaken(env, input.seriesId, [...new Set(items.map((i) => i.isbn))]);
 
-  // 巻ごとに候補を集め、接頭辞 → レーベル一致 → 発行年の近さ、の順で 1 件選ぶ。
-  const byVol = new Map<number, RakutenCandidate[]>();
-  for (const i of items) {
-    if (i.volume === null || !gaps.has(i.volume)) continue;
-    if (i.isbn.length !== 13 || taken.has(i.isbn)) continue;
-    const list = byVol.get(i.volume);
-    if (list) list.push(i);
-    else byVol.set(i.volume, [i]);
+    // 巻ごとに候補を集め、接頭辞 → レーベル一致 → 発行年の近さ、の順で 1 件選ぶ。
+    const byVol = new Map<number, RakutenCandidate[]>();
+    for (const i of items) {
+      if (i.volume === null || !gaps.has(i.volume)) continue;
+      if (i.isbn.length !== 13 || taken.has(i.isbn)) continue;
+      const list = byVol.get(i.volume);
+      if (list) list.push(i);
+      else byVol.set(i.volume, [i]);
+    }
+
+    const label = normLabel(input.label);
+    for (const [vol, list] of byVol) {
+      const gap = gaps.get(vol)!;
+      const my = pubYear(gap.pubdate);
+      const best = list
+        .map((i) => {
+          const prefix = input.knownIsbns.reduce((m, k) => Math.max(m, commonPrefix(i.isbn, k)), 0);
+          const labelHit = label && normLabel(i.seriesName).startsWith(label) ? 1 : 0;
+          const ry = pubYear(i.pubdate);
+          const yearGap = my !== null && ry !== null ? -Math.abs(ry - my) : -99;
+          return { i, key: [prefix, labelHit, yearGap] as const };
+        })
+        .sort((a, b) => b.key[0] - a.key[0] || b.key[1] - a.key[1] || b.key[2] - a.key[2])[0].i;
+      picked.set(vol, {
+        isbn: best.isbn,
+        isbns: [best.isbn],
+        volume_number: gap.label, // MADB のラベル表記のまま（シリーズの表記統一が効くように）
+        vol_sort: volSort(gap.label),
+        title: input.name,
+        author: input.creator,
+        publisher: best.publisher || input.publisher,
+        pubdate: best.pubdate,
+      });
+    }
   }
 
-  const label = normLabel(input.label);
-  const out: SupplementVolume[] = [];
-  for (const [vol, list] of byVol) {
-    const gap = gaps.get(vol)!;
-    const my = pubYear(gap.pubdate);
-    const best = list
-      .map((i) => {
-        const prefix = input.knownIsbns.reduce((m, k) => Math.max(m, commonPrefix(i.isbn, k)), 0);
-        const labelHit = label && normLabel(i.seriesName).startsWith(label) ? 1 : 0;
-        const ry = pubYear(i.pubdate);
-        const yearGap = my !== null && ry !== null ? -Math.abs(ry - my) : -99;
-        return { i, key: [prefix, labelHit, yearGap] as const };
-      })
-      .sort((a, b) => b.key[0] - a.key[0] || b.key[1] - a.key[1] || b.key[2] - a.key[2])[0].i;
-    out.push({
-      isbn: best.isbn,
-      isbns: [best.isbn],
-      volume_number: gap.label, // MADB のラベル表記のまま（シリーズの表記統一が効くように）
+  // 楽天で埋まらなかった巻を Yahoo!ショッピングで引く（src/yahoo.ts）。
+  await fillFromYahoo(env, input, gaps, picked);
+
+  const out = [...picked.values()].sort((a, b) => a.vol_sort - b.vol_sort);
+  return { filled: out, noIsbn: allGaps.filter((n) => !picked.has(n)) };
+}
+
+// 1 回の押下で Yahoo に投げる巻数の上限。実際に効く制約はレートリミッタ（高優先レーンの
+// 待ち上限 4 秒 ＝ 3〜4 件）なので、これは MAX_PAGES と同じく外側の保険。
+const MAX_YAHOO_PROBES = 12;
+
+/** 楽天に無かった巻を Yahoo!ショッピングの商品名検索で引き当て、`picked` に足す。
+ *
+ *  楽天ブックスは新刊書店なので絶版の古い巻を持たない（『釣りキチ三平』講談社コミックス版は
+ *  45 巻以降だけ）。Yahoo は中古書店の出品が JAN ＝ ISBN-13 付きで並ぶので、そこだけが
+ *  ISBN の在りかになる。1 巻 1 リクエストなので、枠が取れなくなった時点（null）で打ち切る
+ *  ＝ 巻数の多いシリーズは押すたびに少しずつ埋まる（楽天側と同じ振る舞い）。 */
+async function fillFromYahoo(
+  env: Env,
+  input: GapFillInput,
+  gaps: Map<number, { label: string; pubdate: string }>,
+  picked: Map<number, SupplementVolume>
+): Promise<void> {
+  if (!yahooReady(env)) return;
+  const missing = [...gaps.keys()].filter((n) => !picked.has(n)).sort((a, b) => a - b);
+  if (missing.length === 0) return;
+
+  const found = new Map<number, string[]>();
+  for (const n of missing.slice(0, MAX_YAHOO_PROBES)) {
+    const isbns = await yahooVolumeIsbns(env, input.name, n);
+    if (isbns === null) break; // 枠が取れない: 残りは次の押下に回す
+    if (isbns.length) found.set(n, isbns);
+  }
+  if (found.size === 0) return;
+
+  const taken = await alreadyTaken(env, input.seriesId, [...new Set([...found.values()].flat())]);
+  for (const [n, isbns] of found) {
+    const left = isbns.filter((i) => !taken.has(i));
+    if (left.length === 0) continue;
+    // 同じ巻番号で別版が並ぶことがある（『釣りキチ三平』26 巻は KCスペシャル版と講談社
+    // コミックス版の 2 件）。master が持つ ISBN と接頭辞が長く一致する方を採る。
+    const best = left
+      .map((isbn) => ({
+        isbn,
+        prefix: input.knownIsbns.reduce((m, k) => Math.max(m, commonPrefix(isbn, k)), 0),
+      }))
+      .sort((a, b) => b.prefix - a.prefix)[0].isbn;
+    const gap = gaps.get(n)!;
+    picked.set(n, {
+      isbn: best,
+      isbns: [best],
+      volume_number: gap.label,
       vol_sort: volSort(gap.label),
       title: input.name,
       author: input.creator,
-      publisher: best.publisher || input.publisher,
-      pubdate: best.pubdate,
+      publisher: input.publisher,
+      pubdate: gap.pubdate, // Yahoo は刊行日を持たないので MADB の日付をそのまま使う
     });
   }
-  out.sort((a, b) => a.vol_sort - b.vol_sort);
-  // 埋まったかどうかは byVol の鍵（MADB の巻数）で見る。out の vol_sort は MADB のラベル表記
-  // 由来なので、巻数と一致しない表記があっても取りこぼさないように。
-  return { filled: out, noIsbn: allGaps.filter((n) => !byVol.has(n)) };
 }
 
 /** 穴が全部埋まるか、ページが尽きるか、MAX_PAGES に達するまでページ送りする。

@@ -2212,9 +2212,11 @@ function renderVolumes(series, volumes, opts) {
   // マスタに欠けている巻（例: ONE PIECE 巻110）を検出して手動追加の導線を出す。
   // live シリーズは C-id が無く訂正保存(/corrections)できないので抜け巻ピッカーは出さない。
   const gaps = opts.live ? [] : detectGaps(visible);
-  // 「最新データを取得」で分かった、MADB には巻として在るのに ISBN がどこにも無い巻
-  // （src/gapFill.ts）。ISBN を鍵にしたこのサイトには足しようが無いので追加ボタンは出さず、
-  // まとめて 1 行の説明にする。取得前は空なので、そのときは従来どおり全部ボタン側に出る。
+  // 「最新データを取得」で分かった、MADB には巻として在るのに楽天・Yahoo のどちらでも
+  // ISBN を見つけられなかった巻（src/gapFill.ts）。候補検索は空振りするので普通の抜け巻とは
+  // 分けて出すが、ISBN が存在しないと断定はできない（C326076『釣りキチ三平』26 巻は講談社の
+  // 公式サイトに 9784061735057 が載っている）ので、ボタン ＝ ISBN の直接指定の導線は残す。
+  // 取得前は空なので、そのときは従来どおり全部ボタン側に出る。
   const noIsbn = new Set(opts.noIsbn || []);
   const addable = gaps.filter((g) => !noIsbn.has(g.n));
   const unaddable = gaps.filter((g) => noIsbn.has(g.n));
@@ -2249,11 +2251,29 @@ function renderVolumes(series, volumes, opts) {
     noBox.className = "gap-box";
     const note = document.createElement("span");
     note.className = "gap-label";
-    // 断定できるのは「MADB に在る」「ISBN が無い」の 2 点だけなので、理由の推測は書かない。
+    // 断定できるのは「MADB に在る」「このサイトが見ているストアで ISBN を見つけられなかった」
+    // の 2 点だけ。「ISBN が無い」とは言わない（出版社のサイトには載っていることがある）。
     note.textContent =
       `${formatVolRanges(unaddable.map((g) => g.n))}巻は最新DBに収録されていますが、` +
-      `ISBN が無いため追加できません（${unaddable.length}巻）。`;
+      `ISBN が見つかりませんでした（${unaddable.length}巻）。` +
+      `ISBN が分かれば直接指定で追加できます。`;
     noBox.appendChild(note);
+    // 候補は出ないが、ISBN の直接指定（openGapPicker の入力欄）には行けるようにしておく。
+    const rest = unaddable.slice(GAP_BTN_MAX);
+    for (const g of unaddable.slice(0, GAP_BTN_MAX)) {
+      noBox.appendChild(buildGapBtn(series, g, volumes, opts));
+    }
+    if (rest.length) {
+      const more = document.createElement("button");
+      more.type = "button";
+      more.className = "linkbtn gap-btn";
+      more.textContent = `…ほか${rest.length}巻`;
+      more.addEventListener("click", () => {
+        for (const g of rest) noBox.insertBefore(buildGapBtn(series, g, volumes, opts), more);
+        more.remove();
+      });
+      noBox.appendChild(more);
+    }
     box.appendChild(noBox);
   }
 

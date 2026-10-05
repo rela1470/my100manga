@@ -95,8 +95,31 @@ DB 側に記録されないので、この表で管理する。
 - `db/add-label-tag.sql` を適用（`rows_read` 268,989 / `rows_written` 133,588 = `idx_series_label` の作成、
   363ms）。`label_tag` 0 行、`series` 133,584 / `volumes` 349,020 と他のユーザデータは適用前後とも同数。
   レーベルは 7,808 種。
-- **この時点では dev の Worker は旧コードのまま**（旧コードは `label_tag` を参照しないので、
-  表だけ先にある状態は無害）。デプロイは次項。
+- 適用の時点では dev の Worker は旧コードのまま（旧コードは `label_tag` を参照しないので、
+  表だけ先にある状態は無害）。そのあと `npm run deploy:dev` → Version ID
+  `c91d1686-fed8-4b15-9e55-04c1d6ca5281`。**順番は migration → デプロイ**（逆だと
+  `no such table: label_tag` で検索と巻一覧が落ちる）。ingest は不要（マスタの列は増えていない）。
+- デプロイ後の確認:
+
+  | 確認 | 結果 |
+  |---|---|
+  | `GET /` / `/lists` / `/ranking` / `/api/version` | すべて 200（`version` = `c91d1686`） |
+  | `GET /api/search?q=GTO` | 4 件のカードが `label_tag` を返す（タグ未設定なので全部 `""`） |
+  | `GET /api/series/C322586/volumes` | 200・56 巻・`label_tag: ""` |
+  | `GET /api/admin/labels`（未認証） | 401（Cloudflare Access で閉じている） |
+  | `GET /admin`（未認証） | 302（Access のログインへ） |
+
+- 管理画面は Access の内側で手元から叩けないので、**管理画面が行うのと同じ 2 つの書き込み**
+  （`label_tag` の upsert と `meta.view_epoch` の更新）を SQL で入れて読み出し側を確認した。
+  `KPC` → `廉価版` の 1 件だけ入れてある（**dev にはこの 1 行が残っている**。管理画面から
+  変更・解除できる）。`getViewEpoch` の isolate メモが 30 秒あるので、反映の確認はその後:
+
+  | 確認 | 結果 |
+  |---|---|
+  | `GET /api/search?q=GTO` | C322586（KPC）だけ `廉価版`、他の 3 件は `""` |
+  | `GET /api/series/C322586/volumes` | `label_tag: "廉価版"` |
+  | `GET /api/search?q=9784063780390`（ISBN） | C322586 / `label_tag: "廉価版"` |
+
 
 ### `add-indexes-2026-10.sql` の注意
 

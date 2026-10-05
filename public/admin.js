@@ -4289,6 +4289,25 @@ async function runCirculationRecompute(btn) {
   );
 }
 
+// サジェストの前方一致索引（series_suggest）の作り直し。取り込みと同じ SQL を D1 の中で流すので、
+// 押してから数秒かかる（13 万シリーズ → 24 万行）。
+async function rebuildSuggestIndex(btn) {
+  const orig = btn.textContent;
+  btn.disabled = true;
+  btn.textContent = "再構築中…";
+  try {
+    const res = await fetch("/api/admin/suggest/rebuild", { method: "POST" });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
+    uiAlert(`サジェスト索引を作り直しました（${data.rows} 行）。`);
+  } catch (e) {
+    uiAlert("失敗しました: " + e.message);
+  } finally {
+    btn.disabled = false;
+    btn.textContent = orig;
+  }
+}
+
 async function postCirculation(url, btn, busyLabel, message) {
   const orig = btn.textContent;
   btn.disabled = true;
@@ -4397,6 +4416,7 @@ $("reloadSales").addEventListener("click", () => loadSales());
 $("salesSnapshot").addEventListener("click", (e) => runSales(false, e.currentTarget));
 $("salesRecompute").addEventListener("click", (e) => runSales(true, e.currentTarget));
 $("reloadCirc").addEventListener("click", () => loadCirculation());
+$("suggestRebuild").addEventListener("click", (e) => rebuildSuggestIndex(e.currentTarget));
 $("circRecompute").addEventListener("click", (e) => runCirculationRecompute(e.currentTarget));
 $("circSuggest").addEventListener("click", (e) => runCirculationSuggest(e.currentTarget));
 $("circOnlyIssues").addEventListener("change", () => renderCircRows());
@@ -4407,6 +4427,8 @@ $("circPickQuery").addEventListener("keydown", (e) => {
     runCircPickSearch();
   }
 });
+// 寄せ先の検索欄にも入力補完を付ける（public/suggest.js）。候補を選んだらそのまま検索する。
+attachSuggest($("circPickQuery"), { onPick: () => runCircPickSearch() });
 $("reloadWarm").addEventListener("click", () => loadWarm());
 $("warmStart").addEventListener("click", () => {
   if (warmRunning) return;
@@ -4434,6 +4456,8 @@ $("bookMetaSearch").addEventListener("click", runBookMetaSearch);
 $("bookMetaQuery").addEventListener("keydown", (e) => {
   if (e.key === "Enter") runBookMetaSearch();
 });
+// 作品名での絞り込みに入力補完を付ける（著者・出版社・ISBN でも引けるので、候補は補助扱い）。
+attachSuggest($("bookMetaQuery"), { onPick: () => runBookMetaSearch() });
 $("bookMetaClear").addEventListener("click", () => {
   bookMetaQuery = "";
   $("bookMetaQuery").value = "";

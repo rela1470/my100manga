@@ -200,7 +200,7 @@ npx wrangler secret put AMAZON_ASSOCIATE_TAG --env dev
 アカウント不要の公開書き込み（リスト作成・更新、通報、修正提案、表紙解決など）への連投・自動化を抑えるため、Cloudflare の [Rate Limiting binding](https://developers.cloudflare.com/workers/runtime-apis/bindings/rate-limit/) で IP 単位のレート制限をかける（`src/ratelimit.ts`）。ルート照合の前に `src/index.ts` でゲートし、超過時は `429`（`retry-after: 60`）を返す。
 
 - `RL_WRITE` — 書き込み系 API 全般（`/api/admin/*` は Cloudflare Access 済みなので対象外）。閲覧ビーコン（`POST /api/lists/:slug/view`）だけは bucket を分け、たくさん閲覧した人や同じ IP を共有する人が直後の公開で `429` にならないようにする。
-- `RL_COVERS` — 外部 API（楽天/Yahoo/Google Books）や重いクエリを叩くもの用の別枠。bucket をエンドポイントごとに分けているので、limit は `/api/covers`・`/cover`・`/api/book`・検索・候補・公開リスト一覧・巻一覧にそれぞれ効く。ほかにこの binding を使うもの:
+- `RL_COVERS` — 外部 API（楽天/Yahoo/Google Books）や重いクエリを叩くもの用の別枠。bucket をエンドポイントごとに分けているので、limit は `/api/covers`・`/cover`・`/api/book`・検索・入力補完・候補・公開リスト一覧・巻一覧にそれぞれ効く。ほかにこの binding を使うもの:
   - `draft` — 作成中リストの自動保存（`PUT /api/me/draft`）。ログイン必須だが無制限の口は残さない。編集中は 2 秒ごとに保存するので、書き込み枠（30/分）では足りずこちらを使う。
   - `list-404` — 存在しない `/l/:slug`・`/api/lists/:slug`。**見つからなかったときだけ**数えるので、普通の閲覧・共有リンクは何度開いても当たらない（総当たりだけが止まる）。
   - `share` / `share-bot` — 共有画像の生成（R2 ミス時のみ）。リンクプレビューのクローラは投稿直後に一斉に来るので人のブラウザと枠を分ける。UA は詐称できるので素通しにはしない。
@@ -216,6 +216,7 @@ npx wrangler secret put AMAZON_ASSOCIATE_TAG --env dev
 | 対象 | 保持 | キーに含むもの | TTL 以外の無効化 |
 |---|---|---|---|
 | `GET /api/search` | 60 分 | 検索語・offset・表示世代 | 管理者の変更（世代） |
+| `GET /api/suggest` | 60 分 | 入力中の語・表示世代 | 管理者の変更（世代） |
 | `GET /api/series/:id/volumes` | 60 秒 | シリーズ id・表示世代 | 手動追加 / 補完取得（その colo）・管理者の変更 |
 | `GET /api/public-lists` | 新着 60 秒 / アクセス数順 5 分 | sort・page | 公開・更新（その colo の 1 ページ目） |
 | `GET /api/ranking` `/api/site-stats` `/api/sales-ranking` | 60 秒 | — | — |
@@ -251,6 +252,7 @@ npm run dev
 `http://localhost:8787/` でエディタが開く。
 
 - `GET /api/search?q=<タイトル>` — シリーズ検索（ローカル MADB マスタ）。カードは `version`（版表示）と `first_year`（初版の発行年）も返す（下記「同名の版違いの見分け」）
+- `GET /api/suggest?q=<入力中の語>` — 検索欄の入力補完。前方一致する作品名を最大 8 件返す（`{q, suggestions: string[]}`）。読み（かな）・記号抜きの綴り・管理者が直した名前でも引ける。専用の前方一致索引 `series_suggest` を引くので検索本体より桁違いに軽い。`src/suggest.ts` / `public/suggest.js`
 - `GET /api/series/:id/volumes` — シリーズの全巻一覧（巻順）
 - `POST /api/lists` — リスト作成 `{owner_name, items[], slug?}` → `{slug, edit_token}`。`slug` は任意（英数字・ハイフン・アンダースコアのみ、15文字以内）。未指定ならランダム10文字。既存と衝突すると `409`
 - `GET /api/lists/:slug` — リスト取得
@@ -259,6 +261,7 @@ npm run dev
 - `GET /api/ranking` — 本が追加されている回数ランキング。巻(ISBN)単位・選んだ人数(`COUNT(DISTINCT slug)`)で集計。`{windows:{cumulative,d30,d7,d24}, computed_at}` を返す（各窓 top100）。`src/ranking.ts`。閲覧ページは `/ranking`（`public/ranking.html`）
 - `GET /api/sales-ranking` — 売上ランキング。楽天ブックスのコミック「売れている順」（書籍検索API `sort=sales`）の上位 300 件を毎日 Cron（05:00 JST）で `sales_snapshot` に記録し、作品単位で集計する。日ごとの順位をポイント（1 位 = 300pt）にし、同じ日の同じ作品は最高順位だけを数える。`{windows:{day,d7,d30,year}, latest_day, first_day, year, computed_at}` を返す（各窓 top100）。作品名は楽天の書名から巻数・版の表記を除いたもので、シリーズ / まとまり（G-id）へ書名で寄せて巻一覧へのリンクにする（寄せ先が無い作品はトップの検索 `/?q=<作品名>` へのリンク）。`src/salesRanking.ts`。閲覧ページは `/sales-ranking`（`public/sales-ranking.html`）
 - `GET /api/circulation` — 発行部数ランキング。英語版 Wikipedia「List of best-selling manga」（累計 2000 万部以上の約 200 作品）から取り込んだ累計発行部数を部数の降順で返す。`{entries, source, computed_at}`。各作品は日本語の作品名でシリーズ / まとまりへ寄せて巻一覧へのリンクにし、寄せ先が無い作品はトップの検索 `/?q=<作品名>` へ。元データは取り込みでしか変わらないので `meta.circulation_ranking_json` に materialize し、TTL では作り直さない。`src/circulation.ts`。閲覧ページは `/circulation`（`public/circulation.html`）。取り込み元の記事は CC BY-SA 4.0 で、出典・ライセンス・改変はページ内に表示し、`/terms` の無断複製の禁止からこの一覧を適用除外にしている
+- `POST /api/admin/suggest/rebuild` — 入力補完の前方一致索引（`series_suggest`）を今のマスタ・結合・シリーズ名の修正から作り直す（`{ok, rows}`）。ふだんは月次取り込みが作り直すので、管理者の修正をすぐ候補に反映したいときだけ。管理画面「概要」から押せる
 - `GET /api/admin/circulation` — 管理画面「発行部数ランキング」用。取り込み件数・取り込んだ版（oldid）・リンク付き件数・巻一覧へのリンクが付かなかった作品を返す
 - `POST /api/admin/circulation/recompute` — 作品名 → シリーズの寄せと表紙を付け直す（取り込み直した後・シリーズを結合した後に）
 - `POST /api/admin/circulation/suggest` — 寄せ先の指定が無い作品を自動照合して `circulation_link` に `source='suggested'` で入れる（手動指定は触らない）。`?overwrite=1` を付けると `'suggested'` の行も付け直す（マスタを取り込み直したあと用）
@@ -403,6 +406,7 @@ MADB の取り込みでは成年コミック（MADB の `schema:contentRating` �
 - `lists` — `slug`(PK), `edit_token`, `owner_name`, `items_json`, `created_at`, `updated_at`
 - `series` — MADB シリーズ。`id`(PK, C-id), `name`, `name_norm`, `name_kana`, `name_kana_norm`, `name_search`(検索専用。全角半角を寄せて記号を落とした書名、`src/util.ts` `searchKey`), `creator`(代表作者), `creators`(表示用。役割付き全作者), `creators_norm`(検索専用), `publisher`, `label`, `num_items`, `version`(版表示。MADB `schema:version`。下記「同名の版違いの見分け」)
 - `volumes` — MADB 単行本。`isbn`(PK), `series_id`, `volume_number`, `vol_sort`, `title`, `subtitle`(巻の副題。MADB `schema:alternateName`), `title_search`(検索専用、`name_search` と同じ変換), `creator`, `creators`, `creators_norm`, `publisher`, `label`, `pubdate`
+- `series_suggest` — 検索欄の入力補完（サジェスト）の前方一致索引。`(key, series_id)`(PK), `name`(候補として出す表示名), `name_key`(表示名の揺れを畳むキー), `weight`(並び順＝巻数), `is_adult`。シリーズ 1 件につき「引ける綴り」1 つで 1 行（`name_norm` / `name_search` / `name_kana_norm` の読みを 1 つずつ / 管理者が直した名前）。実データで 24.5 万行・約 29MB。`LIKE 'q%'` は SQLite の LIKE 最適化が ASCII にしか効かず全表走査になるので、`key >= q AND key < q+(最大符号位置)` のレンジで引く。中身は月次取り込み（`scripts/ingest.mjs` `SUGGEST_SQL`）が `series` / `volumes` と一緒に作り直し、管理者の結合・名前修正のあとは管理画面「概要」の「サジェスト索引の再構築」で作り直す。`src/suggest.ts`、`db/add-series-suggest.sql`。
 - `volume_master_fix` — 上流（MADB）が壊している巻の**マスタ行の差し替え**。列は `volumes` と同じ並び（`isbn`(PK) 〜 `is_adult`）＋ `note`(根拠のメモ), `created_at`, `prev_json`(差し替える前のマスタ行。取り消しの戻し先。`NULL` = 上流に無い巻を足したので取り消しでは消す)。MADB は巻の ISBN 自体を取り違えていることがあり（`9784063129502` は『Rave』9 巻なのに『超感電少女モナ』の巻として登録されている）、表示名だけの上書き（`volume_title_override`）ではシリーズ・巻番号・著者・発行日が直らないので、マスタ行そのものを置き換える。管理画面「マスタ行の修正」で編集し、保存時にその場で `volumes` へ当てる。`volumes` は月次取り込みで作り直されるので、取り込みの最後に `INSERT OR REPLACE` で載せ直す（`scripts/ingest.mjs` の `APPLY_MASTER_FIX_SQL`）。`src/masterFix.ts`、`db/add-volume-master-fix.sql`。
 - `series_tag` — シリーズ個別のタグ（`label_tag` より優先）。`series_id`(PK, C-id / U-id / G-id), `tag`, `created_at`, `updated_at`。`tag` が `''` の行は「タグ無し」を**明示する上書き**で、レーベル由来の印を打ち消す（行が無い＝レーベルに従う、と区別するため NULL ではなく空文字）。`src/labels.ts` の `effectiveTagSql` が `COALESCE(series_tag, label_tag)` で解決し、検索とシリーズ詳細のクエリに畳み込む。`db/add-series-tag.sql`。
 - `series_tag_request` — 閲覧者からのタグの申請。`(series_id, tag)`(PK), `report_count`, `first_reported_at`, `last_reported_at`。シリーズ名の通報・結合/分離依頼と同じ collect-only で、件数を積むだけ。全体への反映は管理者が「シリーズのタグの申請」で確定したときだけ。

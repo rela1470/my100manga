@@ -220,6 +220,24 @@ CREATE INDEX IF NOT EXISTS idx_volumes_series ON volumes (series_id, vol_sort);
 -- シリーズ無しの巻だけの部分索引。取り込みの SWAP_SQL でも張り直す。
 CREATE INDEX IF NOT EXISTS idx_volumes_unlinked_title ON volumes (title, label) WHERE series_id IS NULL;
 
+-- 検索欄の入力補完（サジェスト）用の前方一致索引。シリーズ 1 件につき「引ける綴り」1 つで 1 行
+-- （書名 name_norm / 記号無視の name_search / 読み name_kana_norm（複数あれば 1 つずつ）/ 管理者が
+-- 直した名前）。/api/suggest（src/suggest.ts）が (key, series_id) の主キーをレンジで引く。
+-- LIKE 'q%' は SQLite の LIKE 最適化が ASCII にしか効かず「ドラゴ%」で全表走査になるため、
+-- key >= q AND key < q+(最大符号位置) のレンジで引く。実データで 24.5 万行・約 29MB。
+-- 中身は月次取り込み（scripts/ingest.mjs SUGGEST_SQL）が series / volumes と一緒に作り直す。
+-- 管理者の結合・名前修正のあとは管理画面の「サジェスト索引の再構築」で作り直す。
+-- 作り方は src/suggest.ts SUGGEST_BUILD_SQL と db/add-series-suggest.sql と揃える。
+CREATE TABLE IF NOT EXISTS series_suggest (
+  key       TEXT NOT NULL,     -- 前方一致で引く綴り（normTitle / searchKey / 読み のいずれか）
+  series_id TEXT NOT NULL,     -- C-id / U-id / G-id
+  name      TEXT NOT NULL,     -- 候補として出す表示名（上書き > 表示用名 > マスタ名）
+  name_key  TEXT NOT NULL,     -- 表示名の揺れを畳むキー（「ONE PIECE」と「One piece」を 1 つに）
+  weight    INTEGER NOT NULL,  -- 並び順に使う巻数
+  is_adult  INTEGER NOT NULL DEFAULT 0,  -- R18版の既定の絞り込み用（本家は常に 0）
+  PRIMARY KEY (key, series_id)
+) WITHOUT ROWID;
+
 -- 成年向けとして取り込みから外した巻（MADB の schema:contentRating「成年コミック」等。scripts/ingest.mjs
 -- isAdult）。巻自体は volumes に入れず、ISBN 検索・追加・公開で「成年向けの作品は、こちらのサイトでは
 -- 追加できません。」と明示するためだけに持つ（src/adult.ts findAdultIsbns）。月次取り込みで series /

@@ -2123,3 +2123,32 @@ button.copied { border-color: var(--ok-strong); color: var(--ok-strong); }
 .mfix-source dt { color: var(--muted); flex: 0 0 72px; }
 .mfix-source dd { margin: 0; word-break: break-word; }
 
+
+/* ── 検索欄の入力補完（public/suggest.js）──────────────────────────────────
+   候補の一覧は <body> 直下に position:fixed で置き、入力欄の位置に合わせる（入力欄を包む要素を
+   足すと、トップのツールバー・検索モーダル・管理画面の既存 flex レイアウトが崩れるため）。
+   モーダル（z-index 1000 台）の上に出す必要があるので z-index はそれより大きく取る。 */
+.suggest-list {
+  position: fixed;
+  z-index: 3000;
+  overflow-y: auto;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  box-shadow: 0 10px 24px rgba(22, 32, 46, .14);
+  padding: 4px;
+}
+.suggest-list[hidden] { display: none; }
+.suggest-item {
+  padding: 8px 10px;
+  border-radius: 8px;
+  font-size: 14px;
+  line-height: 1.4;
+  color: var(--text);
+  cursor: pointer;
+  /* 長い書名は折り返さず省略する（候補が縦に伸びて選びにくくならないよう） */
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.suggest-item.on { background: var(--panel-2); }

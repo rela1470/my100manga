@@ -1,4 +1,5 @@
 import { handleSearch, handleLiveSearch } from "./search";
+import { handleSuggest, rebuildSuggest } from "./suggest";
 import {
   cachedSeriesVolumes,
   getMasterUpdatedAt,
@@ -229,7 +230,9 @@ const worker = {
             ? url.searchParams.get("refresh") === "1" ? "covers" : "book"
             : path === "/api/search"
               ? "search"
-              : path === "/api/cover-candidates" || path === "/api/volume-candidates"
+              : path === "/api/suggest"
+                ? "suggest"
+                : path === "/api/cover-candidates" || path === "/api/volume-candidates"
                   ? "candidates"
                   : path === "/api/public-lists"
                     ? "public-lists"
@@ -274,6 +277,10 @@ const worker = {
       // --- API ---
       if (path === "/api/search" && request.method === "GET") {
         return await handleSearch(request, env);
+      }
+      // 検索欄の入力補完（前方一致の候補。src/suggest.ts）。
+      if (path === "/api/suggest" && request.method === "GET") {
+        return await handleSuggest(request, env);
       }
       // 現在のデプロイ版を返す。開きっぱなしの SPA タブがこれを見て、自分が読み込んだ版
       // （<meta app-version>）と食い違ったら「新しい版」バナーを出す。see public/app.js
@@ -513,6 +520,11 @@ const worker = {
       // 寄せ先の確定（series_id: 文字列 = そこへ寄せる / "" = 寄せない / null = 自動に戻す）。
       if (path === "/api/admin/circulation/link" && request.method === "POST") {
         return await adminCirculationLink(env, await readJsonBody(request, MAX_JSON_BODY));
+      }
+      // サジェストの前方一致索引（series_suggest）を今の master から作り直す。ふだんは月次の
+      // 取り込みが作り直すので、管理者が結合・名前修正をした分を今すぐ候補に反映したいとき用。
+      if (path === "/api/admin/suggest/rebuild" && request.method === "POST") {
+        return json({ ok: true, rows: await rebuildSuggest(env) }, 200, { "cache-control": "no-store" });
       }
       // 表紙・書誌キャッシュの暖機（公開前。scripts/warm-cache.mjs が繰り返し叩く）。
       if (path === "/api/admin/warm" && request.method === "GET") {

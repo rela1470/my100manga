@@ -43,6 +43,15 @@
     <!-- 概要 -->
     <section class="admin-page" id="page-dashboard" hidden>
       <div class="stat-grid" id="statGrid"></div>
+
+      <!-- 検索欄の入力補完（サジェスト）の前方一致索引。ふだんは月次の取り込みが作り直すので、
+           結合・シリーズ名の修正をした分を今すぐ候補に反映したいときだけ押す。 -->
+      <div class="toolbar">
+        <strong>サジェスト索引</strong>
+        <div style="flex:1"></div>
+        <button id="suggestRebuild">再構築</button>
+      </div>
+      <p class="hint">検索欄の入力補完に出す候補（作品名の前方一致）を、今のマスタ・結合・シリーズ名の修正から作り直します。月次の取り込みでも自動で作り直されます。</p>
     </section>
 
     <!-- 通報（自由入力の監査） -->
@@ -1015,6 +1024,7 @@
   <script src="/ui-dialog.js"></script>
   <script src="/cover-fit.js"></script>
   <script src="/book-detail.js"></script>
+  <script src="/suggest.js"></script>
   <script src="/admin.js"></script>
 </body>
 </html>

@@ -113,6 +113,51 @@ const APPLY_MASTER_FIX_SQL = [
     "creator, creators, creators_norm, publisher, label, pubdate, is_adult FROM volume_master_fix;",
 ];
 
+// サジェストの並び順に使う巻数。結合（series_merge）で吸収された側の巻は吸収先の数に足す。
+const VOL_COUNT_SQL =
+  "SELECT COALESCE(m.target_id, v.series_id) AS sid, COUNT(*) AS n FROM volumes v " +
+  "LEFT JOIN series_merge m ON m.absorbed_id = v.series_id WHERE v.series_id IS NOT NULL GROUP BY sid";
+
+// 検索欄の入力補完（サジェスト）の前方一致索引 series_suggest を、入れ替えた master から作り直す。
+// 1 シリーズにつき「引ける綴り」1 つで 1 行（書名 / 記号無視の書名 / 読み（複数なら 1 つずつ）/
+// 管理者が直した名前）。読みは "onepiece|ワンピース" と "|" 繋ぎで入っているので再帰 CTE で開く
+// （塊のまま前方一致させると、ローマ字別名を先に持つ主要作がカナ入力で出てこない）。
+// 行は D1 側で作る（JS から 24 万行を流すと remote への書き込みがその分増えるため）。
+// db/add-series-suggest.sql と src/suggest.ts SUGGEST_BUILD_SQL と同じもの（3 か所を揃える）。
+// 紐付け・マスタ行の修正・成年向けの除外より後に流す: ここが最終の series / volumes。
+const SUGGEST_SQL = [
+  "CREATE TABLE IF NOT EXISTS series_suggest (key TEXT NOT NULL, series_id TEXT NOT NULL, name TEXT NOT NULL, " +
+    "name_key TEXT NOT NULL, weight INTEGER NOT NULL, is_adult INTEGER NOT NULL DEFAULT 0, " +
+    "PRIMARY KEY (key, series_id)) WITHOUT ROWID;",
+  "DELETE FROM series_suggest;",
+  "INSERT OR REPLACE INTO series_suggest (key, series_id, name, name_key, weight, is_adult) " +
+    "SELECT key, series_id, name, LOWER(REPLACE(REPLACE(name, ' ', ''), '\u3000', '')), weight, is_adult FROM (" +
+    "SELECT CASE t.i WHEN 1 THEN s.name_norm WHEN 2 THEN s.name_search " +
+    "WHEN 3 THEN NULLIF(o.name_norm, '') WHEN 4 THEN NULLIF(o.name_search, '') END AS key, " +
+    "s.id AS series_id, COALESCE(o.name, s.name_display, s.name) AS name, vc.n AS weight, s.is_adult AS is_adult " +
+    "FROM series s JOIN (" + VOL_COUNT_SQL + ") vc ON vc.sid = s.id " +
+    "LEFT JOIN series_name_override o ON o.series_id = s.id " +
+    "JOIN (SELECT 1 AS i UNION ALL SELECT 2 UNION ALL SELECT 3 UNION ALL SELECT 4) t " +
+    "WHERE s.id NOT IN (SELECT absorbed_id FROM series_merge)) WHERE key IS NOT NULL AND key <> '';",
+  "INSERT OR REPLACE INTO series_suggest (key, series_id, name, name_key, weight, is_adult) " +
+    "WITH RECURSIVE live AS (SELECT s.id, COALESCE(o.name, s.name_display, s.name) AS name, " +
+    "s.name_kana_norm AS kana, s.is_adult FROM series s " +
+    "LEFT JOIN series_name_override o ON o.series_id = s.id " +
+    "WHERE COALESCE(s.name_kana_norm, '') <> '' AND s.id NOT IN (SELECT absorbed_id FROM series_merge)), " +
+    "kana(id, rest, part) AS (SELECT id, kana || '|', '' FROM live UNION ALL " +
+    "SELECT id, substr(rest, instr(rest, '|') + 1), substr(rest, 1, instr(rest, '|') - 1) FROM kana WHERE rest <> ''), " +
+    "vc AS (" + VOL_COUNT_SQL + ") " +
+    "SELECT k.part, l.id, l.name, LOWER(REPLACE(REPLACE(l.name, ' ', ''), '\u3000', '')), vc.n, l.is_adult " +
+    "FROM kana k JOIN live l ON l.id = k.id JOIN vc ON vc.sid = l.id WHERE k.part <> '';",
+  "INSERT OR REPLACE INTO series_suggest (key, series_id, name, name_key, weight, is_adult) " +
+    "SELECT key, series_id, name, LOWER(REPLACE(REPLACE(name, ' ', ''), '\u3000', '')), 1, " +
+    "COALESCE((SELECT v.is_adult FROM volumes v WHERE v.isbn = substr(series_id, 2)), 0) FROM (" +
+    "SELECT CASE t.i WHEN 1 THEN NULLIF(o.name_norm, '') WHEN 2 THEN NULLIF(o.name_search, '') END AS key, " +
+    "o.series_id AS series_id, o.name AS name FROM series_name_override o " +
+    "JOIN (SELECT 1 AS i UNION ALL SELECT 2) t " +
+    "WHERE NOT EXISTS (SELECT 1 FROM series s WHERE s.id = o.series_id)) WHERE key IS NOT NULL AND key <> '';",
+];
+
 // Blue-green cutover. RENAMEs are instant metadata ops, so the window where the live
 // `series`/`volumes` names point at anything other than a fully-loaded table is
 // negligible. Old tables are dropped first to free the global index names, then the
@@ -147,6 +192,7 @@ const SWAP_SQL = [
   PRUNE_SUPPLEMENT_SQL,
   ...APPLY_LINKS_SQL,
   ...APPLY_MASTER_FIX_SQL,
+  ...SUGGEST_SQL,
 ].join(" ");
 
 function parseArgs(argv) {

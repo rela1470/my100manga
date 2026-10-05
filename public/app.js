@@ -1462,6 +1462,11 @@ function topSearch() {
 // オンにすると all=1 を付けて絞り込みを外す。本家ではトグル自体を出さないので常に素の URL。
 let searchAllAges = false;
 
+/** サジェスト（public/suggest.js）に渡す追加のクエリ。検索と同じく R18版の絞り込みを合わせる。 */
+function suggestParams() {
+  return searchAllAges ? "all=1" : "";
+}
+
 function searchUrl(q, offset) {
   let u = `/api/search?q=${encodeURIComponent(q)}`;
   if (offset != null) u += `&offset=${offset}`;
@@ -1591,6 +1596,14 @@ function buildRetryForm() {
   btn.textContent = "検索";
   row.appendChild(input);
   row.appendChild(btn);
+  // 入力補完。候補を選んだら、下の submit と同じ経路で検索し直す。
+  attachSuggest(input, {
+    onPick: (name) => {
+      $("topSearch").value = name;
+      doSearch(name);
+    },
+    params: suggestParams,
+  });
   row.addEventListener("submit", (e) => {
     e.preventDefault();
     const q = input.value.trim();
@@ -4410,6 +4423,8 @@ function resetCopyButton(btn) {
 function wireEvents() {
   $("topSearchBtn").addEventListener("click", topSearch);
   $("topSearch").addEventListener("keydown", (e) => { if (e.key === "Enter" && !e.isComposing) topSearch(); });
+  // 入力補完（public/suggest.js）。候補を選んだらそのまま検索する。
+  attachSuggest($("topSearch"), { onPick: () => topSearch(), params: suggestParams });
   $("fetchCovers").addEventListener("click", fetchMissingCovers);
   wireShareX($("shareXPost"), $("shareXImage"), () => ({ slug: shareSlug, owner: state.owner }));
   $("fixMissing").addEventListener("click", startFixMissing);

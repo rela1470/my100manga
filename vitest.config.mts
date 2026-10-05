@@ -25,6 +25,11 @@ export default defineConfig(async () => {
   cpSync("db/schema.sql", join(dir, "0000_schema.sql"));
   const schema = await readD1Migrations(dir);
 
+  // サジェストの索引を作る SQL は、Worker（src/suggest.ts）・月次取り込み（scripts/ingest.mjs）・
+  // migration（db/add-series-suggest.sql）の 3 か所に同じものがある。テストは Workers ランタイムで
+  // 動いて node:fs が無いので、ここで読んで渡し、test/suggest.test.ts が突き合わせる。
+  const { SUGGEST_SQL } = await import("./scripts/ingest.mjs");
+
   return {
     plugins: [
       cloudflareTest({
@@ -33,6 +38,8 @@ export default defineConfig(async () => {
           // .dev.vars の個人の鍵は使わない（外部 API を叩かない・Turnstile なし・admin バイパスなし）。
           bindings: {
             TEST_SCHEMA: schema,
+            TEST_SUGGEST_SQL_INGEST: SUGGEST_SQL,
+            TEST_SUGGEST_SQL_FILE: readFileSync("db/add-series-suggest.sql", "utf8"),
             RAKUTEN_APP_ID: "",
             RAKUTEN_ACCESS_KEY: "",
             YAHOO_APP_ID: "",

@@ -4278,37 +4278,40 @@ async function setCircLink(article, seriesId, confirmMsg) {
 // ー 画面から押せると、確かめずに全部を入れ直してしまいやすいため。
 async function runCirculationSuggest(btn) {
   if (!(await uiConfirm("指定の無い作品を自動照合して埋めます。手動で指定したものは変わりません。"))) return;
-  await postCirculation("/api/admin/circulation/suggest", btn, "取り込み中…（1分ほど）", (d) =>
-    `${d.added} 件を埋めました（既存の指定 ${d.kept} 件はそのまま）。リンク付き ${d.linked} / ${d.works}。`
+  await postAdminAction(
+    "/api/admin/circulation/suggest",
+    btn,
+    "取り込み中…（1分ほど）",
+    (d) => `${d.added} 件を埋めました（既存の指定 ${d.kept} 件はそのまま）。リンク付き ${d.linked} / ${d.works}。`,
+    loadCirculation
   );
 }
 
 async function runCirculationRecompute(btn) {
-  await postCirculation("/api/admin/circulation/recompute", btn, "集計中…（1分ほど）", (d) =>
-    `${d.works} 作品を集計し、${d.linked} 件に巻一覧へのリンクが付きました。`
+  await postAdminAction(
+    "/api/admin/circulation/recompute",
+    btn,
+    "集計中…（1分ほど）",
+    (d) => `${d.works} 作品を集計し、${d.linked} 件に巻一覧へのリンクが付きました。`,
+    loadCirculation
   );
 }
 
 // サジェストの前方一致索引（series_suggest）の作り直し。取り込みと同じ SQL を D1 の中で流すので、
-// 押してから数秒かかる（13 万シリーズ → 24 万行）。
+// 押してから数秒かかる（13 万シリーズ → 24 万行）。失敗しても今の索引はそのまま残る
+// （src/suggest.ts が shadow テーブルに作ってから入れ替えるため）。
 async function rebuildSuggestIndex(btn) {
-  const orig = btn.textContent;
-  btn.disabled = true;
-  btn.textContent = "再構築中…";
-  try {
-    const res = await fetch("/api/admin/suggest/rebuild", { method: "POST" });
-    const data = await res.json().catch(() => ({}));
-    if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
-    uiAlert(`サジェスト索引を作り直しました（${data.rows} 行）。`);
-  } catch (e) {
-    uiAlert("失敗しました: " + e.message);
-  } finally {
-    btn.disabled = false;
-    btn.textContent = orig;
-  }
+  await postAdminAction(
+    "/api/admin/suggest/rebuild",
+    btn,
+    "再構築中…",
+    (d) => `サジェスト索引を作り直しました（${d.rows} 行）。`
+  );
 }
 
-async function postCirculation(url, btn, busyLabel, message) {
+// 押している間だけボタンを潰す admin の POST 1 回。応答の JSON から出す文言を message(data) で
+// 受け取り、終わったら after()（表の読み直しなど。要らなければ省略）を走らせる。
+async function postAdminAction(url, btn, busyLabel, message, after) {
   const orig = btn.textContent;
   btn.disabled = true;
   btn.textContent = busyLabel;
@@ -4317,7 +4320,7 @@ async function postCirculation(url, btn, busyLabel, message) {
     const data = await res.json().catch(() => ({}));
     if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
     uiAlert(message(data));
-    await loadCirculation();
+    if (after) await after();
   } catch (e) {
     uiAlert("失敗しました: " + e.message);
   } finally {

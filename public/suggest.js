@@ -17,16 +17,23 @@
   const CLASS = "suggest-list";
   let uid = 0; // 候補の要素 id（aria-activedescendant 用）の通し番号
 
+  /** 何もしない取っ手（欄が無い等で付けられなかったとき。呼び出し側で null 判定をさせない）。 */
+  const NOOP = { refresh() {}, detach() {} };
+
   /** 入力欄にサジェストを付ける。
    *  @param {HTMLInputElement} input
    *  @param {{ onPick: (name: string) => void, params?: () => string }} opts
    *    onPick … 候補を選んだとき（欄には既に名前が入っている）
-   *    params … /api/suggest に足すクエリ文字列（R18版の「全年齢も含める」など。"all=1" 形式） */
+   *    params … /api/suggest に足すクエリ文字列（R18版の「全年齢も含める」など。"all=1" 形式）
+   *  @returns {{ refresh: () => void, detach: () => void }}
+   *    refresh … params の中身が変わったとき、開いている候補を引き直す
+   *    detach  … 欄を捨てるときに呼ぶ（箱と listener を片付ける） */
   function attachSuggest(input, opts) {
-    if (!input || !opts || typeof opts.onPick !== "function") return;
+    if (!input || !opts || typeof opts.onPick !== "function") return NOOP;
 
     const boxId = "suggest-" + ++uid;
     const box = document.createElement("div");
+    box.id = boxId;
     box.className = CLASS;
     box.setAttribute("role", "listbox");
     box.hidden = true;
@@ -44,6 +51,9 @@
     input.setAttribute("role", "combobox");
     input.setAttribute("aria-autocomplete", "list");
     input.setAttribute("aria-expanded", "false");
+    // 候補の箱は入力欄の子孫ではない（<body> / <dialog> 直下）ので、aria-controls で
+    // 結び付けないと aria-activedescendant の参照先が宙に浮く。
+    input.setAttribute("aria-controls", boxId);
 
     function close() {
       if (box.hidden) return;
@@ -194,8 +204,10 @@
     // 走るので（capture を付けても同じ）、呼び出し側が先に付けた Enter の検索を横取りできない。
     // capture なら必ず先に動き、候補を選んでいるときだけ stopPropagation で止められる。
     function onKeydown(e) {
-      if (e.target !== input) return;
+      // 生存確認を先にする: 欄が消えたインスタンスは e.target が一致しないので、
+      // 順番が逆だといつまでも片付かない（0 件の再検索フォームのように作り直される欄）。
       if (!alive()) return;
+      if (e.target !== input) return;
       if (e.isComposing) return; // 変換中の Enter は確定であって決定ではない
       if (box.hidden || !items.length) {
         // 閉じているときの Escape は呼び出し側（モーダルを閉じる等）に渡す。
@@ -233,6 +245,17 @@
     function onResize() { if (alive() && !box.hidden) place(); }
     window.addEventListener("scroll", onScroll, true);
     window.addEventListener("resize", onResize);
+
+    return {
+      // 絞り込み（R18版の「全年齢も含める」）が変わったとき用。出ている候補は古い条件のものなので
+      // 引き直す。閉じているときは次の打鍵で正しい条件で引かれるので何もしない。
+      refresh() {
+        if (!alive() || box.hidden) return;
+        lastQuery = "";
+        schedule();
+      },
+      detach: teardown,
+    };
   }
 
   window.attachSuggest = attachSuggest;

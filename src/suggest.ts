@@ -26,7 +26,8 @@ import { getViewEpoch } from "./viewSnapshot";
 export const SUGGEST_MIN = 2;
 /** 返す候補の数。縦に並べて画面を埋めない程度。 */
 const SUGGEST_LIMIT = 8;
-/** 受け付ける検索語の長さの上限（これより長い入力は切って引く）。 */
+/** 受け付ける検索語の長さの上限（これより長い入力は切って引く）。コードポイントで数える
+ *  （String#slice だとサロゲートペアの片割れだけが残り、どの綴りにも当たらない語になる）。 */
 const Q_MAX = 40;
 // 候補はマスタの作り直しか管理者の再構築でしか変わらないので、検索（1 時間）と同じだけ持たせる。
 // 鍵に表示データの世代（src/viewSnapshot.ts）を混ぜてあるので、管理者の操作のあとは鍵が変わる。
@@ -50,25 +51,32 @@ const VOL_COUNT_SQL = `SELECT COALESCE(m.target_id, v.series_id) AS sid, COUNT(*
         WHERE v.series_id IS NOT NULL
         GROUP BY sid`;
 
-/** series_suggest を今の series / volumes / series_name_override / series_merge から作り直す SQL。
- *  db/add-series-suggest.sql と scripts/ingest.mjs の SUGGEST_SQL が同じものを持つ（3 か所を揃える）。
- *  どの文も冪等（作り直しなので何度流しても同じ結果）。 */
-export const SUGGEST_BUILD_SQL: string[] = [
-  `CREATE TABLE IF NOT EXISTS series_suggest (
-     key       TEXT NOT NULL,
+/** series_suggest の列（db/schema.sql と揃える）。 */
+const SUGGEST_COLS = `key       TEXT NOT NULL,
      series_id TEXT NOT NULL,
      name      TEXT NOT NULL,
      name_key  TEXT NOT NULL,
      weight    INTEGER NOT NULL,
      is_adult  INTEGER NOT NULL DEFAULT 0,
-     PRIMARY KEY (key, series_id)
-   ) WITHOUT ROWID;`,
-  `DELETE FROM series_suggest;`,
+     PRIMARY KEY (key, series_id)`;
+
+/** series_suggest を今の series / volumes / series_name_override / series_merge から作り直す SQL。
+ *  db/add-series-suggest.sql と scripts/ingest.mjs の SUGGEST_SQL が同じものを持つ（3 か所を揃える。
+ *  ずれたら test/suggest.test.ts が落ちる）。どの文も冪等（作り直しなので何度流しても同じ結果）。
+ *
+ *  いったん series_suggest_new に作ってから RENAME で今の表と入れ替える（取り込みの SWAP_SQL と
+ *  同じ手）。DELETE してから入れ直す作りだと、途中で失敗したときに空の表が残って候補が無言で
+ *  消える（public/suggest.js は失敗を握り潰すので画面には何も出ない）。WITHOUT ROWID の主キー
+ *  しか持たない表なので、入れ替えのあとに張り直す索引は無い。 */
+export const SUGGEST_BUILD_SQL: string[] = [
+  `DROP TABLE IF EXISTS series_suggest_new;`,
+  `CREATE TABLE series_suggest_new (${SUGGEST_COLS}) WITHOUT ROWID;`,
   // 書名の綴り（マスタの name_norm / name_search と、管理者が直した名前の同じ 2 つ）。
   // 1 行を 4 つの綴りに開くため、1..4 の小さな表と直積を取って CASE で選ぶ。
   // weight（並び順）は巻数。結合されたシリーズ（series_merge）の巻は吸収先に足して数え、
   // 吸収された側は候補から外す（検索結果に出ないものを候補に出さない）。
-  `INSERT OR REPLACE INTO series_suggest (key, series_id, name, name_key, weight, is_adult)
+  // 4 つの綴りは同じになることがある（記号の無い書名では name_norm = name_search）ので OR REPLACE。
+  `INSERT OR REPLACE INTO series_suggest_new (key, series_id, name, name_key, weight, is_adult)
    SELECT key, series_id, name, ${nameKeySql("name")}, weight, is_adult FROM (
      SELECT CASE t.i WHEN 1 THEN s.name_norm
                      WHEN 2 THEN s.name_search
@@ -87,7 +95,7 @@ export const SUGGEST_BUILD_SQL: string[] = [
   // 読みの綴り。name_kana_norm は "onepiece|ワンピース" のように読みを "|" で繋いだ塊なので
   // （『ONE PIECE』はカナの読みが 2 つ目にある）、再帰 CTE で 1 つずつ行に開く。これをせずに
   // 塊のまま前方一致させると、ローマ字別名を先に持つ主要作がカナ入力で出てこない。
-  `INSERT OR REPLACE INTO series_suggest (key, series_id, name, name_key, weight, is_adult)
+  `INSERT OR REPLACE INTO series_suggest_new (key, series_id, name, name_key, weight, is_adult)
    WITH RECURSIVE
      live AS (
        SELECT s.id, COALESCE(o.name, s.name_display, s.name) AS name, s.name_kana_norm AS kana, s.is_adult
@@ -107,7 +115,7 @@ export const SUGGEST_BUILD_SQL: string[] = [
   // 直した名前だけが手掛かりの作品 — 『Dr.スランプ』のジャンプ・コミックス版など）。
   // 巻数は数えようがないので weight = 1（候補の末尾）。成年向けの印は、まとまりの正規 ID が
   // 持つ ISBN の巻から引く（R18版の既定の絞り込みに使う）。
-  `INSERT OR REPLACE INTO series_suggest (key, series_id, name, name_key, weight, is_adult)
+  `INSERT OR REPLACE INTO series_suggest_new (key, series_id, name, name_key, weight, is_adult)
    SELECT key, series_id, name, ${nameKeySql("name")}, 1,
           COALESCE((SELECT v.is_adult FROM volumes v WHERE v.isbn = substr(series_id, 2)), 0)
      FROM (
@@ -117,6 +125,13 @@ export const SUGGEST_BUILD_SQL: string[] = [
        JOIN (SELECT 1 AS i UNION ALL SELECT 2) t
       WHERE NOT EXISTS (SELECT 1 FROM series s WHERE s.id = o.series_id))
     WHERE key IS NOT NULL AND key <> '';`,
+  // 入れ替え。ここまでに失敗していれば今の series_suggest はそのまま（候補は古いまま出続ける）。
+  // 初回・まだ表が無い DB でも RENAME できるよう、空の表を作ってから入れ替える。
+  `CREATE TABLE IF NOT EXISTS series_suggest (${SUGGEST_COLS}) WITHOUT ROWID;`,
+  `DROP TABLE IF EXISTS series_suggest_old;`,
+  `ALTER TABLE series_suggest RENAME TO series_suggest_old;`,
+  `ALTER TABLE series_suggest_new RENAME TO series_suggest;`,
+  `DROP TABLE series_suggest_old;`,
 ];
 
 /** series_suggest を作り直す。管理画面の「サジェスト索引の再構築」から呼ぶ。 */
@@ -129,7 +144,7 @@ export async function rebuildSuggest(env: Env): Promise<number> {
 /** GET /api/suggest?q=…（R18版は all=1 で全年齢も含める）。候補の書名だけを返す。 */
 export async function handleSuggest(request: Request, env: Env): Promise<Response> {
   const url = new URL(request.url);
-  const q = (url.searchParams.get("q") ?? "").trim().slice(0, Q_MAX);
+  const q = [...(url.searchParams.get("q") ?? "").trim()].slice(0, Q_MAX).join("");
   // 短すぎる語は候補を出さない（1 文字では当たりが数千件になり、絞り込みの役に立たない）。
   // 検索と違ってエラーにはしない: 入力の途中で毎回 400 を返しても意味が無いので空で返す。
   if (q.length < SUGGEST_MIN) return json({ q, suggestions: [] }, 200, { "cache-control": "no-store" });
@@ -176,5 +191,8 @@ async function suggestNames(env: Env, q: string, adultOnly: boolean): Promise<Re
 
 function suggestResponse(q: string, suggestions: string[]): Response {
   // 候補は誰が引いても同じ公開データなので、ブラウザにも少し持たせる（打ち直し・後退で引き直さない）。
+  // 応答に付く cf-cache-status: HIT は下の withEdgeCache（鍵に表示データの世代が入る）のもので、
+  // 世代の入らない CDN の URL キャッシュではない（実測: 一度も叩いていない別 URL でも、
+  // normTitle が同じなら HIT が返る）。索引を作り直せば世代が変わって確実に外れる。
   return json({ q, suggestions }, 200, { "cache-control": "public, max-age=600" });
 }

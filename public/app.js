@@ -976,11 +976,21 @@ function focusTopSearch() {
   input.focus({ preventScroll: true });
 }
 
+// 付けていないサジェストの取っ手の代わり（null 判定をあちこちに書かないため）。
+const NO_SUGGEST = { refresh() {}, detach() {} };
+// 今出ている再検索フォーム（buildRetryForm）のサジェスト。clearResults で片付ける。
+let retrySuggest = NO_SUGGEST;
+
 // Empties the modal body, the series title under the heading (searchSubtitle), the
 // header bar under it (searchBar: 巻一覧の「検索結果へ戻る」「全N巻を追加」) and the
 // footer slot (searchActions) that holds the current view's 表紙を取得 button, so
 // none of them outlives the view it belongs to.
 function clearResults() {
+  // 0 件のときの再検索フォーム（buildRetryForm）に付けたサジェストは、この欄と同じ寿命。
+  // 箱と document / window の listener を明示的に片付ける（残しても自己修復はするが、
+  // 検索をやり直すたびに増えるのを次のスクロールまで待たない）。
+  retrySuggest.detach();
+  retrySuggest = NO_SUGGEST;
   $("searchActions").innerHTML = "";
   const hbar = $("searchBar");
   hbar.innerHTML = "";
@@ -1462,6 +1472,9 @@ function topSearch() {
 // オンにすると all=1 を付けて絞り込みを外す。本家ではトグル自体を出さないので常に素の URL。
 let searchAllAges = false;
 
+/** トップの検索欄のサジェストの取っ手（全年齢トグルで候補を引き直す）。wireEvents で入る。 */
+let topSuggest = NO_SUGGEST;
+
 /** サジェスト（public/suggest.js）に渡す追加のクエリ。検索と同じく R18版の絞り込みを合わせる。 */
 function suggestParams() {
   return searchAllAges ? "all=1" : "";
@@ -1481,6 +1494,7 @@ function initAllAges() {
   bar.hidden = false;
   box.addEventListener("change", () => {
     searchAllAges = box.checked;
+    topSuggest.refresh(); // 出ている候補は古い絞り込みのものなので引き直す
     if (lastQuery) doSearch(lastQuery); // 同じ語で引き直す
   });
 }
@@ -1597,7 +1611,7 @@ function buildRetryForm() {
   row.appendChild(input);
   row.appendChild(btn);
   // 入力補完。候補を選んだら、下の submit と同じ経路で検索し直す。
-  attachSuggest(input, {
+  retrySuggest = attachSuggest(input, {
     onPick: (name) => {
       $("topSearch").value = name;
       doSearch(name);
@@ -4424,7 +4438,7 @@ function wireEvents() {
   $("topSearchBtn").addEventListener("click", topSearch);
   $("topSearch").addEventListener("keydown", (e) => { if (e.key === "Enter" && !e.isComposing) topSearch(); });
   // 入力補完（public/suggest.js）。候補を選んだらそのまま検索する。
-  attachSuggest($("topSearch"), { onPick: () => topSearch(), params: suggestParams });
+  topSuggest = attachSuggest($("topSearch"), { onPick: () => topSearch(), params: suggestParams });
   $("fetchCovers").addEventListener("click", fetchMissingCovers);
   wireShareX($("shareXPost"), $("shareXImage"), () => ({ slug: shareSlug, owner: state.owner }));
   $("fixMissing").addEventListener("click", startFixMissing);

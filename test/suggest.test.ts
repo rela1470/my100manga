@@ -2,7 +2,7 @@ import { SELF } from "cloudflare:test";
 import { env } from "cloudflare:workers";
 import { beforeAll, describe, expect, it } from "vitest";
 import { BROWSER_UA, makeIsbns } from "./helpers";
-import { rebuildSuggest } from "../src/suggest";
+import { rebuildSuggest, SUGGEST_BUILD_SQL } from "../src/suggest";
 import { bumpViewEpoch } from "../src/viewSnapshot";
 import type { Env } from "../src/types";
 
@@ -137,5 +137,29 @@ describe("series_suggest の作り直し", () => {
   it("作り直しは何度流しても同じ（行数が増えない）", async () => {
     const rows = await rebuildSuggest(suggestEnv);
     expect(await rebuildSuggest(suggestEnv)).toBe(rows);
+  });
+});
+
+// src/suggest.ts（Worker の再構築）・scripts/ingest.mjs（月次取り込み）・db/add-series-suggest.sql
+// （migration）の 3 か所に、同じ索引を作る SQL が複製されている（TS からは .mjs も .sql も
+// 共有できないため）。ずれると「取り込み直したら候補の中身が変わる」類の、気付きにくい食い違いに
+// なるので、文単位で突き合わせる。コメントと空白・括弧まわりの体裁は無視する。
+function sqlStatements(sql: string): string[] {
+  return sql
+    .replace(/--[^\n]*/g, "")
+    .split(";")
+    .map((s) => s.replace(/\s+/g, " ").replace(/\s*([(),])\s*/g, "$1").trim())
+    .filter(Boolean);
+}
+
+describe("索引を作る SQL の複製（3 か所を揃える）", () => {
+  const worker = sqlStatements(SUGGEST_BUILD_SQL.join("\n"));
+
+  it("scripts/ingest.mjs の SUGGEST_SQL と一致する", () => {
+    expect(sqlStatements(env.TEST_SUGGEST_SQL_INGEST.join("\n"))).toEqual(worker);
+  });
+
+  it("db/add-series-suggest.sql と一致する", () => {
+    expect(sqlStatements(env.TEST_SUGGEST_SQL_FILE)).toEqual(worker);
   });
 });

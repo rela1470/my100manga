@@ -225,8 +225,10 @@ CREATE INDEX IF NOT EXISTS idx_volumes_unlinked_title ON volumes (title, label) 
 -- 直した名前）。/api/suggest（src/suggest.ts）が (key, series_id) の主キーをレンジで引く。
 -- LIKE 'q%' は SQLite の LIKE 最適化が ASCII にしか効かず「ドラゴ%」で全表走査になるため、
 -- key >= q AND key < q+(最大符号位置) のレンジで引く。実データで 24.5 万行・約 29MB。
--- 中身は月次取り込み（scripts/ingest.mjs SUGGEST_SQL）が series / volumes と一緒に作り直す。
--- 管理者の結合・名前修正のあとは管理画面の「サジェスト索引の再構築」で作り直す。
+-- 中身は月次取り込み（scripts/ingest.mjs SUGGEST_SQL）が series / volumes を入れ替えた直後に
+-- 作り直す。管理者の結合・名前修正のあとは管理画面の「サジェスト索引の再構築」で作り直す。
+-- どちらも series_suggest_new に作ってから RENAME で入れ替えるので、途中で失敗しても
+-- 今の索引は残る（空の表が残って候補が無言で消えることがない）。
 -- 作り方は src/suggest.ts SUGGEST_BUILD_SQL と db/add-series-suggest.sql と揃える。
 CREATE TABLE IF NOT EXISTS series_suggest (
   key       TEXT NOT NULL,     -- 前方一致で引く綴り（normTitle / searchKey / 読み のいずれか）

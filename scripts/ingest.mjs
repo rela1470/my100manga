@@ -36,6 +36,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { execFileSync } from "node:child_process";
+import { pathToFileURL } from "node:url";
 import { parser } from "stream-json";
 import { pick } from "stream-json/filters/pick.js";
 import { streamArray } from "stream-json/streamers/stream-array.js";
@@ -118,19 +119,25 @@ const VOL_COUNT_SQL =
   "SELECT COALESCE(m.target_id, v.series_id) AS sid, COUNT(*) AS n FROM volumes v " +
   "LEFT JOIN series_merge m ON m.absorbed_id = v.series_id WHERE v.series_id IS NOT NULL GROUP BY sid";
 
+// series_suggest の列（db/schema.sql と揃える）。
+const SUGGEST_COLS =
+  "key TEXT NOT NULL, series_id TEXT NOT NULL, name TEXT NOT NULL, name_key TEXT NOT NULL, " +
+  "weight INTEGER NOT NULL, is_adult INTEGER NOT NULL DEFAULT 0, PRIMARY KEY (key, series_id)";
+
 // 検索欄の入力補完（サジェスト）の前方一致索引 series_suggest を、入れ替えた master から作り直す。
 // 1 シリーズにつき「引ける綴り」1 つで 1 行（書名 / 記号無視の書名 / 読み（複数なら 1 つずつ）/
 // 管理者が直した名前）。読みは "onepiece|ワンピース" と "|" 繋ぎで入っているので再帰 CTE で開く
 // （塊のまま前方一致させると、ローマ字別名を先に持つ主要作がカナ入力で出てこない）。
 // 行は D1 側で作る（JS から 24 万行を流すと remote への書き込みがその分増えるため）。
-// db/add-series-suggest.sql と src/suggest.ts SUGGEST_BUILD_SQL と同じもの（3 か所を揃える）。
-// 紐付け・マスタ行の修正・成年向けの除外より後に流す: ここが最終の series / volumes。
-const SUGGEST_SQL = [
-  "CREATE TABLE IF NOT EXISTS series_suggest (key TEXT NOT NULL, series_id TEXT NOT NULL, name TEXT NOT NULL, " +
-    "name_key TEXT NOT NULL, weight INTEGER NOT NULL, is_adult INTEGER NOT NULL DEFAULT 0, " +
-    "PRIMARY KEY (key, series_id)) WITHOUT ROWID;",
-  "DELETE FROM series_suggest;",
-  "INSERT OR REPLACE INTO series_suggest (key, series_id, name, name_key, weight, is_adult) " +
+// db/add-series-suggest.sql と src/suggest.ts SUGGEST_BUILD_SQL と同じもの（3 か所を揃える。
+// ずれたら test/suggest.test.ts が落ちる）。
+// series_suggest_new に作ってから RENAME で入れ替えるので、途中で失敗しても今の表は残る。
+// SWAP_SQL とは別に、swap が終わったあとに流す（24.5 万行の書き込みを swap と同じ命令に
+// 相乗りさせない。失敗しても swap 済みの series / volumes は巻き添えにならない）。
+export const SUGGEST_SQL = [
+  "DROP TABLE IF EXISTS series_suggest_new;",
+  `CREATE TABLE series_suggest_new (${SUGGEST_COLS}) WITHOUT ROWID;`,
+  "INSERT OR REPLACE INTO series_suggest_new (key, series_id, name, name_key, weight, is_adult) " +
     "SELECT key, series_id, name, LOWER(REPLACE(REPLACE(name, ' ', ''), '\u3000', '')), weight, is_adult FROM (" +
     "SELECT CASE t.i WHEN 1 THEN s.name_norm WHEN 2 THEN s.name_search " +
     "WHEN 3 THEN NULLIF(o.name_norm, '') WHEN 4 THEN NULLIF(o.name_search, '') END AS key, " +
@@ -139,7 +146,7 @@ const SUGGEST_SQL = [
     "LEFT JOIN series_name_override o ON o.series_id = s.id " +
     "JOIN (SELECT 1 AS i UNION ALL SELECT 2 UNION ALL SELECT 3 UNION ALL SELECT 4) t " +
     "WHERE s.id NOT IN (SELECT absorbed_id FROM series_merge)) WHERE key IS NOT NULL AND key <> '';",
-  "INSERT OR REPLACE INTO series_suggest (key, series_id, name, name_key, weight, is_adult) " +
+  "INSERT OR REPLACE INTO series_suggest_new (key, series_id, name, name_key, weight, is_adult) " +
     "WITH RECURSIVE live AS (SELECT s.id, COALESCE(o.name, s.name_display, s.name) AS name, " +
     "s.name_kana_norm AS kana, s.is_adult FROM series s " +
     "LEFT JOIN series_name_override o ON o.series_id = s.id " +
@@ -149,13 +156,18 @@ const SUGGEST_SQL = [
     "vc AS (" + VOL_COUNT_SQL + ") " +
     "SELECT k.part, l.id, l.name, LOWER(REPLACE(REPLACE(l.name, ' ', ''), '\u3000', '')), vc.n, l.is_adult " +
     "FROM kana k JOIN live l ON l.id = k.id JOIN vc ON vc.sid = l.id WHERE k.part <> '';",
-  "INSERT OR REPLACE INTO series_suggest (key, series_id, name, name_key, weight, is_adult) " +
+  "INSERT OR REPLACE INTO series_suggest_new (key, series_id, name, name_key, weight, is_adult) " +
     "SELECT key, series_id, name, LOWER(REPLACE(REPLACE(name, ' ', ''), '\u3000', '')), 1, " +
     "COALESCE((SELECT v.is_adult FROM volumes v WHERE v.isbn = substr(series_id, 2)), 0) FROM (" +
     "SELECT CASE t.i WHEN 1 THEN NULLIF(o.name_norm, '') WHEN 2 THEN NULLIF(o.name_search, '') END AS key, " +
     "o.series_id AS series_id, o.name AS name FROM series_name_override o " +
     "JOIN (SELECT 1 AS i UNION ALL SELECT 2) t " +
     "WHERE NOT EXISTS (SELECT 1 FROM series s WHERE s.id = o.series_id)) WHERE key IS NOT NULL AND key <> '';",
+  `CREATE TABLE IF NOT EXISTS series_suggest (${SUGGEST_COLS}) WITHOUT ROWID;`,
+  "DROP TABLE IF EXISTS series_suggest_old;",
+  "ALTER TABLE series_suggest RENAME TO series_suggest_old;",
+  "ALTER TABLE series_suggest_new RENAME TO series_suggest;",
+  "DROP TABLE series_suggest_old;",
 ];
 
 // Blue-green cutover. RENAMEs are instant metadata ops, so the window where the live
@@ -192,7 +204,6 @@ const SWAP_SQL = [
   PRUNE_SUPPLEMENT_SQL,
   ...APPLY_LINKS_SQL,
   ...APPLY_MASTER_FIX_SQL,
-  ...SUGGEST_SQL,
 ].join(" ");
 
 function parseArgs(argv) {
@@ -1020,6 +1031,12 @@ async function main() {
   log("swap shadow tables into place");
   execWrangler(envArgs, targetFlag, "--command", SWAP_SQL);
 
+  // サジェストの前方一致索引。swap が終わった series / volumes から作り直す（24.5 万行の
+  // 書き込みなので swap と同じ命令には相乗りさせない。ここで失敗しても swap 済みの master は
+  // 無事で、管理画面の「サジェスト索引の再構築」か、このファイルだけ流し直せば復旧できる）。
+  log("rebuild suggest index");
+  execWrangler(envArgs, targetFlag, "--command", SUGGEST_SQL.join(" "));
+
   // Record dump provenance so the UI can show "マスター更新". released_at is the MADB
   // release date (preferred); imported_at is when this ingest ran (fallback).
   const metaRows = [
@@ -1144,7 +1161,11 @@ function execWrangler(envArgs, targetFlag, ...args) {
   );
 }
 
-main().catch((err) => {
-  console.error("[ingest] FAILED:", err);
-  process.exit(1);
-});
+// node scripts/ingest.mjs として起動されたときだけ走らせる。test/suggest.test.ts が
+// SUGGEST_SQL を import して src/suggest.ts・db/add-series-suggest.sql と突き合わせるため。
+if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
+  main().catch((err) => {
+    console.error("[ingest] FAILED:", err);
+    process.exit(1);
+  });
+}

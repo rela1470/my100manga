@@ -97,6 +97,22 @@ const APPLY_LINKS_SQL = [
     "AND series_id IS (SELECT l.from_series_id FROM volume_series_link l WHERE l.isbn = volumes.isbn);",
 ];
 
+// Re-apply admin-confirmed master-row fixes (see db/schema.sql volume_master_fix — keep in sync):
+// 上流が ISBN を取り違えている巻のマスタ行を、確定済みの正しい行で丸ごと差し替える。行は全列
+// 揃っている前提なので COALESCE で混ぜない。INSERT OR REPLACE なので、上流に無い ISBN（取り違えで
+// 消えた側の巻）は新しい行として入る。列の並びは VOLUMES_COLS と揃える。
+// 紐付け（APPLY_LINKS_SQL）より後に当てる: シリーズも含めてここが最終の値。
+const APPLY_MASTER_FIX_SQL = [
+  "CREATE TABLE IF NOT EXISTS volume_master_fix (isbn TEXT PRIMARY KEY, series_id TEXT, volume_number TEXT, " +
+    "vol_sort INTEGER, title TEXT NOT NULL, subtitle TEXT, title_search TEXT, creator TEXT, creators TEXT, " +
+    "creators_norm TEXT, publisher TEXT, label TEXT, pubdate TEXT, is_adult INTEGER NOT NULL DEFAULT 0, " +
+    "note TEXT NOT NULL DEFAULT '', created_at INTEGER NOT NULL);",
+  "INSERT OR REPLACE INTO volumes (isbn, series_id, volume_number, vol_sort, title, subtitle, title_search, " +
+    "creator, creators, creators_norm, publisher, label, pubdate, is_adult) " +
+    "SELECT isbn, series_id, volume_number, vol_sort, title, subtitle, title_search, " +
+    "creator, creators, creators_norm, publisher, label, pubdate, is_adult FROM volume_master_fix;",
+];
+
 // Blue-green cutover. RENAMEs are instant metadata ops, so the window where the live
 // `series`/`volumes` names point at anything other than a fully-loaded table is
 // negligible. Old tables are dropped first to free the global index names, then the
@@ -130,6 +146,7 @@ const SWAP_SQL = [
   "CREATE TABLE IF NOT EXISTS series_supplement (series_id TEXT PRIMARY KEY, volumes_json TEXT NOT NULL, checked_at INTEGER NOT NULL);",
   PRUNE_SUPPLEMENT_SQL,
   ...APPLY_LINKS_SQL,
+  ...APPLY_MASTER_FIX_SQL,
 ].join(" ");
 
 function parseArgs(argv) {

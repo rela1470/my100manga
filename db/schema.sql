@@ -493,6 +493,50 @@ CREATE TABLE IF NOT EXISTS volume_series_link (
 );
 CREATE INDEX IF NOT EXISTS idx_volume_series_link_series ON volume_series_link (series_id);
 
+-- ── 上流（MADB）が壊している巻のマスタ行を丸ごと差し替える ─────────────────
+-- MADB の巻は ISBN 自体を取り違えていることがある。実例: 9784063129502 は実際には
+-- 『Rave』9 巻（真島ヒロ / 講談社コミックス / 2001-03。openBD・NDLサーチで確認）だが、MADB は
+-- これを『超感電少女モナ』（安野モヨコ / 講談社コミックスフレンドB / 1994-04-13）の ISBN として
+-- 登録している。モナの正しい ISBN は 9784063029505（4-06-302950-6）で、1 桁の取り違え
+-- （302950 → 312950）。この 1 行のせいで Rave は 9 巻が欠番になり、その ISBN を手で足そうとしても
+-- 「別シリーズの巻の ISBN は採らない」規則（src/corrections.ts ownersOfOtherSeries）に弾かれる。
+--
+-- 読み出し時の上書き（volume_title_override / series_name_override）では足りない: 間違っているのは
+-- 表示名だけでなく シリーズ・巻番号・著者・発行日の全部で、巻一覧・リスト表示・詳細（src/book.ts は
+-- マスタの creator / pubdate を楽天より優先）とどれも別経路で読む。そこでマスタ行そのものを正す。
+-- volumes は月次取り込みで作り直されるので、この表を正本として取り込みの最後に載せ直す
+-- （scripts/ingest.mjs の APPLY_MASTER_FIX_SQL — keep in sync）。
+--
+-- 行は「直した後のマスタ行そのもの」。部分指定ではなく全列を書く（上流の値は信用しないので
+-- COALESCE で混ぜない）。INSERT OR REPLACE なので、上流に無い ISBN（取り違えで消えた側の巻）は
+-- 新しい行として入る。列は volumes と同じ並びで揃える（scripts/ingest.mjs の VOLUMES_COLS）。
+--
+-- 注意:
+--   ・成年向けの巻は入れない。本家の DB には成年向けの行が 1 行も無い前提（ingest が
+--     adult_volumes へ落とす）で、この表は本家にもそのまま載せ直すため。
+--   ・行は消さない方向の仕組み。巻を消す/隠すのは volume_hidden。
+--   ・volume_series_link より後に当てる（シリーズの紐付けも含めてここが最終の値）。
+--   ・DEV_RESET_TABLES（src/admin.ts の開発用リセット）には入れない。volume_series_link と同じく
+--     管理者が確定したマスタ整形データで、取り込みで作り直せないため。
+CREATE TABLE IF NOT EXISTS volume_master_fix (
+  isbn          TEXT PRIMARY KEY,  -- 直す（または足す）巻の ISBN13
+  series_id     TEXT,
+  volume_number TEXT,
+  vol_sort      INTEGER,
+  title         TEXT NOT NULL,
+  subtitle      TEXT,
+  title_search  TEXT,              -- searchKey(title)（src/util.ts）。検索の照合に使う
+  creator       TEXT,
+  creators      TEXT,
+  creators_norm TEXT,
+  publisher     TEXT,
+  label         TEXT,
+  pubdate       TEXT,
+  is_adult      INTEGER NOT NULL DEFAULT 0,
+  note          TEXT NOT NULL DEFAULT '',  -- なぜ直したか・根拠（openBD / NDLサーチ 等）
+  created_at    INTEGER NOT NULL
+);
+
 -- 閲覧者の「シリーズが分かれている？」依頼。series_report と同じ collect-only 方針で、
 -- 全体反映は管理者の確定まで行わない。ペアは (series_a < series_b) に正規化して 1 行、
 -- 繰り返しの依頼は report_count を増やす。管理者は 結合（series_merge を書いて行を消す）

@@ -173,6 +173,7 @@
 //   preventDefault しなければ背景クリックと同じ扱いにする（各モーダルの既存の閉じ処理に乗る）。
 //   背景クリックで閉じないモーダル（公開後の共有モーダル等）は modal-escape を受けて自前で処理する。
 // - 閉じたとき: 開く前にフォーカスがあった要素へ戻す。
+// - ブラウザバック: 開いている間だけ履歴を積み、戻る操作で最前面から閉じる（下の syncHistory）。
 // ui-dialog（uiAlert 等）や share-x.js のパネル（.ui-dialog-backdrop）も重なり順と Tab の
 // 循環・フォーカスの戻しには含めるが、フォーカス移動と Esc はそれぞれが自前で行う。
 (function () {
@@ -251,10 +252,84 @@
     }
   });
 
+  // ブラウザバック（スマホの「戻る」）でモーダルを閉じる。開いている数だけ同じ URL の履歴を
+  // 積み、その深さを state の __modal に書いておく。戻る操作ではその深さまで最前面から順に
+  // 閉じ、画面内のボタンで閉じたときは積んだぶんを history.go で戻して履歴に残さない。
+  // 閉じ方はモーダルごとに違うので、Esc を投げて各自の閉じ処理（上の keydown 経由の
+  // modal-escape / 背景クリック扱い、ui-dialog や share-x の自前 keydown）に乗せる。共有
+  // モーダルのように確認を挟んですぐ閉じないものは開いたままになるので、履歴を積み直す。
+  const OPEN = ".modal-backdrop.open, .ui-dialog-backdrop.open";
+  let pushed = 0; // 自分が積んだ履歴の数
+  let awaitingPop = false; // history.go を頼んで popstate 待ち
+  let popTimer = 0;
+
+  const openCount = () => document.querySelectorAll(OPEN).length;
+  const markedDepth = () => (history.state && history.state.__modal) || 0;
+
+  // 最前面の開いているモーダル。開いた順を覚えている stack の最後を使う。stack に無いもの
+  // （開いた状態で作られて body の末尾に足されるダイアログ。account.js）はそれより後なので優先する。
+  function topOpen() {
+    const open = [...document.querySelectorAll(OPEN)];
+    if (!open.length) return null;
+    const unknown = open.filter((el) => !stack.some((s) => s.el === el));
+    if (unknown.length) return unknown[unknown.length - 1];
+    for (let i = stack.length - 1; i >= 0; i--) {
+      if (stack[i].el.classList.contains("open")) return stack[i].el;
+    }
+    return open[open.length - 1];
+  }
+
+  // 開いている数と積んだ履歴の数を合わせる。開閉のたびに呼ぶ（class 変化の監視から）。
+  // history.go は非同期なので、戻している最中は何もしない（着地した popstate でやり直す）。
+  // 数合わせを重ねて要求すると、戻りすぎて前のページまで出てしまう。
+  function syncHistory() {
+    if (awaitingPop) return;
+    const open = openCount();
+    while (pushed < open) {
+      const next = pushed + 1;
+      try {
+        history.pushState(Object.assign({}, history.state, { __modal: next }), "");
+      } catch (e) {
+        break; // 積めないとき（ブラウザの連打制限など）は数を増やさない
+      }
+      pushed = next;
+    }
+    if (pushed > open) {
+      const back = pushed - open;
+      pushed = open;
+      awaitingPop = true;
+      // 戻る先が無く popstate が来ない場合に備えて、少し待って解除する。
+      clearTimeout(popTimer);
+      popTimer = setTimeout(() => {
+        awaitingPop = false;
+        syncHistory();
+      }, 500);
+      history.go(-back);
+    }
+  }
+
+  addEventListener("popstate", () => {
+    awaitingPop = false;
+    clearTimeout(popTimer);
+    pushed = markedDepth();
+    while (openCount() > pushed) {
+      const el = topOpen();
+      if (!el) break;
+      const before = openCount();
+      el.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true }));
+      if (openCount() >= before) break; // 閉じなかった（確認を挟むモーダル等）
+    }
+    syncHistory();
+  });
+
   function start() {
     document.querySelectorAll(MODAL).forEach(decorate);
+    // 読み込み直しで残った目印は消す。残すと、戻る操作がモーダルを閉じたうえに前のページまで
+    // 進んでしまう（閉じた状態で読み込み直した履歴に深さだけが残るため）。
+    if (markedDepth()) history.replaceState(Object.assign({}, history.state, { __modal: 0 }), "");
     new MutationObserver((records) => {
       for (const r of records) {
+        if (r.type !== "attributes") continue;
         const el = r.target;
         if (!(el instanceof Element) || !el.matches(ANY)) continue;
         const open = el.classList.contains("open");
@@ -262,7 +337,16 @@
         if (open && !known) onOpen(el);
         else if (!open && known) onClose(el);
       }
-    }).observe(document.body, { subtree: true, attributes: true, attributeFilter: ["class"] });
+      syncHistory();
+    }).observe(document.body, {
+      subtree: true,
+      attributes: true,
+      attributeFilter: ["class"],
+      // class の付け外しではなく、開いた状態で作って消すダイアログ（account.js）もあるので、
+      // 履歴の数合わせのために出し入れも見る（上のループは属性変化だけを扱う）。
+      childList: true,
+    });
+    syncHistory(); // 読み込んだ時点で開いているモーダル（URL から開くもの）のぶん
   }
 
   if (document.readyState === "loading") {

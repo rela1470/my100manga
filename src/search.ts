@@ -9,7 +9,7 @@ import { attributeTitles, buildGroup, groupKey, resolveGroup, GroupRow, GroupVol
 import { edgeCacheKey, withEdgeCache } from "./edgeCache";
 import { getViewEpoch } from "./viewSnapshot";
 import { ADULT_BLOCK_MESSAGE, adultBlockMessage, findAdultIsbns, hasAdultTitleMatch } from "./adult";
-import { attachLabelTags, tagsForLabels } from "./labels";
+import { tagsForLabels } from "./labels";
 
 interface SeriesResult {
   series_id: string;
@@ -20,6 +20,7 @@ interface SeriesResult {
   label: string;
   // レーベルに付いた運営のタグ（"廉価版" / "文庫版" / 付いていなければ ""）。マスタには
   // この区別が無く、レーベル名を鍵に label_tag が持つ（src/labels.ts）。カードの書名に添える。
+  // SERIES_COLS の相関サブクエリで引くので、検索に D1 の往復は増えない。
   label_tag: string;
   // 版表示（MADB schema:version。「新装版」「大判」…）。同名の版違いが別シリーズとして
   // 並ぶので、あればカードの書名に添える。無い版も多いので label / first_year で補う。
@@ -43,6 +44,7 @@ interface SeriesRow {
   creators: string | null;
   publisher: string | null;
   label: string | null;
+  label_tag: string | null;
   version: string | null;
   first_pubdate: string | null;
   first_isbn: string | null;
@@ -85,6 +87,7 @@ const VOL_COUNT = `((SELECT COALESCE(SUM(MAX(nsub, 1)), 0) FROM (
          + COALESCE((SELECT COUNT(*) FROM series_correction sc
                       WHERE sc.series_id IN ${MEMBERS}), 0))`;
 const SERIES_COLS = `s.id, COALESCE(o.name, s.name) AS name, s.publisher, s.label, s.version,
+        (SELECT t.tag FROM label_tag t WHERE t.label = s.label) AS label_tag,
         (SELECT MIN(NULLIF(v.pubdate, '')) FROM volumes v WHERE v.series_id IN ${MEMBERS}) AS first_pubdate,
         COALESCE((SELECT v.creator FROM volumes v WHERE v.series_id IN ${MEMBERS} AND v.creator != ''
            ORDER BY v.vol_sort, v.pubdate LIMIT 1), s.creator) AS creator,
@@ -114,7 +117,7 @@ function toSeriesResult(r: SeriesRow, covers: Map<string, string>): SeriesResult
     creators: r.creators || r.creator || "",
     publisher: r.publisher ?? "",
     label: r.label ?? "",
-    label_tag: "", // attachLabelTags がレーベルの集合で 1 回引いて埋める
+    label_tag: r.label_tag ?? "",
     version: r.version ?? "",
     first_year: (r.first_pubdate ?? "").slice(0, 4),
     volume_count: r.vol_count,
@@ -328,9 +331,6 @@ async function searchByKeyword(env: Env, q: string, offset: number, adultOnly: b
   );
   const results = rows.map((r) => toSeriesResult(r, covers));
   const promoted = promotedRows.map((r) => toSeriesResult(r, covers));
-  // 「廉価版」「文庫版」の印（レーベルへのタグ付け, src/labels.ts）。standalone は
-  // discoverUnlinked の中で付けてある。
-  await attachLabelTags(env, [...results, ...promoted]);
 
   // 書名に検索語を含む成年向けの巻（取り込みで外したもの, adult_volumes）があれば、結果の下に
   // 「成年向けは追加できません」と注記できるよう adult_hits を立てる。1 ページ目だけ見る。
@@ -435,9 +435,7 @@ async function searchByIsbn(env: Env, isbn: string): Promise<Response> {
     .first<SeriesRow>();
   if (!row) return json({ results: [], isbn_miss: true }, 200, headers);
   const covers = await readCachedCovers(env, [row.first_isbn ?? ""]);
-  const card = toSeriesResult(row, covers);
-  await attachLabelTags(env, [card]);
-  return json({ results: [card] }, 200, headers);
+  return json({ results: [toSeriesResult(row, covers)] }, 200, headers);
 }
 
 // A one-volume live card for an ISBN only 楽天ブックス knows (コンビニ版・再編集本 etc. that

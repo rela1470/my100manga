@@ -31,8 +31,16 @@ function normLabel(v: unknown): string {
 // D1 の 1 文へのバインド上限に収まる分割幅。
 const IN_CHUNK = 100;
 
+/** 1 回のまとめて設定で受けるレーベルの上限（管理画面は 1 ページ 50 件なので十分）。 */
+const MAX_BULK = 200;
+
 /** 指定したレーベル名に付いているタグ（レーベル名 → タグ）。付いていないものは入らない。
- *  検索・巻一覧から呼ぶので、表がまだ無い DB（migration 前）でも落とさず空で返す。 */
+ *
+ *  シリーズのカード・巻一覧は、タグを series 行と同じ 1 本の SQL で引いている
+ *  （src/search.ts SERIES_COLS / src/series.ts）。これを使うのは、引くものが series 行では
+ *  なく巻（シリーズ無しの巻のまとまり）で畳み込めない経路だけ: 検索の standalone カードと、
+ *  ISBN 検索・G-id の巻一覧。いずれも D1 の往復が 1 本増えるので、呼ぶ前に対象が空でないか
+ *  （standalone が 0 件でないか）を確かめること。 */
 export async function tagsForLabels(env: Env, labels: Iterable<string>): Promise<Map<string, string>> {
   const out = new Map<string, string>();
   const uniq = [...new Set([...labels].filter(Boolean))];
@@ -48,20 +56,11 @@ export async function tagsForLabels(env: Env, labels: Iterable<string>): Promise
       for (const r of res.results ?? []) out.set(r.label, r.tag);
     }
   } catch (err) {
-    // db/add-label-tag.sql 未適用など。印が出ないだけで検索自体は成立させる。
+    // この経路（まとまりのカード）は印が出ないだけで成立させる。なお検索・巻一覧の本道は
+    // シリーズ行と同じ SQL で引くので、表が無ければそちらは落ちる（db/MIGRATIONS.md）。
     console.error("label tags lookup failed", err);
   }
   return out;
-}
-
-/** 検索カード・巻一覧のカードに label_tag を書き込む。レーベルの集合で 1 回だけ引く。 */
-export async function attachLabelTags<T extends { label: string; label_tag?: string }>(
-  env: Env,
-  cards: T[]
-): Promise<void> {
-  if (!cards.length) return;
-  const tags = await tagsForLabels(env, cards.map((c) => c.label));
-  for (const c of cards) c.label_tag = tags.get(c.label) ?? "";
 }
 
 // ── 管理画面 ────────────────────────────────────────────────────────────────
@@ -114,17 +113,23 @@ export async function adminListLabels(
     .first<{ n: number }>();
 
   // 代表作品は「そのレーベルで巻数の多いシリーズ」を 3 つ。レーベル名だけでは何の廉価版か
-  // 分からないことがあるので、判断材料として出す（1 ページ 50 件ぶんの小さな引き直し）。
+  // 分からないことがあるので、判断材料として出す。
+  // **並べ替えと LIMIT を内側の p で終わらせてから引くこと。** 相関サブクエリを LIMIT と同じ
+  // SELECT に置くと、SQLite は ORDER BY のソートに載せる時点で全行ぶん（7,808 レーベル =
+  // series 13 万行ぶんの読み直し）評価する。内側に押し込めば実際に返す 50 行だけで済む
+  // （ローカル実測で 50ms → 10ms）。
   const { results } = await env.DB.prepare(
-    `${LABEL_GROUPS}
-     SELECT g.label, g.series_count,
-            (SELECT t.tag FROM label_tag t WHERE t.label = g.label) AS tag,
+    `${LABEL_GROUPS},
+     p AS (SELECT g.label, g.series_count FROM g${cond}
+            ORDER BY g.series_count DESC, g.label
+            LIMIT ? OFFSET ?)
+     SELECT p.label, p.series_count,
+            (SELECT t.tag FROM label_tag t WHERE t.label = p.label) AS tag,
             (SELECT group_concat(name, ' / ') FROM
-               (SELECT s2.name FROM series s2 WHERE s2.label = g.label
+               (SELECT s2.name FROM series s2 WHERE s2.label = p.label
                  ORDER BY COALESCE(s2.num_items, 0) DESC, s2.id LIMIT 3)) AS samples
-       FROM g${cond}
-      ORDER BY g.series_count DESC, g.label
-      LIMIT ? OFFSET ?`
+       FROM p
+      ORDER BY p.series_count DESC, p.label`
   )
     .bind(...binds, opts.per, opts.offset)
     .all<LabelRow>();
@@ -161,9 +166,11 @@ export async function adminListLabels(
  *  まとめて付けられるようにしてあるのは、「文庫」で絞って一括で付ける使い方のため。 */
 export async function adminSetLabelTags(env: Env, body: Record<string, unknown>): Promise<Response> {
   const raw = Array.isArray(body.labels) ? body.labels : [body.label];
+  // 重複を落とす前に生の長さで弾く（本文は 256KB まで通るので、数万件を並べて
+  // 正規化だけ走らせることができてしまう）。
+  if (raw.length > MAX_BULK) return badRequest(`一度に指定できるレーベルは ${MAX_BULK} 件までです`);
   const labels = [...new Set(raw.map(normLabel).filter(Boolean))];
   if (!labels.length) return badRequest("レーベルを指定してください");
-  if (labels.length > 200) return badRequest("一度に指定できるレーベルは 200 件までです");
 
   const tag = typeof body.tag === "string" ? body.tag.trim() : "";
   if (tag && !isLabelTag(tag)) return badRequest("不明なタグです");

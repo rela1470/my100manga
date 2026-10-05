@@ -16,7 +16,10 @@ const NAME = "テストレーベルサクヒン";
 const CHEAP = "CL001"; // レーベル KPC（廉価版を付ける）
 const BUNKO = "CL002"; // レーベル 講談社漫画文庫（文庫版を付ける）
 const PLAIN = "CL003"; // レーベル テスト通常コミックス（タグなし）
-const [A, B, C] = makeIsbns(3, 920000);
+const [A, B, C, LOOSE] = makeIsbns(4, 920000);
+// どのシリーズにも属さない巻（series_id IS NULL）。シリーズ行が無いので検索・巻一覧の
+// 本道（SERIES_COLS に畳み込んだ相関サブクエリ）では引けず、tagsForLabels を通る。
+const LOOSE_NAME = "テストマイゴレーベルサクヒン";
 
 const adminEnv = env as unknown as Env;
 const page = { page: 1, per: 50, offset: 0 };
@@ -68,6 +71,15 @@ async function tagOf(label: string): Promise<string | null> {
   return row?.tag ?? null;
 }
 
+async function addLooseVolume(isbn: string, label: string): Promise<void> {
+  await env.DB.prepare(
+    `INSERT OR REPLACE INTO volumes (isbn, series_id, volume_number, vol_sort, title, title_search, creator, label)
+     VALUES (?, NULL, '1', 1, ?, ?, ?, ?)`
+  )
+    .bind(isbn, LOOSE_NAME, LOOSE_NAME, "レーベル作者", label)
+    .run();
+}
+
 beforeAll(async () => {
   await addSeries(CHEAP, "KPC");
   await addSeries(BUNKO, "講談社漫画文庫");
@@ -75,6 +87,7 @@ beforeAll(async () => {
   await addVolume(CHEAP, A, "KPC");
   await addVolume(BUNKO, B, "講談社漫画文庫");
   await addVolume(PLAIN, C, "テスト通常コミックス");
+  await addLooseVolume(LOOSE, "KPC");
   await setTags({ labels: ["KPC", "講談社漫画文庫"], tag: "廉価版" });
   await setTags({ label: "講談社漫画文庫", tag: "文庫版" }); // 付け替え
 });
@@ -98,6 +111,23 @@ describe("レーベルのタグが検索と巻一覧に出る", () => {
     });
     const body = (await res.json()) as { results: Card[] };
     expect(body.results[0]).toMatchObject({ series_id: CHEAP, label_tag: "廉価版" });
+  });
+
+  it("シリーズ無しの巻のまとまりにも出る（tagsForLabels 経由）", async () => {
+    const res = await SELF.fetch(`https://example.com/api/search?q=${LOOSE}`, {
+      headers: { "user-agent": BROWSER_UA },
+    });
+    const body = (await res.json()) as { results: (Card & { unlinked: boolean })[] };
+    expect(body.results[0]).toMatchObject({
+      series_id: `G${LOOSE}`,
+      unlinked: true,
+      label_tag: "廉価版",
+    });
+    // まとまりの巻一覧（G-id）でも同じ印が出る。
+    const vols = await SELF.fetch(`https://example.com/api/series/G${LOOSE}/volumes`, {
+      headers: { "user-agent": BROWSER_UA },
+    });
+    expect((await vols.json()) as { label_tag: string }).toMatchObject({ label_tag: "廉価版" });
   });
 
   it("巻一覧（検索を経由せず開いたとき）にも出る", async () => {

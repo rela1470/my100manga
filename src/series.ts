@@ -28,7 +28,6 @@ import { findSiblingVolumes, SiblingVolume } from "./siblingVolumes";
 import { getCorrectionVolumes } from "./corrections";
 import { resolveMergeTarget, mergeMembers } from "./merge";
 import { isCustomSeriesId, NAME_NORM_PREFIX } from "./groups";
-import { tagsForLabels } from "./labels";
 
 interface VolumeRow {
   isbn: string;
@@ -101,7 +100,9 @@ export async function getSeriesVolumes(
   const members = await mergeMembers(env, targetId);
   const inMembers = members.map(() => "?").join(",");
   const meta = await env.DB.prepare(
-    `SELECT s.id, s.name, s.name_norm, s.creator, s.creators, s.publisher, s.label, s.version, o.name AS override_name
+    `SELECT s.id, s.name, s.name_norm, s.creator, s.creators, s.publisher, s.label, s.version,
+            (SELECT t.tag FROM label_tag t WHERE t.label = s.label) AS label_tag,
+            o.name AS override_name
        FROM series s LEFT JOIN series_name_override o ON o.series_id = s.id
       WHERE s.id = ?`
   )
@@ -114,6 +115,7 @@ export async function getSeriesVolumes(
       creators: string | null;
       publisher: string | null;
       label: string | null;
+      label_tag: string | null;
       version: string | null;
       override_name: string | null;
     }>();
@@ -564,7 +566,8 @@ export async function getSeriesVolumes(
       version: meta.version ?? "",
       // レーベルに付いた運営のタグ（"廉価版" / "文庫版"）。検索カードと同じ印を巻一覧でも出す
       // （巻一覧は検索を経由せずに開ける: /s/:id の直リンク・リスト・本の詳細から）。
-      label_tag: (await tagsForLabels(env, [meta.label ?? ""])).get(meta.label ?? "") ?? "",
+      // 上のシリーズ行と一緒に引いてあるので D1 の往復は増えない。
+      label_tag: meta.label_tag ?? "",
       creator: meta.creator ?? "",
       // 役割付きの全作者表記（"原作：A、作画：B"）。検索カード（search.ts SERIES_COLS）と同じく
       // 先頭巻のものを優先し、無ければシリーズ側。

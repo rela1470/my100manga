@@ -2,7 +2,7 @@ import { SELF } from "cloudflare:test";
 import { env } from "cloudflare:workers";
 import { beforeAll, describe, expect, it } from "vitest";
 import { BROWSER_UA, makeIsbns } from "./helpers";
-import { adminOverrideSeriesName } from "../src/admin";
+import { adminDeleteNameOverride, adminListNameOverrides, adminOverrideSeriesName } from "../src/admin";
 import { handleSearch } from "../src/search";
 import { bumpViewEpoch } from "../src/viewSnapshot";
 import type { Env } from "../src/types";
@@ -194,5 +194,120 @@ describe("R18版では、直した名前での照合にも成年向けの絞り�
     const ids = await adultSearch(FIXED_R18, true);
     expect(ids).toContain(ADULT_GROUP);
     expect(ids).toContain(GENERAL_GROUP);
+  });
+});
+
+// 修正を外す（src/admin.ts adminDeleteNameOverride、管理画面の「修正を外す」）。タグ
+// （廉価版・文庫版・傑作選）が版の違いを言えるようになり、修正名がタグと同じことしか
+// 言っていないときの片付け。表示名はマスターの名前に戻り、直した名前での引き当ても消える。
+describe("修正を外す（series_name_override の削除）", () => {
+  const DROPPED = "CZ903";
+  const DROPPED_MASTER = "試験ハズスマエノナマエ";
+  const DROPPED_FIXED = "試験ハズスナオシタナマエ";
+  const droppedIsbns = makeIsbns(2, 965000);
+
+  // 本番は /api/admin/* ごと Cloudflare Access で守られていて SELF.fetch は 403 になるので、
+  // 他の admin テストと同じくハンドラを直接呼ぶ。
+  function drop(seriesId: string) {
+    return adminDeleteNameOverride(adminEnv, seriesId);
+  }
+
+  beforeAll(async () => {
+    await env.DB.batch([
+      env.DB.prepare(
+        `INSERT OR REPLACE INTO series (id, name, name_norm, name_search, creator, num_items) VALUES (?, ?, ?, ?, ?, ?)`
+      ).bind(DROPPED, DROPPED_MASTER, DROPPED_MASTER, DROPPED_MASTER, CREATOR, 2),
+      ...droppedIsbns.map((isbn, i) =>
+        env.DB.prepare(
+          `INSERT OR REPLACE INTO volumes (isbn, series_id, volume_number, vol_sort, title, title_search, creator)
+           VALUES (?, ?, ?, ?, ?, ?, ?)`
+        ).bind(isbn, DROPPED, String(i + 1), i + 1, DROPPED_MASTER, DROPPED_MASTER, CREATOR)
+      ),
+    ]);
+    await adminOverrideSeriesName(overrideRequest(DROPPED_FIXED), adminEnv, DROPPED);
+    await bumpViewEpoch(env);
+  });
+
+  it("外すと表示名がマスターに戻り、直した名前では当たらなくなる", async () => {
+    // 外す前: 直した名前で引けて、カードもその名前。
+    expect((await search(DROPPED_FIXED)).results.map((r) => r.series_id)).toEqual([DROPPED]);
+
+    const res = await drop(DROPPED);
+    expect(res.status).toBe(200);
+    await bumpViewEpoch(env);
+
+    expect((await search(DROPPED_FIXED)).results).toHaveLength(0);
+    const after = await search(DROPPED_MASTER);
+    expect(after.results.map((r) => r.series_id)).toEqual([DROPPED]);
+    expect(after.results[0].title).toBe(DROPPED_MASTER);
+  });
+
+  it("修正の無いシリーズを外そうとしたら 404", async () => {
+    const res = await drop(DROPPED);
+    expect(res.status).toBe(404);
+  });
+
+  it("まとまり（G-id）の修正も外せる", async () => {
+    expect((await search(FIXED)).results.map((r) => r.series_id)[0]).toBe(GROUP_ID);
+
+    const res = await drop(GROUP_ID);
+    expect(res.status).toBe(200);
+    await bumpViewEpoch(env);
+
+    // 直した名前では当たらなくなり、壊れたままのマスタの書名では従来どおり当たる。
+    expect((await search(FIXED)).results.map((r) => r.series_id)).not.toContain(GROUP_ID);
+    const back = await search(BROKEN);
+    expect(back.results.map((r) => r.series_id)).toContain(GROUP_ID);
+    expect(back.results.find((r) => r.series_id === GROUP_ID)?.title).toBe(BROKEN);
+  });
+});
+
+// 一覧に今のタグを添える（src/admin.ts adminListNameOverrides）。タグができる前の修正は
+// 「○○ 文庫版」のように版の違いを名前へ書き込んでいるので、同じことをバッジが言っていれば
+// 外せる、と管理画面の一覧の上で見分けられるようにしてある。
+describe("修正の一覧に、今そのシリーズに出ているタグを添える", () => {
+  const TAGGED = "CZ904";
+  const TAGGED_LABEL = "試験ブンコレーベル";
+
+  async function listedTag(seriesId: string) {
+    const res = await adminListNameOverrides(adminEnv, { page: 1, per: 200, offset: 0 });
+    const data = (await res.json()) as { overrides: { series_id: string; tag: string; label: string }[] };
+    return data.overrides.find((o) => o.series_id === seriesId);
+  }
+
+  beforeAll(async () => {
+    await env.DB.batch([
+      env.DB.prepare(
+        `INSERT OR REPLACE INTO series (id, name, name_norm, name_search, creator, label, num_items)
+         VALUES (?, ?, ?, ?, ?, ?, 1)`
+      ).bind(TAGGED, "試験タグツキ", "試験タグツキ", "試験タグツキ", CREATOR, TAGGED_LABEL),
+      env.DB.prepare(
+        `INSERT OR REPLACE INTO label_tag (label, tag, created_at, updated_at) VALUES (?, '文庫版', 1, 1)`
+      ).bind(TAGGED_LABEL),
+    ]);
+    await adminOverrideSeriesName(overrideRequest("試験タグツキ 文庫版"), adminEnv, TAGGED);
+  });
+
+  it("レーベルのタグが出ている", async () => {
+    const row = await listedTag(TAGGED);
+    expect(row?.tag).toBe("文庫版");
+    expect(row?.label).toBe(TAGGED_LABEL);
+  });
+
+  it("シリーズ個別の上書き（series_tag）はレーベルのタグより優先する", async () => {
+    await env.DB.prepare(
+      `INSERT OR REPLACE INTO series_tag (series_id, tag, created_at, updated_at) VALUES (?, '廉価版', 1, 1)`
+    )
+      .bind(TAGGED)
+      .run();
+    expect((await listedTag(TAGGED))?.tag).toBe("廉価版");
+
+    // tag = '' は「タグ無し」を明示する上書き。レーベルのタグを打ち消す。
+    await env.DB.prepare(`UPDATE series_tag SET tag = '' WHERE series_id = ?`).bind(TAGGED).run();
+    expect((await listedTag(TAGGED))?.tag).toBe("");
+  });
+
+  it("タグが無ければ空（修正を外すと版の違いを示すものが無くなる印）", async () => {
+    expect((await listedTag(RENAMED))?.tag).toBe("");
   });
 });

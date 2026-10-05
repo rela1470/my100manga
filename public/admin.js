@@ -1345,18 +1345,67 @@ async function loadNameOverrides(page = pageState.nameOverrides) {
     });
     nameLink.addEventListener("click", () => openSeriesVolumes(o.series_id, o.name));
 
+    const drop = el("button", { className: "danger", textContent: "修正を外す" });
+    drop.addEventListener("click", () => dropNameOverride(o, drop));
+
+    // 今このシリーズに出ているタグ。修正名がタグと同じことしか言っていなければ外せる印なので、
+    // 名前の隣にも同じバッジを出して見比べられるようにする。
+    const tagCell = o.tag
+      ? el("td", {}, [
+          el("span", {
+            className: "label-tag",
+            textContent: o.tag,
+            title: o.label ? `レーベル「${o.label}」から。公開側のカードにもこの印が出ます` : "",
+          }),
+        ])
+      : el("td", { className: "muted", textContent: "-" });
+
     body.append(
       el("tr", { dataset: { key: o.series_id } }, [
         el("td", { className: "slug", textContent: o.series_id }),
         el("td", { className: "owner" }, [nameLink]),
         el("td", { className: "muted", textContent: o.current_name || "-" }),
+        tagCell,
         el("td", { textContent: fmtDate(o.created_at) }),
+        el("td", {}, [drop]),
       ])
     );
   }
 
   table.style.display = "";
   renderPager("nameOverridePager", page, total, loadNameOverrides);
+}
+
+/** 修正を外す（series_name_override の行を消す）。表示名はマスターの名前に戻る。
+ *  レーベル/シリーズのタグ（廉価版・文庫版・傑作選）で版の違いが出せるようになり、修正名が
+ *  タグと同じことしか言っていないときの片付け用。修正名は検索の照合にも使っているので
+ *  （db/add-name-override-search.sql）、マスターの書名が壊れていて修正名でしか引けない
+ *  シリーズでは外さないこと。確認ダイアログで戻り先の名前を見せる。 */
+async function dropNameOverride(o, btn) {
+  const back = o.current_name || "（マスターに名前がありません）";
+  const tagNote = o.tag
+    ? `版の違いは「${o.tag}」のタグが引き続き示します。`
+    : "このシリーズにはタグが付いていないので、版の違いを示すものが無くなります。";
+  if (
+    !(await uiConfirm(
+      `「${o.name}」の修正を外し、表示名を「${back}」に戻します。${tagNote}` +
+        `この名前での検索の引き当ても無くなります。よろしいですか？`,
+      { okLabel: "外す" }
+    ))
+  )
+    return;
+  btn.disabled = true;
+  try {
+    const res = await fetch(`/api/admin/series-overrides/${encodeURIComponent(o.series_id)}`, {
+      method: "DELETE",
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
+    await loadNameOverrides(pageState.nameOverrides);
+  } catch (e) {
+    uiAlert("修正を外せませんでした: " + e.message);
+    btn.disabled = false;
+  }
 }
 
 // タイトル修正で確定した巻タイトル上書き（volume_title_override）。

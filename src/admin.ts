@@ -769,22 +769,46 @@ export async function adminOverrideSeriesName(
   return json({ ok: true, series_id: targetId, name });
 }
 
+/** シリーズ名の修正を外す（series_name_override の行を消す）。表示名はマスターの名前
+ *  （series.name_display → series.name、src/util.ts seriesNameSql）に戻る。
+ *  レーベル/シリーズのタグ（src/labels.ts）で版の違いが出せるようになり、修正名が
+ *  「文庫版」「廉価版」のようにタグと同じことしか言っていないときに使う。
+ *  修正名は検索の照合にも使っている（db/add-name-override-search.sql）ので、外すと
+ *  その名前での引き当ても消える。マスターの書名が壊れていて修正名でしか引けない
+ *  シリーズ（『Dr.スランプ』等）では外さないこと。
+ *  通報（series_report）には触らない。外した結果また通報されたら改めてキューに出る。 */
+export async function adminDeleteNameOverride(env: Env, seriesId: string): Promise<Response> {
+  const res = await env.DB.prepare(`DELETE FROM series_name_override WHERE series_id = ?`)
+    .bind(seriesId)
+    .run();
+  if (!(res.meta?.changes ?? 0)) return notFound("名前の修正が見つかりません");
+  return json({ ok: true, series_id: seriesId });
+}
+
 interface AdminNameOverrideRow {
   series_id: string;
   name: string;
   created_at: number;
   current_name: string | null; // series.name の現値（再取り込みでマスターに戻った名前）
+  tag: string | null;          // 今このシリーズに出ているタグ（series_tag → label_tag）
+  label: string | null;        // タグの出どころのレーベル
 }
 
 /** シリーズ名の通報を「名前修正」で確定した履歴（series_name_override）。新しい修正順。
  *  read 時に COALESCE で全閲覧者へ反映される上書き名なので、何をどう直したか（上書き名と
- *  現在のマスター名）を後から確認できるようにする。 */
+ *  現在のマスター名）を後から確認できるようにする。
+ *  今そのシリーズに出ているタグ（series_tag → label_tag、src/labels.ts）も一緒に返す。
+ *  タグができる前の修正には「○○ 文庫版」のように版の違いを名前へ書き込んだものがあり、
+ *  今はバッジが同じことを言っている ＝ 修正を外せる、と一覧の上で見分けられるようにするため。 */
 export async function adminListNameOverrides(env: Env, opts: PageOpts): Promise<Response> {
   const total = await countRows(env, `SELECT COUNT(*) AS n FROM series_name_override`);
   const { results } = await env.DB.prepare(
     `SELECT o.series_id, o.name, o.created_at,
             COALESCE(s.name, (SELECT v.title FROM volumes v
-                               WHERE o.series_id LIKE 'G%' AND v.isbn = substr(o.series_id, 2))) AS current_name
+                               WHERE o.series_id LIKE 'G%' AND v.isbn = substr(o.series_id, 2))) AS current_name,
+            COALESCE((SELECT st.tag FROM series_tag st WHERE st.series_id = o.series_id),
+                     (SELECT lt.tag FROM label_tag lt WHERE lt.label = s.label)) AS tag,
+            s.label AS label
        FROM series_name_override o
        LEFT JOIN series s ON s.id = o.series_id
       ORDER BY o.created_at DESC LIMIT ? OFFSET ?`
@@ -797,6 +821,8 @@ export async function adminListNameOverrides(env: Env, opts: PageOpts): Promise<
     name: r.name,
     created_at: r.created_at,
     current_name: r.current_name ?? "",
+    tag: r.tag ?? "",
+    label: r.label ?? "",
   }));
 
   return json({ overrides, total, page: opts.page, per: opts.per }, 200, { "cache-control": "no-store" });

@@ -54,6 +54,7 @@ import {
   adminDismissSeriesReport,
   adminOverrideSeriesName,
   adminListNameOverrides,
+  adminDeleteNameOverride,
   adminListVolumeTitleReports,
   adminDismissVolumeTitleReport,
   adminOverrideVolumeTitle,
@@ -580,6 +581,12 @@ const worker = {
       // 名前修正で確定したシリーズ名上書きの履歴（series_name_override）。
       if (path === "/api/admin/series-overrides" && request.method === "GET") {
         return await adminListNameOverrides(env, parsePage(url));
+      }
+      // 修正を外す: 上書き行だけ消し、表示名をマスター（name_display → name）に戻す。
+      // タグ（廉価版/文庫版/傑作選）で版の違いが出せるようになった修正の片付けに使う。
+      const adminSeriesOverrideMatch = path.match(/^\/api\/admin\/series-overrides\/([A-Za-z0-9]+)$/);
+      if (adminSeriesOverrideMatch && request.method === "DELETE") {
+        return await adminDeleteNameOverride(env, adminSeriesOverrideMatch[1]);
       }
       const adminSeriesReportMatch = path.match(/^\/api\/admin\/series-reports\/([A-Za-z0-9]+)$/);
       if (adminSeriesReportMatch && request.method === "POST") {

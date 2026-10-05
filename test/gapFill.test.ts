@@ -1,6 +1,7 @@
 import { env } from "cloudflare:workers";
 import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import { findGapFillVolumes } from "../src/gapFill";
+import { getSeriesVolumes } from "../src/series";
 import { rakutenVolumeNumber } from "../src/rakuten";
 import { yahooNameIsVolume } from "../src/yahoo";
 import type { Env } from "../src/types";
@@ -235,5 +236,78 @@ describe("yahooNameIsVolume", () => {
   it("全巻セット・まとめ売りは代表1冊の JAN しか無いので落とす", () => {
     expect(yahooNameIsVolume("[中古]釣りキチ三平 (1-39巻 全巻) 全巻セット", "釣りキチ三平", 1)).toBe(false);
     expect(yahooNameIsVolume("★釣りキチ三平/漫画全巻セット◆C≪全65巻（完結）≫", "釣りキチ三平", 65)).toBe(false);
+  });
+});
+
+// 押すたびに積み上がること（src/series.ts の filledSorts）。Yahoo は 1 巻 1 リクエストで、
+// 1 回の押下で引ける巻数には上限があるので、前回埋めた巻を穴から外さないと毎回同じ先頭の巻を
+// 引き直して先へ進まない。実際に dev で 3・7・12・13 巻から先に進まなくなった。
+describe("取得を押すたびに次の巻へ進む", () => {
+  const ACC = "C900003";
+  const V1 = "9784267902017"; // master が持つ 1 巻
+  const V2 = "9784267902024"; // 1 回目の押下で Yahoo から埋まる 2 巻
+
+  function mockForAcc(): string[] {
+    const asked: string[] = [];
+    vi.spyOn(globalThis, "fetch").mockImplementation(async (input: RequestInfo | URL) => {
+      const url = String(input instanceof Request ? input.url : input);
+      if (url.includes("/sparql")) {
+        // シリーズノードへの厳密結合（穴の確定）だけ答える。書名一致の補完は使わない。
+        const bindings = decodeURIComponent(url).includes("isPartOf")
+          ? [
+              { vol: { value: "1" }, isbn: { value: V1 }, date: { value: "1974-04" } },
+              { vol: { value: "2" }, date: { value: "1974-05" } },
+              { vol: { value: "3" }, date: { value: "1974-06" } },
+            ]
+          : [];
+        return new Response(JSON.stringify({ results: { bindings } }), {
+          headers: { "content-type": "application/json" },
+        });
+      }
+      if (url.includes("openapi.rakuten.co.jp")) {
+        return new Response(JSON.stringify({ pageCount: 1, Items: [] }), {
+          headers: { "content-type": "application/json" },
+        });
+      }
+      if (url.includes("shopping.yahooapis.jp")) {
+        const q = new URL(url).searchParams.get("query")!;
+        asked.push(q);
+        // 2 巻にだけ中古出品がある。3 巻はどちらのストアにも無い。
+        const hits = q.endsWith(" 2") ? [{ janCode: V2, name: `積み上げ試験 2／作者` }] : [];
+        return new Response(JSON.stringify({ hits }), { headers: { "content-type": "application/json" } });
+      }
+      return new Response("{}", { headers: { "content-type": "application/json" } });
+    });
+    return asked;
+  }
+
+  beforeAll(async () => {
+    await env.DB.prepare(
+      `INSERT OR REPLACE INTO series (id, name, name_norm, name_search, creator, publisher)
+       VALUES (?, ?, ?, ?, ?, ?)`
+    )
+      .bind(ACC, "積み上げ試験", "積み上げ試験", "積み上げ試験", "作者", "潮出版社")
+      .run();
+    await env.DB.prepare(
+      `INSERT OR REPLACE INTO volumes (isbn, series_id, volume_number, vol_sort, title, title_search, creator)
+       VALUES (?, ?, ?, ?, ?, ?, ?)`
+    )
+      .bind(V1, ACC, "1", 1, "積み上げ試験", "積み上げ試験", "作者")
+      .run();
+  });
+
+  it("前回埋めた巻は 2 回目の押下で引き直さない", async () => {
+    const asked = mockForAcc();
+    await getSeriesVolumes(yahooEnv, ACC, true);
+    expect(asked).toEqual(["積み上げ試験 2", "積み上げ試験 3"]);
+
+    asked.length = 0;
+    const res = await getSeriesVolumes(yahooEnv, ACC, true);
+    // 2 巻は前回の補完で埋まっている ＝ もう穴ではない。残り枠は 3 巻に回る。
+    expect(asked).toEqual(["積み上げ試験 3"]);
+    const body = (await res.json()) as { volumes: { isbn: string }[]; volumes_no_isbn: number[] };
+    expect(body.volumes.map((v) => v.isbn)).toEqual([V1, V2]);
+    // 埋まった 2 巻は「見つからなかった」側に残らない。
+    expect(body.volumes_no_isbn).toEqual([3]);
   });
 });

@@ -407,6 +407,12 @@ export async function getSeriesVolumes(
     // 引き当てて足す（src/gapFill.ts）。上の eligible とは独立に走らせる: あちらが
     // 書名一致で同名別シリーズを恐れて末尾追加しかできないのに対し、こちらの穴の確定は
     // schema:isPartOf による C-id の厳密結合なので取り違えが起きない。
+    // 既に巻一覧に出ている巻は穴ではない: master ＋ 前回までの補完 ＋ 今回の SPARQL 補完。
+    // 前回ぶんを渡さないと、1 回では埋まりきらない穴埋め（Yahoo は 1 巻 1 リクエスト）が
+    // 押すたびに同じ先頭の巻を引き直し、その先へ進まない。
+    const filledSorts = new Set(masterSorts);
+    for (const v of prior?.volumes ?? []) if (v.vol_sort > 0) filledSorts.add(v.vol_sort);
+    for (const v of supplement) if (v.vol_sort > 0) filledSorts.add(v.vol_sort);
     const { filled, noIsbn } = await findGapFillVolumes(env, {
       seriesId: meta.id,
       name: meta.name,
@@ -414,7 +420,7 @@ export async function getSeriesVolumes(
       publisher: meta.publisher ?? "",
       label: meta.label ?? "",
       knownIsbns: [...masterIsbns],
-      knownSorts: masterSorts,
+      knownSorts: filledSorts,
     });
     // null = SPARQL が落ちて判定できなかった。断定できないので何も言わない（[] のまま）。
     noIsbnGaps = noIsbn ?? [];

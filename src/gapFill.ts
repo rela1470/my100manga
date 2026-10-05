@@ -105,7 +105,9 @@ export interface GapFillInput {
   label: string;
   /** master が既に持っているこのシリーズの ISBN（順位付けの接頭辞比較に使う）。 */
   knownIsbns: string[];
-  /** master に既にある巻の vol_sort。ここに入っている巻は穴ではない。 */
+  /** 既に巻一覧に出ている巻の vol_sort（master ＋ 前回までの補完）。ここに入っている巻は
+   *  穴ではない。前回までの補完を含めるのが要点で、含めないと 1 回では埋まりきらない穴埋めが
+   *  押すたびに同じ先頭の巻を引き直して先へ進まない（src/series.ts の filledSorts）。 */
   knownSorts: Set<number>;
 }
 

@@ -534,7 +534,12 @@ CREATE TABLE IF NOT EXISTS volume_master_fix (
   pubdate       TEXT,
   is_adult      INTEGER NOT NULL DEFAULT 0,
   note          TEXT NOT NULL DEFAULT '',  -- なぜ直したか・根拠（openBD / NDLサーチ 等）
-  created_at    INTEGER NOT NULL
+  created_at    INTEGER NOT NULL,
+  -- 差し替える前のマスタ行（JSON、volumes の列そのまま）。管理画面の「取り消し」がこれを
+  -- 書き戻す。NULL ＝ 上流にその ISBN の行が無かった（取り違えで消えた側の巻を足した場合）
+  -- ＝ 取り消しでは volumes から消す。取り込みを挟むと上流の値が変わっていることがあるが、
+  -- 戻した値は次の取り込みでどのみち上流の行に置き換わるので、控えは作った時のままでよい。
+  prev_json     TEXT
 );
 
 -- 閲覧者の「シリーズが分かれている？」依頼。series_report と同じ collect-only 方針で、

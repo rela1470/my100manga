@@ -106,7 +106,7 @@ const APPLY_MASTER_FIX_SQL = [
   "CREATE TABLE IF NOT EXISTS volume_master_fix (isbn TEXT PRIMARY KEY, series_id TEXT, volume_number TEXT, " +
     "vol_sort INTEGER, title TEXT NOT NULL, subtitle TEXT, title_search TEXT, creator TEXT, creators TEXT, " +
     "creators_norm TEXT, publisher TEXT, label TEXT, pubdate TEXT, is_adult INTEGER NOT NULL DEFAULT 0, " +
-    "note TEXT NOT NULL DEFAULT '', created_at INTEGER NOT NULL);",
+    "note TEXT NOT NULL DEFAULT '', created_at INTEGER NOT NULL, prev_json TEXT);",
   "INSERT OR REPLACE INTO volumes (isbn, series_id, volume_number, vol_sort, title, subtitle, title_search, " +
     "creator, creators, creators_norm, publisher, label, pubdate, is_adult) " +
     "SELECT isbn, series_id, volume_number, vol_sort, title, subtitle, title_search, " +

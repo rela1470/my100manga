@@ -2075,3 +2075,29 @@ button.copied { border-color: var(--ok-strong); color: var(--ok-strong); }
 .admin-dialog::backdrop { background: rgba(0, 0, 0, .45); }
 .admin-dialog h3 { margin: 0 0 8px; font-size: 16px; }
 .admin-dialog .admin-table { margin-top: 8px; }
+
+/* ── マスタ行の修正フォーム（admin #master-fixes）─────────────────────────────
+   表の見た目の 2 列フォーム。1 行に複数の入力が並ぶ欄があるので、td を flex にして
+   折り返させる。幅は入力ごとに style で指定し、指定の無いものは伸びる。 */
+.admin-table.mfix-form { margin-top: 12px; }
+.admin-table.mfix-form th {
+  width: 150px; white-space: nowrap; vertical-align: middle;
+}
+.admin-table.mfix-form td {
+  white-space: normal;
+  display: flex; flex-wrap: wrap; align-items: center; gap: 8px;
+}
+.admin-table.mfix-form input[type="text"] { flex: 1 1 200px; min-width: 120px; }
+.admin-table.mfix-form .muted { color: var(--muted); font-size: 12px; }
+/* 一覧の 2 行目（著者 / レーベル / 発行日）。td.muted と違い td の中の行に効かせる。 */
+.admin-table td > .muted { color: var(--muted); font-size: 12px; }
+.admin-table.mfix-form label { display: flex; align-items: center; gap: 4px; font-size: 13px; }
+/* 下書きの材料カード（今のマスタ行 / openBD / シリーズの手本）。stat-grid compact の中身。 */
+.mfix-source { text-align: left; }
+.mfix-source .mfix-source-head { display: flex; align-items: baseline; gap: 8px; margin-bottom: 4px; }
+.mfix-source .mfix-source-title { font-size: 13px; font-weight: 700; }
+.mfix-source dl { margin: 0; font-size: 12px; line-height: 1.7; }
+.mfix-source dl div { display: flex; gap: 6px; }
+.mfix-source dt { color: var(--muted); flex: 0 0 72px; }
+.mfix-source dd { margin: 0; word-break: break-word; }
+

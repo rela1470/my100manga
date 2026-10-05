@@ -26,6 +26,7 @@ const pageState = {
   volReports: 1,
   seriesReports: 1,
   corr: 1,
+  mfix: 1,
   coverSuggest: 1,
   sup: 1,
   bookMeta: 1,
@@ -3282,6 +3283,348 @@ async function devReset(btn) {
   }
 }
 
+/* ---------- マスタ行の修正（上流が壊している巻を直す, src/masterFix.ts） ---------- */
+// MADB は巻の ISBN 自体を取り違えていることがあり、表示名だけの上書きでは直らない
+// （シリーズ・巻番号・著者・発行日が別経路で読まれる）。ここでは volume_master_fix に
+// 「直した後のマスタ行そのもの」を書き、サーバがその場で volumes へ当てる。月次取り込みの
+// あとは scripts/ingest.mjs が同じ行を載せ直す。
+
+// 「調べる」で引いた下書きの材料。フォームの「反映」ボタンが参照する。
+let mfixLookup = null;
+
+const MFIX_FIELDS = {
+  series_id: "mfixSeriesId",
+  title: "mfixTitle",
+  subtitle: "mfixSubtitle",
+  volume_number: "mfixVolumeNumber",
+  vol_sort: "mfixVolSort",
+  creator: "mfixCreator",
+  creators: "mfixCreators",
+  publisher: "mfixPublisher",
+  label: "mfixLabel",
+  pubdate: "mfixPubdate",
+  note: "mfixNote",
+};
+
+function mfixSetForm(values) {
+  for (const [key, id] of Object.entries(MFIX_FIELDS)) {
+    if (key in values) $(id).value = values[key] ?? "";
+  }
+  if ("is_adult" in values) $("mfixIsAdult").checked = !!values.is_adult;
+}
+
+// 指定されたキーだけを今のフォームへ流し込む（材料カードの「反映」）。空の値では上書きしない:
+// openBD は副題やレーベルを持たないので、せっかく埋めた欄を消してしまわないように。
+function mfixFill(values, keys) {
+  const patch = {};
+  for (const key of keys) {
+    const v = values[key];
+    if (v !== undefined && v !== null && v !== "") patch[key] = v;
+  }
+  mfixSetForm(patch);
+}
+
+function mfixSourceCard(title, rows, fillLabel, onFill) {
+  const dl = el("dl", null, rows.filter(([, v]) => v).map(([k, v]) =>
+    el("div", null, [el("dt", { textContent: k }), el("dd", { textContent: v })])
+  ));
+  const head = [el("span", { className: "mfix-source-title", textContent: title })];
+  if (onFill) {
+    const btn = el("button", { type: "button", textContent: fillLabel });
+    btn.addEventListener("click", onFill);
+    head.push(btn);
+  }
+  return el("div", { className: "stat-card mfix-source" }, [
+    el("div", { className: "mfix-source-head" }, head),
+    dl,
+  ]);
+}
+
+// 「調べる」の結果（今のマスタ行 / openBD の書誌 / 指定シリーズの手本）を材料カードで描く。
+function mfixRenderSources() {
+  const box = $("mfixSources");
+  box.textContent = "";
+  if (!mfixLookup) return;
+  const { master, openbd, series } = mfixLookup;
+
+  if (master) {
+    box.append(
+      mfixSourceCard(
+        "今のマスタ行（これが壊れている）",
+        [
+          ["シリーズ", master.series_name ? `${master.series_name}（${master.series_id}）` : master.series_id || "（無し）"],
+          ["書名", [master.title, master.subtitle].filter(Boolean).join(" / ")],
+          ["巻", master.volume_number],
+          ["著者", master.creators || master.creator],
+          ["出版社", [master.publisher, master.label].filter(Boolean).join(" / ")],
+          ["発行日", master.pubdate],
+        ],
+        "写す",
+        () => mfixFill(master, Object.keys(MFIX_FIELDS))
+      )
+    );
+  } else {
+    box.append(
+      mfixSourceCard("今のマスタ行", [["", "この ISBN の行は上流に無い（足す側の巻）"]], "", null)
+    );
+  }
+
+  if (openbd) {
+    // openBD の書名は "Rave 9" のように巻数込みのことがある。末尾の数字は巻として分ける。
+    const m = /^(.*?)[  ]+(\d{1,4})$/.exec(openbd.title || "");
+    const title = m ? m[1] : openbd.title;
+    const volume = openbd.volume || (m ? m[2] : "");
+    box.append(
+      mfixSourceCard(
+        "openBD の書誌",
+        [
+          ["書名", openbd.title],
+          ["シリーズ", openbd.series],
+          ["著者", openbd.author],
+          ["出版社", openbd.publisher],
+          ["発行日", openbd.pubdate],
+        ],
+        "反映",
+        () =>
+          mfixFill(
+            { title, volume_number: volume, creator: openbd.author, publisher: openbd.publisher, pubdate: openbd.pubdate },
+            ["title", "volume_number", "creator", "publisher", "pubdate"]
+          )
+      )
+    );
+  } else {
+    box.append(mfixSourceCard("openBD の書誌", [["", "この ISBN は openBD に無い（取れなかった）"]], "", null));
+  }
+
+  if (series) {
+    const c = series.common;
+    box.append(
+      mfixSourceCard(
+        `シリーズの手本（${series.name || series.id}・${series.volume_count}巻）`,
+        c
+          ? [
+              ["書名", c.title],
+              ["著者", c.creators || c.creator],
+              ["出版社", [c.publisher, c.label].filter(Boolean).join(" / ")],
+            ]
+          : [["", "このシリーズに巻がありません"]],
+        "揃える",
+        c ? () => mfixFill(c, ["title", "creator", "creators", "publisher", "label"]) : null
+      )
+    );
+  }
+}
+
+// ISBN（＋入力済みのシリーズ ID）で下書きの材料を引き直す。既に修正行があればフォームに入れる。
+async function mfixDoLookup(opts = {}) {
+  const isbn = $("mfixIsbn").value.trim();
+  const msg = $("mfixLookupMsg");
+  if (!isbn) {
+    msg.textContent = "ISBN を入れてください";
+    return;
+  }
+  msg.textContent = "調べています…";
+  const series = $("mfixSeriesId").value.trim();
+  let data;
+  try {
+    const res = await fetch(
+      `/api/admin/master-fixes/lookup?isbn=${encodeURIComponent(isbn)}${series ? `&series=${encodeURIComponent(series)}` : ""}`
+    );
+    data = await res.json();
+    if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
+  } catch (e) {
+    msg.textContent = "取得に失敗しました: " + e.message;
+    return;
+  }
+
+  mfixLookup = data;
+  $("mfixIsbn").value = data.isbn;
+  $("mfixEditor").hidden = false;
+  $("mfixAdultWrap").hidden = !data.allow_adult;
+  $("mfixSaveMsg").textContent = "";
+  $("mfixSeriesName").textContent = data.series ? `${data.series.name}・${data.series.volume_count}巻` : "";
+
+  // 初回（シリーズ欄の確認ではない）だけフォームを作り直す。既にある修正は編集として開き、
+  // 無ければ今のマスタ行を下敷きにする（壊れている欄だけ直せばよくなる）。
+  if (!opts.keepForm) {
+    const base = data.fix || data.master || {};
+    mfixSetForm({
+      series_id: base.series_id ?? "",
+      title: base.title ?? "",
+      subtitle: base.subtitle ?? "",
+      volume_number: base.volume_number ?? "",
+      vol_sort: base.vol_sort ? String(base.vol_sort) : "",
+      creator: base.creator ?? "",
+      creators: base.creators ?? "",
+      publisher: base.publisher ?? "",
+      label: base.label ?? "",
+      pubdate: base.pubdate ?? "",
+      note: data.fix ? data.fix.note ?? "" : "",
+      is_adult: !!base.is_adult,
+    });
+  }
+  mfixRenderSources();
+  msg.textContent = data.fix ? "この ISBN には既に修正があります（編集になります）" : "";
+}
+
+async function mfixSave(btn) {
+  const payload = { isbn: $("mfixIsbn").value.trim(), is_adult: $("mfixIsAdult").checked };
+  for (const [key, id] of Object.entries(MFIX_FIELDS)) payload[key] = $(id).value.trim();
+  if (!payload.title) {
+    $("mfixSaveMsg").textContent = "書名は必須です";
+    return;
+  }
+  const where = payload.series_id ? `シリーズ ${payload.series_id}` : "シリーズ無し";
+  if (
+    !(await uiConfirm(
+      `ISBN ${payload.isbn} のマスタ行を「${payload.title}${payload.volume_number ? ` ${payload.volume_number}` : ""}（${where}）」で差し替えます。` +
+        `全ての閲覧者の検索・巻一覧・リスト表示に反映され、月次の取り込みのあとも載せ直されます。よろしいですか？`,
+      { okLabel: "差し替える" }
+    ))
+  )
+    return;
+
+  const orig = btn.textContent;
+  btn.disabled = true;
+  btn.textContent = "保存中…";
+  try {
+    const res = await fetch("/api/admin/master-fixes", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(payload),
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
+    $("mfixEditor").hidden = true;
+    $("mfixIsbn").value = "";
+    $("mfixLookupMsg").textContent = "";
+    mfixLookup = null;
+    await loadMasterFixes(pageState.mfix);
+  } catch (e) {
+    $("mfixSaveMsg").textContent = "保存に失敗しました: " + e.message;
+  } finally {
+    btn.disabled = false;
+    btn.textContent = orig;
+  }
+}
+
+async function mfixDelete(fix, btn) {
+  const what =
+    fix.restores === "restore"
+      ? "差し替える前のマスタ行に戻します"
+      : "この巻をマスタから消します（上流に無い巻を足した修正のため）";
+  if (!(await uiConfirm(`ISBN ${fix.isbn} の修正を取り消し、${what}。よろしいですか？`, { danger: true, okLabel: "取り消す" })))
+    return;
+  const orig = btn.textContent;
+  btn.disabled = true;
+  btn.textContent = "取り消し中…";
+  try {
+    const res = await fetch(`/api/admin/master-fixes/${encodeURIComponent(fix.isbn)}`, { method: "DELETE" });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
+    await loadMasterFixes(pageState.mfix);
+  } catch (e) {
+    btn.disabled = false;
+    btn.textContent = orig;
+    uiAlert("取り消しに失敗しました: " + e.message);
+  }
+}
+
+async function loadMasterFixes(page = pageState.mfix) {
+  const table = $("mfixTable");
+  const body = $("mfixBody");
+  const hint = $("mfixHint");
+  const count = $("mfixCount");
+  body.textContent = "";
+  hint.style.display = "none";
+  table.style.display = "none";
+  $("mfixPager").style.display = "none";
+
+  let data;
+  try {
+    const res = await fetch(`/api/admin/master-fixes?page=${page}&per=${PER}`);
+    data = await res.json();
+  } catch {
+    hint.textContent = "マスタ行の修正の取得に失敗しました";
+    hint.style.display = "";
+    return;
+  }
+
+  const fixes = data.fixes || [];
+  const total = data.total ?? fixes.length;
+  if (fixes.length === 0 && page > 1 && total > 0) {
+    return loadMasterFixes(Math.min(page - 1, Math.max(1, Math.ceil(total / PER))));
+  }
+  pageState.mfix = page;
+  count.textContent = `${total.toLocaleString("ja-JP")}件`;
+
+  if (total === 0) {
+    hint.textContent = "マスタ行の修正はまだありません。上の「ISBN で調べる」から直せます。";
+    hint.style.display = "";
+    return;
+  }
+
+  for (const f of fixes) {
+    const editBtn = el("button", { textContent: "編集" });
+    editBtn.addEventListener("click", () => {
+      $("mfixIsbn").value = f.isbn;
+      $("mfixSeriesId").value = f.series_id;
+      mfixDoLookup();
+      $("mfixIsbn").scrollIntoView({ block: "center" });
+    });
+    const delBtn = el("button", { className: "danger", textContent: "取り消し" });
+    delBtn.addEventListener("click", () => mfixDelete(f, delBtn));
+
+    const seriesLabel = f.series_name || f.series_id || "（シリーズ無し）";
+    const seriesCell = el("td", { className: "owner", title: f.series_id });
+    if (f.series_id) {
+      const link = el("a", { className: "slug detail", textContent: seriesLabel, title: "このシリーズの巻一覧を表示" });
+      link.addEventListener("click", () => openSeriesVolumes(f.series_id, seriesLabel));
+      seriesCell.append(link);
+    } else {
+      seriesCell.textContent = seriesLabel;
+    }
+
+    const titleLine = [f.title, f.volume_number].filter(Boolean).join(" ");
+    const sub = [f.creator, f.label, f.pubdate].filter(Boolean).join(" / ");
+
+    body.append(
+      el("tr", { dataset: { key: f.isbn } }, [
+        el("td", null, [coverThumb(f.cover_url, "corr-thumb", "corr-noimg", f.title)]),
+        el("td", { className: "slug", textContent: f.isbn }),
+        el("td", { className: "owner" }, [
+          el("div", { textContent: titleLine }),
+          el("div", { className: "muted", textContent: sub }),
+        ]),
+        seriesCell,
+        el("td", { className: "owner", textContent: f.note }),
+        // applied=0 は「修正はあるのにマスタがその値になっていない」＝ 取り込みの載せ直しが
+        // 抜けている合図。ここで気付けるように出す。
+        el("td", { className: f.applied ? "" : "warn", textContent: f.applied ? "済" : "未反映" }),
+        el("td", { textContent: fmtDate(f.created_at) }),
+        el("td", { className: "report-actions" }, [editBtn, delBtn]),
+      ])
+    );
+  }
+
+  table.style.display = "";
+  renderPager("mfixPager", page, total, loadMasterFixes);
+}
+
+$("mfixLookup").addEventListener("click", () => mfixDoLookup());
+$("mfixIsbn").addEventListener("keydown", (e) => {
+  if (e.key === "Enter") mfixDoLookup();
+});
+// シリーズ欄を直したら、そのシリーズの手本を引き直す（フォームの入力はそのまま）。
+$("mfixSeriesCheck").addEventListener("click", () => mfixDoLookup({ keepForm: true }));
+$("mfixSave").addEventListener("click", (e) => mfixSave(e.currentTarget));
+$("mfixCancel").addEventListener("click", () => {
+  $("mfixEditor").hidden = true;
+  $("mfixSaveMsg").textContent = "";
+  mfixLookup = null;
+});
+$("reloadMfix").addEventListener("click", () => loadMasterFixes(pageState.mfix));
+
 // --- ハッシュルーティング（各セクションを個別ページに分割）------------------
 // ページ切替時にそのページのデータだけをロードする。ページャーで大量データでも破綻しない。
 const PAGES = {
@@ -3310,6 +3653,12 @@ const PAGES = {
   corrections: () => {
     resetHistory("corrections");
     loadCorrections(1);
+  },
+  "master-fixes": () => {
+    $("mfixEditor").hidden = true;
+    $("mfixIsbn").value = "";
+    $("mfixLookupMsg").textContent = "";
+    loadMasterFixes(1);
   },
   "cover-suggestions": () => {
     resetHistory("coverSuggestions");

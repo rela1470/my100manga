@@ -91,6 +91,12 @@ import {
   handleCirculation,
 } from "./circulation";
 import { adminWarm, adminWarmStatus } from "./warm";
+import {
+  adminDeleteMasterFix,
+  adminListMasterFixes,
+  adminLookupMasterFix,
+  adminSaveMasterFix,
+} from "./masterFix";
 import { handleSiteFile } from "./robots";
 import { ageGate } from "./ageGate";
 import { fetchSiteAsset, isAdultAssetPath } from "./siteAssets";
@@ -651,6 +657,22 @@ const worker = {
       if (adminVolTitleReportMatch && request.method === "DELETE") {
         // 却下: 通報行だけ削除。タイトルは変更しない。
         return await adminDismissVolumeTitleReport(env, adminVolTitleReportMatch[1]);
+      }
+      // 上流が壊している巻のマスタ行の修正（volume_master_fix）。src/masterFix.ts
+      if (path === "/api/admin/master-fixes" && request.method === "GET") {
+        return await adminListMasterFixes(env, parsePage(url));
+      }
+      if (path === "/api/admin/master-fixes/lookup" && request.method === "GET") {
+        // フォームの下書き材料（今のマスタ行・既存の修正・openBD の書誌・シリーズの手本）。
+        return await adminLookupMasterFix(env, url);
+      }
+      if (path === "/api/admin/master-fixes" && request.method === "POST") {
+        return await adminSaveMasterFix(request, env);
+      }
+      const adminMasterFixMatch = path.match(/^\/api\/admin\/master-fixes\/([0-9Xx]+)$/);
+      if (adminMasterFixMatch && request.method === "DELETE") {
+        // 取り消し: 控えがあればマスタ行を戻し、無ければ（足した巻なので）消す。
+        return await adminDeleteMasterFix(env, adminMasterFixMatch[1]);
       }
       if (path === "/api/admin/cover-suggestions" && request.method === "GET") {
         // ?resolved=1 で処理済み(承認/却下/差し替え)の履歴、無ければレビュー待ちキュー。

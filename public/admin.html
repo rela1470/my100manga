@@ -29,6 +29,7 @@
       <a href="#series-tags" data-page="series-tags">シリーズのタグの申請</a>
       <a href="#volume-title-reports" data-page="volume-title-reports">本のタイトルの修正</a>
       <a href="#corrections" data-page="corrections">シリーズへの手動追加</a>
+      <a href="#master-fixes" data-page="master-fixes">マスタ行の修正</a>
       <a href="#cover-suggestions" data-page="cover-suggestions">表紙の修正</a>
       <a href="#covers" data-page="covers">表紙キャッシュ</a>
       <a href="#supplements" data-page="supplements">補完キャッシュ</a>
@@ -521,6 +522,93 @@
         <tbody id="corrReviewedBody"></tbody>
       </table>
       <div class="pager" id="corrReviewedPager" style="display:none"></div>
+    </section>
+
+    <!-- マスタ行の修正（上流が壊している巻を直す, src/masterFix.ts / volume_master_fix） -->
+    <section class="admin-page" id="page-master-fixes" hidden>
+      <div class="toolbar">
+        <strong>マスタ行の修正</strong>
+        <span class="count" id="mfixCount"></span>
+        <div style="flex:1"></div>
+        <button id="reloadMfix">再読み込み</button>
+      </div>
+      <p class="hint">
+        上流（MADB）が壊している巻の<strong>マスタ行そのもの</strong>を差し替えます。MADB は巻の
+        ISBN 自体を取り違えていることがあり（実例: <code>9784063129502</code> は『Rave』9 巻なのに
+        『超感電少女モナ』の巻として登録されている）、そうなると元のシリーズは巻が欠番になり、
+        その ISBN を手動追加しようとしても「別シリーズの巻の ISBN は採らない」規則で弾かれます。
+        表示名だけの上書き（<a href="#volume-title-reports">本のタイトルの修正</a>）では、シリーズ・
+        巻番号・著者・発行日が直らないのでここを使います。
+        <br>保存するとその場でマスタへ当たり、<strong>月次の取り込みのあとも自動で載せ直されます</strong>。
+        巻を消す・隠すだけなら<a href="#volume-reports">巻の通報</a>の「全体から非表示」を使ってください。
+      </p>
+
+      <div class="toolbar" style="margin-top:4px">
+        <strong>ISBN で調べる</strong>
+        <input type="text" id="mfixIsbn" placeholder="9784063129502" style="width:190px" inputmode="numeric">
+        <button id="mfixLookup">調べる</button>
+        <span class="count" id="mfixLookupMsg"></span>
+      </div>
+
+      <div id="mfixEditor" hidden>
+        <!-- 下書きの材料（今のマスタ行・openBD の書誌・シリーズの手本）。「反映」で下のフォームに入る -->
+        <div class="stat-grid compact" id="mfixSources"></div>
+
+        <table class="admin-table mfix-form">
+          <tbody>
+            <tr><th>シリーズ ID</th><td>
+              <input type="text" id="mfixSeriesId" placeholder="C325142（空＝シリーズ無し）">
+              <button id="mfixSeriesCheck" type="button">シリーズを見る</button>
+              <span class="muted" id="mfixSeriesName"></span>
+            </td></tr>
+            <tr><th>書名</th><td><input type="text" id="mfixTitle" placeholder="Rave"></td></tr>
+            <tr><th>副題</th><td><input type="text" id="mfixSubtitle" placeholder="（schema:alternateName。無ければ空）"></td></tr>
+            <tr><th>巻</th><td>
+              <input type="text" id="mfixVolumeNumber" placeholder="9" style="width:120px">
+              <span class="muted">並び順（空なら巻から自動）</span>
+              <input type="text" id="mfixVolSort" placeholder="9" style="width:80px" inputmode="numeric">
+            </td></tr>
+            <tr><th>著者</th><td>
+              <input type="text" id="mfixCreator" placeholder="真島ヒロ">
+              <span class="muted">表示用（役割付き・任意）</span>
+              <input type="text" id="mfixCreators" placeholder="原作：A、作画：B">
+            </td></tr>
+            <tr><th>出版社 / レーベル</th><td>
+              <input type="text" id="mfixPublisher" placeholder="講談社" style="width:180px">
+              <input type="text" id="mfixLabel" placeholder="講談社コミックス" style="width:240px">
+            </td></tr>
+            <tr><th>発行日</th><td>
+              <input type="text" id="mfixPubdate" placeholder="2001-03" style="width:140px">
+              <span class="muted">2001 / 2001-03 / 2001-03-16</span>
+              <label id="mfixAdultWrap" hidden><input type="checkbox" id="mfixIsAdult"> 成年向け</label>
+            </td></tr>
+            <tr><th>メモ</th><td><input type="text" id="mfixNote" placeholder="なぜ直したか・根拠（openBD / NDLサーチ など）"></td></tr>
+          </tbody>
+        </table>
+        <div class="cover-actions">
+          <button id="mfixSave">保存してマスタに反映</button>
+          <button id="mfixCancel">やめる</button>
+          <span class="count" id="mfixSaveMsg"></span>
+        </div>
+      </div>
+
+      <p class="hint" id="mfixHint" style="display:none"></p>
+      <table class="admin-table" id="mfixTable" style="display:none">
+        <thead>
+          <tr>
+            <th>表紙</th>
+            <th>ISBN</th>
+            <th>修正後</th>
+            <th>シリーズ</th>
+            <th>メモ</th>
+            <th>反映</th>
+            <th>修正日時</th>
+            <th></th>
+          </tr>
+        </thead>
+        <tbody id="mfixBody"></tbody>
+      </table>
+      <div class="pager" id="mfixPager" style="display:none"></div>
     </section>
 
     <!-- 表紙の修正（ユーザが選び直した表紙） -->

@@ -1,5 +1,5 @@
 import { Env } from "./types";
-import { badRequest, json, notFound, volumeLabelTemplate, formatVolumeLabel, readJsonObject, toIsbn13, volSort } from "./util";
+import { badRequest, json, notFound, volumeLabelTemplate, formatVolumeLabel, readJsonObject, toIsbn13, volSort, seriesNameSql } from "./util";
 import { findNgWord } from "./ngwords";
 import { isTrustedCoverUrl, readCachedCovers, resolveCovers } from "./covers";
 import type { UnlinkedGroup } from "./groups";
@@ -250,7 +250,14 @@ export async function suggestCover(request: Request, env: Env): Promise<Response
  *  the series row server-side. The admin later 却下 (deletes) or 名前修正 (writes an
  *  override applied at read time). Repeated flags just bump the count. */
 export async function reportSeriesName(request: Request, env: Env, seriesId: string): Promise<Response> {
-  const meta = await env.DB.prepare(`SELECT id, name FROM series WHERE id = ?`)
+  // 記録するのは閲覧者に見えている名前（override → name_display → name）。管理画面の通報一覧は
+  // この snapshot を「通報された名前」として出すので、マスタの素の name を入れると、通報者が
+  // 見た名前（「釣りキチ三平 作者自選集」）と管理者が見る名前（「釣りキチ三平」）がずれる。
+  const meta = await env.DB.prepare(
+    `SELECT s.id, ${seriesNameSql("s", "o")} AS name
+       FROM series s LEFT JOIN series_name_override o ON o.series_id = s.id
+      WHERE s.id = ?`
+  )
     .bind(seriesId)
     .first<{ id: string; name: string }>();
   if (!meta) return notFound("シリーズが見つかりません");

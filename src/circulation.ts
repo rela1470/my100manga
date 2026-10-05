@@ -1,5 +1,5 @@
 import { Env } from "./types";
-import { badRequest, json, notFound } from "./util";
+import { badRequest, json, notFound, seriesNameSql } from "./util";
 import { edgeCacheKey, withEdgeCache } from "./edgeCache";
 import { headWord, latestSeriesCover, resolveTargets, workKey, type WorkRef } from "./salesRanking";
 import { resolveUnit } from "./merge";
@@ -275,10 +275,11 @@ export async function adminCirculationStatus(env: Env): Promise<Response> {
   for (let i = 0; i < ids.length; i += CHUNK) {
     const chunk = ids.slice(i, i + CHUNK);
     const r = await env.DB.prepare(
-      `SELECT s.id, s.name, COALESCE(s.label, '') AS label,
+      `SELECT s.id, ${seriesNameSql("s", "o")} AS name, COALESCE(s.label, '') AS label,
               COALESCE((SELECT t.tag FROM label_tag t WHERE t.label = s.label), '') AS tag,
               (SELECT COUNT(*) FROM volumes v WHERE v.series_id = s.id) AS n
-         FROM series s WHERE s.id IN (${chunk.map(() => "?").join(",")})`
+         FROM series s LEFT JOIN series_name_override o ON o.series_id = s.id
+        WHERE s.id IN (${chunk.map(() => "?").join(",")})`
     )
       .bind(...chunk)
       .all<{ id: string; name: string; label: string; tag: string; n: number }>();

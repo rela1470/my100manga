@@ -190,7 +190,9 @@ export async function adminListLabels(
      SELECT p.label, p.series_count,
             (SELECT t.tag FROM label_tag t WHERE t.label = p.label) AS tag,
             (SELECT group_concat(name, ' / ') FROM
-               (SELECT s2.name FROM series s2 WHERE s2.label = p.label
+               (SELECT ${seriesNameSql("s2", "o2")} AS name FROM series s2
+                  LEFT JOIN series_name_override o2 ON o2.series_id = s2.id
+                 WHERE s2.label = p.label
                  ORDER BY COALESCE(s2.num_items, 0) DESC, s2.id LIMIT 3)) AS samples,
             (SELECT s3.publisher FROM series s3
                WHERE s3.label = p.label AND COALESCE(s3.publisher, '') <> ''

@@ -178,10 +178,14 @@ CREATE TABLE IF NOT EXISTS series (
   -- 素の「釣りキチ三平」でレーベルも空欄、という状態を避けるのが目的。
   -- 同名シリーズが無ければ副題は足さない（NULL のまま）: 副題は作品の惹句や英語別名のことも
   -- 多く（「HEAT」の「灼熱」「SWAN」の「白鳥」）、曖昧でない名前に足しても冗長なだけ。
+  -- 「同名」は検索の照合キー（name_search）の一致で見る。MADB は同じ作品を「ブラック・ジャック」
+  -- 「ブラックジャック」と表記ゆれで別シリーズに持ち、name_norm では別名に見えるが、検索では
+  -- 同じキーワードで一緒に並ぶため（C294944 →「ブラックジャック 黒い医師」）。
   -- version と同じく表示専用で、検索の照合（name_norm / name_search / name_kana_norm）にも、
   -- 迷子巻の引き当て（巻の title との完全一致）にも使わない。管理者の名前修正
   -- (series_name_override) があればそちらが優先。読み出しは src/util.ts seriesNameSql。
-  -- 埋めるのは取り込み (scripts/ingest.mjs)。see db/add-series-name-display.sql
+  -- 埋めるのは取り込み (scripts/ingest.mjs)。see db/add-series-name-display.sql と
+  -- db/fix-series-name-display-variants.sql
   name_display   TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_series_name_norm ON series (name_norm);

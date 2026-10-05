@@ -693,10 +693,12 @@ async function main() {
   // シリーズ名の引き当て用（成年向けの巻の series_name。成年向けだけのシリーズは series から
   // 消すので、ここで覚えておかないと名前が残らない）。
   const seriesNames = new Map();
-  // 同名シリーズの検出用（name_display、下の「3.5」）。MADB の素のシリーズ名だけでは
-  // 区別が付かないシリーズがどれかを、正規化した名前の重複で見る。数えるのは巻を読み終えてから
-  // （巻が 1 冊も残らないシリーズは検索にも出ないので、同名として数えない）。
-  const seriesNameNorms = new Map(); // id → name_norm
+  // 同名シリーズの検出用（name_display、下の「3.5」）。「同名」は検索の照合キー（name_search =
+  // searchKey。記号と全角半角を落とした形）で見る: MADB は同じ作品を「ブラック・ジャック」
+  // 「ブラックジャック」と中黒の有無で別シリーズに持っていて、name_norm（空白と大小だけを
+  // 畳んだ形）では別名に見えてしまうが、利用者の検索では同じキーワードで並ぶ。
+  // 数えるのは巻を読み終えてから（巻が 1 冊も残らないシリーズは検索にも出ないので数えない）。
+  const seriesNameKeys = new Map(); // id → 検索の照合キー（name_search 相当）
   await streamGraph(seriesJson, (node) => {
     if (node["@type"] !== "class:MangaBookSeries") return;
     const id = (node["@id"] || "").startsWith(ID_PREFIX)
@@ -705,7 +707,9 @@ async function main() {
     const name = primary(node["schema:name"]) || node["rdfs:label"] || "";
     if (!id || !name) return;
     seriesNames.set(id, name);
-    seriesNameNorms.set(id, normTitle(name));
+    // name_search は空になることがあり（記号だけの名前）、その場合 SQL 側は name_norm に
+    // 落ちる（COALESCE(name_search, name_norm)）ので、ここでも同じ順で決める。
+    seriesNameKeys.set(id, searchKey(name) || normTitle(name));
     const readings = kanaReadings(node["schema:name"]);
     const nameKana = readings.join(" / ");
     // Store each reading normalized and "|"-delimited so search can match either a
@@ -842,16 +846,18 @@ async function main() {
   // 「書名 + 巻 + 副題」なので（public/app.js bookTitle）、本が「釣りキチ三平 1 作者自選集」と
   // 出るのにシリーズ名だけ素の「釣りキチ三平」、という状態を無くすのが目的。
   // 同名シリーズが無ければ足さない: 副題は惹句や英語別名のことも多く（「HEAT」の「灼熱」、
-  // 「SWAN」の「白鳥」）、もともと曖昧でない名前を長くするだけになる。
+  // 「SWAN」の「白鳥」）、もともと曖昧でない名前を長くするだけになる。「同名」は検索の照合キー
+  // （name_search）で見るので、中黒の有無だけが違う「ブラック・ジャック」と「ブラックジャック」
+  // （C294944 →「ブラックジャック 黒い医師」）のような表記ゆれの同名も拾う。
   // 表示専用で、照合（name_norm / name_search）にも迷子巻の引き当て（巻の title との完全一致）
   // にも使わない。see db/schema.sql series.name_display / db/add-series-name-display.sql
   const displayFile = path.join(a.out, "series_new_name_display.sql");
   // 同名かどうかは、巻が 1 冊でも残るシリーズ（keptSeries）だけで数える。巻の無いシリーズと
   // 成年向けだけで消えるシリーズは検索にも巻一覧にも出てこないので、同名の相手にならない。
-  const nameNormCounts = new Map();
+  const nameKeyCounts = new Map();
   for (const id of keptSeries) {
-    const norm = seriesNameNorms.get(id);
-    if (norm) nameNormCounts.set(norm, (nameNormCounts.get(norm) ?? 0) + 1);
+    const key = seriesNameKeys.get(id);
+    if (key) nameKeyCounts.set(key, (nameKeyCounts.get(key) ?? 0) + 1);
   }
   const displayStmts = [];
   for (const [id, sub] of commonSubtitle) {
@@ -861,7 +867,7 @@ async function main() {
     // 「：」は、1 冊に複数の schema:alternateName がある合本を上の subtitle() が繋いだ印。
     // その巻の収録内容であってシリーズの副題ではない。
     if (sub.includes("：")) continue;
-    if ((nameNormCounts.get(seriesNameNorms.get(id)) ?? 0) < 2) continue;
+    if ((nameKeyCounts.get(seriesNameKeys.get(id)) ?? 0) < 2) continue;
     // 名前が既に副題を含むなら足さない（「あした天気になあれ 全英オープン編」）。
     if (normTitle(name).includes(normTitle(sub))) continue;
     displayStmts.push(

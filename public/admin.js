@@ -927,16 +927,21 @@ async function loadSeriesReports(page = pageState.seriesReports) {
       title: "このシリーズの巻一覧を表示",
     });
     cidLink.addEventListener("click", () =>
-      openSeriesVolumes(r.series_id, r.current_name || r.reported_name || r.series_id)
+      openSeriesVolumes(r.series_id, r.display_name || r.current_name || r.reported_name || r.series_id)
     );
 
-    // 正しい名前のヒント: かな読みと収録巻タイトル。
-    const hints = [r.name_kana, r.vol_title].filter(Boolean).join(" / ") || "-";
+    // 正しい名前のヒント: かな読みと収録巻タイトル。表示名が同名シリーズと見分けるために
+    // 副題を足したものだと（series.name_display）マスタの素の名前と違うので、それも添える。
+    const derived = !r.override_name && r.display_name && r.display_name !== r.current_name;
+    const hints =
+      [derived ? `マスタ: ${r.current_name}` : null, r.name_kana, r.vol_title].filter(Boolean).join(" / ") || "-";
 
-    // 現在名が既に上書き済みならその旨を添える。
+    // 現在名は閲覧者に見えている名前。上書き済み・副題で区別しているときはその旨を添える。
     const currentText = r.override_name
       ? `${r.override_name}（修正済み）`
-      : r.current_name || "-";
+      : derived
+        ? `${r.display_name}（副題で区別）`
+        : r.current_name || "-";
 
     const countCls = "num" + (r.report_count >= 3 ? " hot" : r.report_count > 0 ? " warn" : "");
     const spanDays = daysBetween(r.first_reported_at, r.last_reported_at);

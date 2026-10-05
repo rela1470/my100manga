@@ -367,9 +367,10 @@ export async function adminListCorrections(
   const total = await countRows(env, `SELECT COUNT(*) AS n FROM series_correction c WHERE ${where}`);
   const { results } = await env.DB.prepare(
     `SELECT c.series_id, c.isbn, c.volume_number, c.vol_sort, c.cover_url, c.created_at, c.reviewed_at,
-            s.name AS series_name, s.creator AS series_creator
+            ${seriesNameSql("s", "o")} AS series_name, s.creator AS series_creator
        FROM series_correction c
        LEFT JOIN series s ON s.id = c.series_id
+       LEFT JOIN series_name_override o ON o.series_id = c.series_id
       WHERE ${where}
       ORDER BY ${order} LIMIT ? OFFSET ?`
   )
@@ -445,11 +446,12 @@ export async function adminListVolumeReports(env: Env, opts: PageOpts): Promise<
   const { results } = await env.DB.prepare(
     `SELECT r.series_id, r.isbn, r.volume_number, r.report_count,
             r.first_reported_at, r.last_reported_at,
-            s.name AS series_name, s.creator AS series_creator,
+            ${seriesNameSql("s", "o")} AS series_name, s.creator AS series_creator,
             CASE WHEN c.isbn IS NOT NULL THEN 1 ELSE 0 END AS is_correction,
             COALESCE(NULLIF(c.cover_url, ''), cov.cover_url, '') AS cover_url
        FROM volume_report r
        LEFT JOIN series s ON s.id = r.series_id
+       LEFT JOIN series_name_override o ON o.series_id = r.series_id
        LEFT JOIN series_correction c ON c.series_id = r.series_id AND c.isbn = r.isbn
        LEFT JOIN covers cov ON cov.isbn = r.isbn
       ORDER BY r.report_count DESC, r.last_reported_at DESC LIMIT ? OFFSET ?`
@@ -532,10 +534,11 @@ export async function adminListHiddenVolumes(env: Env, opts: PageOpts): Promise<
   const { results } = await env.DB.prepare(
     `SELECT h.series_id, h.isbn, h.created_at,
             COALESCE(v.volume_number, c.volume_number, '') AS volume_number,
-            s.name AS series_name, s.creator AS series_creator,
+            ${seriesNameSql("s", "o")} AS series_name, s.creator AS series_creator,
             COALESCE(NULLIF(c.cover_url, ''), cov.cover_url, '') AS cover_url
        FROM volume_hidden h
        LEFT JOIN series s ON s.id = h.series_id
+       LEFT JOIN series_name_override o ON o.series_id = h.series_id
        LEFT JOIN series_correction c ON c.series_id = h.series_id AND c.isbn = h.isbn
        LEFT JOIN volumes v ON v.isbn = h.isbn
        LEFT JOIN covers cov ON cov.isbn = h.isbn
@@ -565,19 +568,24 @@ interface AdminSeriesReportRow {
   first_reported_at: number;
   last_reported_at: number;
   current_name: string | null;   // series.name の現値（再取り込みで snapshot と食い違う場合の確認用）
+  display_name: string | null;   // 閲覧者に見えている名前（override → name_display → name）
   name_kana: string | null;      // かな読み（正しいタイトルのヒント）
   vol_title: string | null;      // 収録巻に載る title（正しいタイトルのヒント。多くは series 名と一致）
   override_name: string | null;  // 既に修正済みなら series_name_override.name
 }
 
 /** シリーズ名の通報一覧。件数の多い順。管理者が正しい名前を判断できるよう、現在の
- *  series.name・かな読み・収録巻の title・既存の上書き名をヒントとして併記する。 */
+ *  series.name・かな読み・収録巻の title・既存の上書き名をヒントとして併記する。
+ *  「現在の名前」は閲覧者に見えている名前（display_name）を出す: 同名シリーズと見分けるために
+ *  取り込みが副題を足していると（series.name_display）、通報者が見た名前はマスタの name とは
+ *  違う。マスタの素の名前は current_name として別に返し、食い違うときだけヒントに添える。 */
 export async function adminListSeriesReports(env: Env, opts: PageOpts): Promise<Response> {
   const total = await countRows(env, `SELECT COUNT(*) AS n FROM series_report`);
   const { results } = await env.DB.prepare(
     `SELECT r.series_id, r.reported_name, r.suggested_name, r.report_count,
             r.first_reported_at, r.last_reported_at,
-            s.name AS current_name, s.name_kana AS name_kana,
+            s.name AS current_name, ${seriesNameSql("s", "o")} AS display_name,
+            s.name_kana AS name_kana,
             (SELECT v.title FROM volumes v
               WHERE v.series_id = r.series_id AND v.title <> '' LIMIT 1) AS vol_title,
             o.name AS override_name
@@ -597,6 +605,7 @@ export async function adminListSeriesReports(env: Env, opts: PageOpts): Promise<
     first_reported_at: r.first_reported_at ?? 0,
     last_reported_at: r.last_reported_at ?? 0,
     current_name: r.current_name ?? "",
+    display_name: r.display_name ?? "",
     name_kana: r.name_kana ?? "",
     vol_title: r.vol_title ?? "",
     override_name: r.override_name ?? "",
@@ -1080,9 +1089,10 @@ export async function adminListSupplements(env: Env, opts: PageOpts): Promise<Re
   const total = await countRows(env, `SELECT COUNT(*) AS n FROM series_supplement`);
   const { results } = await env.DB.prepare(
     `SELECT sp.series_id, sp.volumes_json, sp.checked_at,
-            s.name AS series_name, s.creator AS series_creator
+            ${seriesNameSql("s", "o")} AS series_name, s.creator AS series_creator
        FROM series_supplement sp
        LEFT JOIN series s ON s.id = sp.series_id
+       LEFT JOIN series_name_override o ON o.series_id = sp.series_id
       ORDER BY sp.checked_at DESC LIMIT ? OFFSET ?`
   )
     .bind(opts.per, opts.offset)

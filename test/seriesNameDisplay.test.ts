@@ -2,8 +2,11 @@ import { SELF } from "cloudflare:test";
 import { env } from "cloudflare:workers";
 import { beforeAll, describe, expect, it } from "vitest";
 import { BROWSER_UA, makeIsbns } from "./helpers";
-// バックフィルの SQL 本体をそのまま読んで流す（判定が仕様。下の describe を参照）。
-import MIGRATION from "../db/add-series-name-display.sql?raw";
+import { normTitle, searchKey } from "../src/util";
+import { adminListSeriesReports, adminListSupplements, adminListVolumeReports } from "../src/admin";
+import type { Env } from "../src/types";
+// 判定の SQL 本体をそのまま読んで流す（これが仕様。下の describe を参照）。
+import MIGRATION from "../db/fix-series-name-display-variants.sql?raw";
 
 // 表示用のシリーズ名（series.name_display）。MADB のシリーズ名だけでは同名シリーズを見分け
 // られないので（「釣りキチ三平」は 6 件ある）、全ての巻が同じ副題を名乗るシリーズにはその副題を
@@ -18,11 +21,13 @@ const OVERRIDDEN = "CD003"; // AMBIGUOUS と同じ形で、管理者の名前修
 const [A, B, C, D, E] = makeIsbns(5, 920000);
 
 async function addSeries(id: string, name: string, display: string | null): Promise<void> {
+  // name_search は取り込みと同じ searchKey（記号・全角半角を落とした検索の照合キー）。
+  // 「同名」の判定がこの列を見るので、テストでも同じ値を入れる。
   await env.DB.prepare(
     `INSERT OR REPLACE INTO series (id, name, name_norm, name_search, creator, publisher, label, name_display)
      VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
   )
-    .bind(id, name, name, name, "表示名作者", "表示名社", null, display)
+    .bind(id, name, normTitle(name), searchKey(name), "表示名作者", "表示名社", null, display)
     .run();
 }
 
@@ -90,9 +95,8 @@ describe("表示用のシリーズ名を読む側", () => {
   });
 });
 
-// name_display を決める規則そのもの。本番の 4 つの DB に流すのはこの SQL なので、ファイルの
-// UPDATE をそのまま実行して確かめる（ALTER は schema.sql で済んでいるので切り落とす）。
-// 取り込み（scripts/ingest.mjs の「3.5」）は同じ判定を JS で持つ。
+// name_display を決める規則そのもの。本番の 4 つの DB に流すのはこの SQL なので、ファイルを
+// そのまま実行して確かめる。取り込み（scripts/ingest.mjs の「3.5」）は同じ判定を JS で持つ。
 const BACKFILL = MIGRATION.slice(MIGRATION.indexOf("UPDATE series"));
 
 describe("name_display を付ける条件（db/add-series-name-display.sql）", () => {
@@ -107,6 +111,10 @@ describe("name_display を付ける条件（db/add-series-name-display.sql）", 
     ["CD107", "ゴウホン", ["単独の副題", "単独の副題"], "ゴウホン 単独の副題"], // CD106 の同名の相手
     ["CD108", "ナマエニフクム 全英オープン編", ["全英オープン編", "全英オープン編"], null], // 名前が既に含む
     ["CD109", "ナマエニフクム 全英オープン編", ["別編", "別編"], "ナマエニフクム 全英オープン編 別編"],
+    // 「同名」は検索の照合キー（name_search）で見るので、中黒の有無だけが違う名前も同名に数える
+    // （C294944「ブラックジャック」と C276567 ほか「ブラック・ジャック」）。
+    ["CD111", "ヒョウキユレアリ", ["黒い医師", "黒い医師"], "ヒョウキユレアリ 黒い医師"],
+    ["CD112", "ヒョウキ・ユレアリ", ["別の副題", "別の副題"], "ヒョウキ・ユレアリ 別の副題"],
   ];
 
   beforeAll(async () => {
@@ -130,4 +138,60 @@ describe("name_display を付ける条件（db/add-series-name-display.sql）", 
       expect(row?.name_display ?? null).toBe(expected);
     });
   }
+});
+
+// 管理画面も閲覧者と同じ名前を出す。マスタの素の name を出すと、通報者が見た名前
+// （「釣りキチ三平 作者自選集」）と管理者が見る名前（「釣りキチ三平」）がずれる。
+describe("管理画面に出るシリーズ名", () => {
+  const adminEnv = env as unknown as Env;
+  const page = { page: 1, per: 50, offset: 0 };
+  const ADMIN = "CD201";
+  const [F] = makeIsbns(1, 940500);
+
+  beforeAll(async () => {
+    await addSeries(ADMIN, "カンリガメンテスト", "カンリガメンテスト 黒い医師");
+    await addVolume(ADMIN, F, "1", "黒い医師", "カンリガメンテスト");
+    await env.DB.prepare(
+      `INSERT OR REPLACE INTO series_report
+         (series_id, reported_name, suggested_name, report_count, first_reported_at, last_reported_at)
+       VALUES (?, ?, '', 1, 1, 1)`
+    )
+      .bind(ADMIN, "カンリガメンテスト 黒い医師")
+      .run();
+    await env.DB.prepare(
+      `INSERT OR REPLACE INTO volume_report
+         (series_id, isbn, volume_number, report_count, first_reported_at, last_reported_at)
+       VALUES (?, ?, '1', 1, 1, 1)`
+    )
+      .bind(ADMIN, F)
+      .run();
+    await env.DB.prepare(
+      `INSERT OR REPLACE INTO series_supplement (series_id, volumes_json, checked_at) VALUES (?, '[]', 1)`
+    )
+      .bind(ADMIN)
+      .run();
+  });
+
+  it("シリーズ名の通報一覧は、閲覧者に見えている名前とマスタの素の名前を両方返す", async () => {
+    const body = (await (await adminListSeriesReports(adminEnv, page)).json()) as {
+      reports: { series_id: string; display_name: string; current_name: string }[];
+    };
+    const row = body.reports.find((r) => r.series_id === ADMIN);
+    expect(row?.display_name).toBe("カンリガメンテスト 黒い医師");
+    expect(row?.current_name).toBe("カンリガメンテスト");
+  });
+
+  it("巻の通報一覧・補完キャッシュ一覧の所属シリーズ名も表示名になる", async () => {
+    const reports = (await (await adminListVolumeReports(adminEnv, page)).json()) as {
+      reports: { series_id: string; series_name: string }[];
+    };
+    expect(reports.reports.find((r) => r.series_id === ADMIN)?.series_name).toBe("カンリガメンテスト 黒い医師");
+
+    const supplements = (await (await adminListSupplements(adminEnv, page)).json()) as {
+      supplements: { series_id: string; series_name: string }[];
+    };
+    expect(supplements.supplements.find((r) => r.series_id === ADMIN)?.series_name).toBe(
+      "カンリガメンテスト 黒い医師"
+    );
+  });
 });

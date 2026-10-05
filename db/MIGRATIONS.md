@@ -206,6 +206,44 @@ R18版の `series`/`volumes` は 10/04 の取り込みのままなので ONE PIE
 `&all=1` を付けると `三国志` が 30 件返ることから、**成年向けだけを出す既定の絞り込み
 （`src/site.ts` `adultOnlySearch`）が効いているだけ**と思われる（不具合ではない）。
 
+## 2026-10-05 3 セッション分をまとめてデプロイ（全 4 環境）
+
+**migration なし・ingest なし。** 同じ作業ツリーで 3 セッションが並行していたので、CLAUDE.md の
+手順どおり予告・調整し、全員のコミットが揃ってから代表して 1 回で出した。
+
+| コミット | 内容 |
+|---|---|
+| `f1a702f` | 管理画面のレーベル管理に出版社と発行年の列を足し、ページ送りを廃止（1 回 1,000 件上限） |
+| `ba23bfc` | 迷子巻を「そのシリーズの巻が実際に名乗っている書名」でも fold する修正 |
+| `2651e5b` | admin#circulation に寄せ先レーベルのタグを表示、自動照合でタグ付きを後ろに回す |
+
+出す前に合流状態で `npx tsc --noEmit` と `npm test`（25 ファイル 264 件）を通した。
+
+| 環境 | Version ID |
+|---|---|
+| 本家 dev | `4851fdf9-eed5-4ba3-ad48-d389a4cfbb0b` |
+| 本家 本番 | `0c56f938-a485-455c-8e83-522a767f1bc3` |
+| R18 dev | `fb6c9755-ebba-41cb-8ac0-18b23a981029` |
+| R18 本番 | `e05f7d07-036a-48d6-a784-60c5bf1bd160` |
+
+確認:
+
+| 確認 | 結果 |
+|---|---|
+| 本家 本番 `/` `/lists` `/ranking` `/circulation` `/sales-ranking` `/l/rela1470` | すべて 200 |
+| `GET /api/series/C368624/volumes`（`ba23bfc`） | 東京卍リベンジャーズ 31 巻・1〜31 に抜けなし・7 巻が 9784065116203・短編集 9784065328712 の混入なし |
+| `GET /api/circulation`（本番） | entries 200 件 |
+| `GET /api/search?q=GTO` | `KPC` に `廉価版` が出る（回帰なし） |
+| admin（4 環境・未認証） | 本家 api=401 / ui=302、R18 api=403 / ui=403 |
+| R18 本番の年齢ゲート | ブラウザ UA・cookie 無しで 403 `{"age_gate":true}`、cookie 付きで 30 件 |
+
+**R18 の年齢ゲートを curl で確かめるときは必ずブラウザの User-Agent を付けること。**
+`curl` の既定 UA はクローラ判定（`src/ageGate.ts` の `isCrawler`）に当たって素通りし、
+cookie 無しでも 200 が返る。ゲートが壊れたように見えるが正常な除外規則。
+
+`2651e5b` の admin UI（タグの印・件数カード・候補の nested dialog の重なり順）は
+Cloudflare Access の内側で手元から確認できないため**未確認**。ブラウザで要確認。
+
 ### `add-indexes-2026-10.sql` の注意
 
 - `src/listItems.ts` が新しい表 `series_supplement_isbn` を参照するので、**このファイルを流してから**

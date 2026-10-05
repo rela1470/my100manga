@@ -95,7 +95,7 @@
       // 幅は欄に合わせるが、画面からはみ出す位置には置かない（狭い画面で右に切れるのを防ぐ）。
       const width = Math.min(r.width, v.width - EDGE * 2);
       box.style.width = width + "px";
-      box.style.left = Math.min(Math.max(r.left, v.left + EDGE), v.left + v.width - width - EDGE) + "px";
+      const left = Math.min(Math.max(r.left, v.left + EDGE), v.left + v.width - width - EDGE);
 
       const below = viewBottom - r.bottom - GAP - EDGE;
       const above = r.top - v.top - GAP - EDGE;
@@ -105,10 +105,28 @@
       box.style.maxHeight = Math.max(MIN_H, flip ? above : below) + "px";
       if (flip) {
         // 上に出すときは実寸が要るので、幅と maxHeight を当てたあとに測って下端を欄に合わせる。
-        box.style.top = Math.max(v.top + EDGE, r.top - GAP - box.offsetHeight) + "px";
+        // 画面上端で止める（Math.max）と、はみ出した分だけ箱が下へずれて検索欄に被さる。
+        // 止めずに上へはみ出させ、欄が見えていることを優先する。
+        placeAt(left, r.top - GAP - box.offsetHeight);
       } else {
-        box.style.top = r.bottom + GAP + "px";
+        placeAt(left, r.bottom + GAP);
       }
+    }
+
+    /** 箱を「レイアウトビューポート座標」で (left, top) に置く。
+     *  position:fixed の基準は本来レイアウトビューポートだが、iOS はソフトキーボードが出ている
+     *  間など視覚ビューポート基準にずれることがあり、入力欄（getBoundingClientRect ＝ レイアウト
+     *  ビューポート座標）とそろわずに候補が欄へ被さる。置いた結果を測ってずれた分だけ戻す。
+     *  ずれない実装では差が 0 なので何もしない。 */
+    function placeAt(left, top) {
+      box.style.left = left + "px";
+      box.style.top = top + "px";
+      const got = box.getBoundingClientRect();
+      if (!got.width && !got.height) return; // 畳んでいる間（display:none）は測れない
+      const dx = got.left - left;
+      const dy = got.top - top;
+      if (Math.abs(dx) > 0.5) box.style.left = left - dx + "px";
+      if (Math.abs(dy) > 0.5) box.style.top = top - dy + "px";
     }
 
     function setActive(i) {

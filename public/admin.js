@@ -2825,6 +2825,19 @@ function syncLabelTagOptions(tags) {
   }
 }
 
+// タグが付いている行に色を付ける。行全体を淡く塗って一覧で拾えるようにし、
+// プルダウン自体はタグごとの色にする（廉価版・文庫版・傑作選が混ざった一覧でも見分く）。
+// 色は styles.css の [data-tag="…"] 側で決める。知らないタグでも「付いている」色にはなる。
+function markLabelRow(tr, sel, tag) {
+  if (tr) {
+    tr.classList.toggle("tagged", !!tag);
+    if (tag) tr.dataset.tag = tag;
+    else delete tr.dataset.tag;
+  }
+  if (tag) sel.dataset.tag = tag;
+  else delete sel.dataset.tag;
+}
+
 function tagSelect(current) {
   const sel = el("select", { title: "このレーベルのタグ" });
   sel.append(el("option", { value: "", textContent: "—" }));
@@ -2926,6 +2939,7 @@ async function loadLabels() {
         await setLabelTags([row.label], next);
         // 1 行の付け替えでは一覧を取り直さない（チェック中の選択が消えるため）。件数だけ直す。
         row.tag = next;
+        markLabelRow(sel.closest("tr"), sel, next);
         if (prev) labelCounts.by_tag[prev] = Math.max(0, (labelCounts.by_tag[prev] ?? 0) - 1);
         if (next) labelCounts.by_tag[next] = (labelCounts.by_tag[next] ?? 0) + 1;
         labelCounts.tagged += (next ? 1 : 0) - (prev ? 1 : 0);
@@ -2938,17 +2952,19 @@ async function loadLabels() {
       }
     });
 
-    body.append(
-      el("tr", null, [
-        el("td", null, [cb]),
-        el("td", { textContent: row.label }),
-        el("td", { className: "num", textContent: (row.series_count ?? 0).toLocaleString("ja-JP") }),
-        pubCell,
-        yearCell,
-        el("td", { className: "muted", textContent: row.samples || "-" }),
-        el("td", null, [sel]),
-      ])
-    );
+    // タグ列は操作するものなので、チェックボックスの隣（左端）に置く。右端だと
+    // 「そのレーベルの主な作品」に押し出されて横スクロールしないと触れなかった。
+    const tr = el("tr", null, [
+      el("td", null, [cb]),
+      el("td", { className: "label-tag-cell" }, [sel]),
+      el("td", { textContent: row.label }),
+      el("td", { className: "num", textContent: (row.series_count ?? 0).toLocaleString("ja-JP") }),
+      pubCell,
+      yearCell,
+      el("td", { className: "muted", textContent: row.samples || "-" }),
+    ]);
+    markLabelRow(tr, sel, row.tag);
+    body.append(tr);
   }
 
   table.style.display = "";

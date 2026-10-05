@@ -490,6 +490,29 @@ a.stat-card.stat-link .k::after { content: " ›"; }
 .admin-table td.warn { color: var(--accent); }
 .admin-table td.num.hot { color: #fff; background: var(--accent); font-weight: 700; }
 .admin-table td.muted { color: var(--muted); }
+
+/* レーベル管理: タグが付いている行を一目で拾えるようにする（src/labels.ts）。
+   7,808 レーベルを検索で絞って一括付与する画面なので、どれが済んでいるかが
+   スクロールせずに分かることが要る。タグ列はチェックボックスの隣（左端）。
+   行は淡く塗るだけにして、色の違いはプルダウン側で出す。
+   zebra（nth-child(even)）と hover より後に置いて勝たせる。 */
+.admin-table tbody tr.tagged td,
+.admin-table tbody tr.tagged:nth-child(even) td { background: rgba(var(--accent-rgb), .08); }
+.admin-table tbody tr.tagged:hover td { background: rgba(var(--accent-rgb), .14); }
+.admin-table td.label-tag-cell { width: 1%; white-space: nowrap; }
+.admin-table td.label-tag-cell select {
+  font-weight: 700;
+  color: var(--muted);
+  border: 1.5px solid var(--line);
+  border-radius: 8px;
+  padding: 2px 6px;
+  background: var(--panel);
+}
+/* タグごとの色。LABEL_TAGS が増えたときは、ここに足すまで下の既定色（--accent）になる。 */
+.admin-table td.label-tag-cell select[data-tag] { color: var(--accent); border-color: var(--accent); }
+.admin-table td.label-tag-cell select[data-tag="廉価版"] { color: var(--warn-text); border-color: var(--accent-4); }
+.admin-table td.label-tag-cell select[data-tag="文庫版"] { color: var(--accent-2); border-color: var(--accent-2); }
+.admin-table td.label-tag-cell select[data-tag="傑作選"] { color: var(--accent-3); border-color: var(--accent-3); }
 /* シリーズの結合: 依頼 1 件 / 候補 1 グループごとの枠。見出し行に判断材料と操作を置く。 */
 .merge-group { margin-bottom: 16px; }
 .merge-group .admin-table td.owner, .merge-group .admin-table label { white-space: nowrap; }

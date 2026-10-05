@@ -44,7 +44,7 @@ DB 側に記録されないので、この表で管理する。
 | `add-is-adult.sql` | `series.is_adult` / `volumes.is_adult`（R18版が成年向けを収録するための印。本家では常に 0）。**R18版の D1 では ingest の前に** | × | 未適用 | 未適用（本家は次の月次 ingest で shadow テーブルごと入れ替わるときに入る。R18版は dev 2026-10-04 適用済み・本番未適用） |
 | `add-volume-subtitle.sql` | `volumes.subtitle`（巻の副題。同じ巻番号の別作品が 1 冊に畳まれるのを直す。中身は取り込み直しで埋まる）。**デプロイ前に** | × | 2026-10-04 | 2026-10-04 |
 | `add-series-version.sql` | `series.version`（版表示。同名の版違いシリーズを見分ける。中身は取り込み直しで埋まる）。**デプロイ前に** | × | 2026-10-04 | 2026-10-04 |
-| `add-label-tag.sql` | `label_tag`（レーベルの廉価版・文庫版タグ）＋ `idx_series_label`（管理画面のレーベル一覧）。**デプロイ前に** | ○ | 2026-10-05 | 2026-10-05（**R18版は dev / 本番とも未適用**。次に R18版をデプロイする前に流すこと） |
+| `add-label-tag.sql` | `label_tag`（レーベルの廉価版・文庫版タグ）＋ `idx_series_label`（管理画面のレーベル一覧）。**デプロイ前に** | ○ | 2026-10-05 | 2026-10-05（R18版も dev / 本番とも 2026-10-05 適用済み。**R18版はまだデプロイしていない**） |
 
 冪等: ○ = 何度流しても同じ結果。× = 2 回目はエラーになる（`ALTER TABLE ... ADD COLUMN` など。エラーで
 止まるだけで壊れはしないが、同じファイルの後続の文も流れない）。
@@ -145,21 +145,27 @@ DB 側に記録されないので、この表で管理する。
   | `GET /api/admin/labels`（未認証） | 401 |
   | `GET /admin`（未認証） | 302（Access のログインへ） |
 
-### R18版（my100shunga）への適用
+### `add-label-tag.sql` の R18版（my100shunga）への適用
 
-**未適用（dev / 本番とも）。次に `npm run deploy:r18:*` を行う前に必ず流すこと。**
-R18版は同じコードで動くので、表が無いまま新しいコードを出すと検索と巻一覧が
+**dev / 本番とも 2026-10-05 適用済み（表だけ先に作った。デプロイはまだ）。**
+R18版は本家と同じコードで動くので、表が無いまま新しいコードを出すと検索と巻一覧が
 `no such table: label_tag` で落ちる（`add-series-version.sql` のときと同じ事故）。
+本家より先に表だけ入れておき、落ちる窓を無くしてある。
 
-```bash
-npx wrangler d1 time-travel info DB --env r18dev   # ブックマークを控える
-npx wrangler d1 execute DB --env r18dev --remote --file db/add-label-tag.sql
-npx wrangler d1 time-travel info DB --env r18
-npx wrangler d1 execute DB --env r18    --remote --file db/add-label-tag.sql
-```
-
-今 R18版が動いている版は `label_tag` を参照しない旧コードなので、デプロイしない限り
-この未適用で壊れることはない。
+- 適用前の Time Travel ブックマーク:
+  dev `0000000c-00000000-000050fb-4ce7e338265010fbcc270567a73089df` /
+  本番 `00000013-00000000-000050fb-00808b4b7cb613fba923df74982fc0fb`
+- `d1 export` は取っていない。どちらも `lists` 0 / `users` 0 / `series_merge` 0 /
+  `custom_series` 0 / `series_correction` 0 で、ユーザデータが 1 行も無い（マスタだけなので
+  取り込み直しで作れる）。前回の R18版への適用と同じ判断。
+- `db/add-label-tag.sql` を両方に適用（`rows_written` 139,134 = `idx_series_label` の作成、
+  394ms / 415ms）。適用後はどちらも `label_tag` 0 行・`idx_series_label` あり、
+  `series` 139,130 / `volumes` 356,644 / `lists` 0 / `users` 0 で適用前と同じ。
+  レーベルは 7,992 種（本家より多いのは成年向けを収録しているため）。
+- **デプロイはしていない。** 適用後に `https://my100shunga.com/api/version` が
+  `50592d71`（10/05 の R18版デプロイ）のままであること、`/` が 200 であることを確認した。
+  次に `npm run deploy:r18:dev` / `:r18:prod` を出せば、そのままレーベル管理が使えるようになる
+  （R18版の ingest は不要。マスタの列は増えていない）。
 
 ### `add-indexes-2026-10.sql` の注意
 

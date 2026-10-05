@@ -14,8 +14,13 @@ import { Env } from "./types";
 import { badRequest, escapeLikeClamped, json, LIKE_MAX_BYTES } from "./util";
 
 /** レーベルに付けられるタグ。増やすときはここに足すだけでよい（管理画面の選択肢・検索の
- *  絞り込み・表示は全部この配列から作る）。表示文字列がそのまま DB に入る。 */
-export const LABEL_TAGS = ["廉価版", "文庫版"] as const;
+ *  絞り込み・表示は全部この配列から作る。DB の tag は素の TEXT なので migration も要らない）。
+ *  表示文字列がそのまま DB に入る。
+ *
+ *  傑作選 … 連載から数話を選んで再編集した本（「ジャンプコミックスセレクション」
+ *  「少年サンデーコミックスビジュアルセレクション」「YKベスト」など）。巻を順に読める
+ *  通常のコミックスとは別物なので、1 冊目に薦められない。 */
+export const LABEL_TAGS = ["廉価版", "文庫版", "傑作選"] as const;
 export type LabelTag = (typeof LABEL_TAGS)[number];
 
 function isLabelTag(v: unknown): v is LabelTag {
@@ -33,6 +38,20 @@ const IN_CHUNK = 100;
 
 /** 1 回のまとめて設定で受けるレーベルの上限（管理画面は 1 ページ 50 件なので十分）。 */
 const MAX_BULK = 200;
+
+/** 一覧の検索語を AND の語に割る上限。これ以上は落とす（LIKE の本数を青天井にしない）。 */
+const MAX_TERMS = 6;
+
+/** 検索語を空白（半角・全角）で割り、LIKE パターンとして安全な形にして返す。
+ *  LIKE のパターン長の上限は語ごとに掛かるので、語に割るほど切り詰めは起きにくい。 */
+function searchTerms(q: string): string[] {
+  return q
+    .split(/[\s\u3000]+/)
+    .filter(Boolean)
+    .slice(0, MAX_TERMS)
+    .map((t) => escapeLikeClamped(t, LIKE_MAX_BYTES))
+    .filter(Boolean);
+}
 
 /** 指定したレーベル名に付いているタグ（レーベル名 → タグ）。付いていないものは入らない。
  *
@@ -93,10 +112,13 @@ export async function adminListLabels(
 ): Promise<Response> {
   const where: string[] = [];
   const binds: unknown[] = [];
-  const like = escapeLikeClamped(q.trim(), LIKE_MAX_BYTES);
-  if (like) {
+  // 空白区切りは AND。同じレーベルがマスタ上で何通りにも表記されている（「ジャンプコミックス
+  // セレクション」「ジャンプ コミックス セレクション」「ジャンプ・コミックス・セレクション」…）
+  // ので、1 本の LIKE だと「ジャンプ セレクション」がどれにも当たらない。語ごとに分けて AND を
+  // 取ると 8 通りまとめて拾えて、そのままチェックして一括でタグを付けられる。
+  for (const term of searchTerms(q)) {
     where.push(`g.label LIKE ? ESCAPE '\\'`);
-    binds.push(`%${like}%`);
+    binds.push(`%${term}%`);
   }
   if (filter === "untagged") {
     where.push(`NOT EXISTS (SELECT 1 FROM label_tag t WHERE t.label = g.label)`);

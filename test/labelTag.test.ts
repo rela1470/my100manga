@@ -142,13 +142,14 @@ describe("レーベルのタグが検索と巻一覧に出る", () => {
 describe("管理画面のレーベル一覧", () => {
   it("シリーズ数の多い順に、現在のタグと主な作品を返す", async () => {
     const data = await listLabels();
-    expect(data.tags).toEqual(["廉価版", "文庫版"]);
+    expect(data.tags).toEqual(["廉価版", "文庫版", "傑作選"]);
     const byLabel = new Map(data.labels.map((l) => [l.label, l]));
     expect(byLabel.get("KPC")).toMatchObject({ series_count: 1, tag: "廉価版", samples: NAME });
     expect(byLabel.get("テスト通常コミックス")?.tag).toBe("");
     expect(data.total).toBe(3);
     expect(data.tagged).toBe(2);
-    expect(data.by_tag).toEqual({ 廉価版: 1, 文庫版: 1 });
+    // 使っていないタグも 0 で返す（管理画面の内訳表示が欠けないように）。
+    expect(data.by_tag).toEqual({ 廉価版: 1, 文庫版: 1, 傑作選: 0 });
   });
 
   it("?q= はレーベル名の部分一致", async () => {
@@ -195,6 +196,15 @@ describe("管理画面のタグ付け", () => {
     await setTags({ label: "  空白つき  ", tag: "廉価版" });
     expect(await tagOf("空白つき")).toBe("廉価版");
     await setTags({ label: "空白つき", tag: "" });
+  });
+
+  it("傑作選も設定できる（LABEL_TAGS に足すだけで通る）", async () => {
+    expect((await setTags({ label: "ジャンプコミックスセレクション", tag: "傑作選" })).status).toBe(200);
+    expect(await tagOf("ジャンプコミックスセレクション")).toBe("傑作選");
+    expect((await listLabels("", "傑作選")).labels.map((l) => l.label)).toEqual([
+      "ジャンプコミックスセレクション",
+    ]);
+    await setTags({ label: "ジャンプコミックスセレクション", tag: "" });
   });
 
   it("不明なタグ・空のレーベルは 400", async () => {

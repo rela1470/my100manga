@@ -285,7 +285,7 @@
       <div class="toolbar">
         <strong>レーベル管理</strong>
         <span class="count" id="labelCount"></span>
-        <input type="text" id="labelQuery" placeholder="レーベル名で検索（例: 文庫）" style="margin-left:8px;min-width:200px">
+        <input type="text" id="labelQuery" placeholder="レーベル名で検索（空白区切りで AND。例: ジャンプ セレクション）" style="margin-left:8px;min-width:260px">
         <select id="labelFilter" aria-label="タグで絞り込む">
           <option value="">すべて</option>
           <option value="untagged">未設定</option>
@@ -305,7 +305,11 @@
         別の表（<code>label_tag</code>）が持つので、毎月の取り込みで消えません。
         <br>
         「文庫」などで検索 → 「未設定」で絞り込み → <strong>このページを全選択</strong> →
-        下のまとめて設定、の順が速いです。一覧はシリーズ数の多い順に並びます。大文字小文字の
+        下のまとめて設定、の順が速いです。一覧はシリーズ数の多い順に並びます。
+        <strong>検索語を空白で区切ると AND になります</strong>（<code>ジャンプ セレクション</code> で
+        <code>ジャンプコミックスセレクション</code> も <code>ジャンプ コミックス セレクション</code> も
+        <code>ジャンプ・コミックス・セレクション</code> も一度に拾えます。マスタは同じレーベルを
+        何通りにも表記しているので、まとめて選ぶのに使ってください）。大文字小文字の
         違いだけのレーベル（<code>ACTION COMICS</code> と <code>Action comics</code> など）は
         別物として並びますが、検索は大文字小文字を区別しないので 1 回の検索でまとめて選べます。
         <br>

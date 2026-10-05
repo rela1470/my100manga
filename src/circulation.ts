@@ -241,6 +241,10 @@ export interface AdminCirculationRow {
   series_id: string | null; // 実際に使われている寄せ先
   series_name: string; // 寄せ先のシリーズ名（マスタに無ければ ""）
   series_label: string;
+  /** 寄せ先のレーベルに付いている運営のタグ（"廉価版" / "文庫版" / "傑作選"。無ければ ""）。
+   *  発行部数ランキングは本編の単行本へ寄せたいので、寄せ先が廉価版・文庫版・傑作選のときは
+   *  画面で目に付くようにして、直す判断ができるようにする（src/labels.ts）。 */
+  series_label_tag: string;
   volume_count: number;
   /** manual = 管理者が指定 / suggested = サジェストのまま / auto = 指定が無く自動照合 /
    *  none = 寄せ先なし（自動照合でも見つからなかった） / skipped = 「寄せない」として確定 /
@@ -267,17 +271,19 @@ export async function adminCirculationStatus(env: Env): Promise<Response> {
 
   // 寄せ先のシリーズ名・巻数。まとまり（G-id）はマスタに行が無いので名前は空のまま。
   const ids = [...new Set(entries.map((e) => e.series_id).filter((x): x is string => Boolean(x)))];
-  const names = new Map<string, { name: string; label: string; n: number }>();
+  const names = new Map<string, { name: string; label: string; tag: string; n: number }>();
   for (let i = 0; i < ids.length; i += CHUNK) {
     const chunk = ids.slice(i, i + CHUNK);
     const r = await env.DB.prepare(
       `SELECT s.id, s.name, COALESCE(s.label, '') AS label,
+              COALESCE((SELECT t.tag FROM label_tag t WHERE t.label = s.label), '') AS tag,
               (SELECT COUNT(*) FROM volumes v WHERE v.series_id = s.id) AS n
          FROM series s WHERE s.id IN (${chunk.map(() => "?").join(",")})`
     )
       .bind(...chunk)
-      .all<{ id: string; name: string; label: string; n: number }>();
-    for (const row of r.results ?? []) names.set(row.id, { name: row.name, label: row.label, n: row.n });
+      .all<{ id: string; name: string; label: string; tag: string; n: number }>();
+    for (const row of r.results ?? [])
+      names.set(row.id, { name: row.name, label: row.label, tag: row.tag, n: row.n });
   }
 
   const rows: AdminCirculationRow[] = entries.map((e) => {
@@ -300,6 +306,7 @@ export async function adminCirculationStatus(env: Env): Promise<Response> {
       series_id: e.series_id,
       series_name: info?.name ?? "",
       series_label: info?.label ?? "",
+      series_label_tag: info?.tag ?? "",
       volume_count: info?.n ?? 0,
       state,
       search_q: e.search_q || headWord(e.title).normalize("NFKC"),

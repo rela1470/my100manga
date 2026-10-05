@@ -3,6 +3,7 @@ import { baseTitle, escapeLikeClamped, json, LIKE_MAX_BYTES, normTitle } from ".
 import { rakutenBestsellers, rakutenReady, type RakutenBestseller } from "./rakuten";
 import { resolveUnit } from "./merge";
 import { groupKey, isGroupId, loadGroup, NAME_NORM_PREFIX } from "./groups";
+import { tagsForLabels } from "./labels";
 import { edgeCacheKey, withEdgeCache } from "./edgeCache";
 
 // 売上ランキング。楽天ブックスのコミックを「売れている順」（書籍検索API sort=sales）で毎日
@@ -407,14 +408,25 @@ interface NamedSeries {
   name: string;
   creator: string | null;
   n: number;
+  tag: string | null; // レーベルに付いた運営のタグ（廉価版 / 文庫版 / 傑作選。src/labels.ts）
 }
 
 /** 同名の候補から 1 つ選ぶ。巻の多いもの（本編の単行本）を優先し、著者が合うものは 4 倍に
  *  数える。著者で絞り切らないのは、マスタの著者表記が楽天と違うことがあるため（こち亀の
- *  ジャンプ・コミックス 201 巻は旧筆名「山止たつひこ」、文庫版 26 巻は「秋本治」）。 */
-function pickBest<T extends { creator: string | null; n: number }>(cands: T[], names: string[]): T | undefined {
+ *  ジャンプ・コミックス 201 巻は旧筆名「山止たつひこ」、文庫版 26 巻は「秋本治」）。
+ *
+ *  レーベルにタグ（廉価版・文庫版・傑作選）が付いている候補は、タグの無い候補がある限り
+ *  選ばない（点数での減点ではなく後回し）。ランキングから開きたいのは本編の単行本で、
+ *  廉価版・文庫版・傑作選はどれも別の形の本だから。巻数だけで選ぶと、本編が複数シリーズに
+ *  分かれていて文庫版が 1 本にまとまっている作品で文庫版が勝ってしまう。タグの付いた候補
+ *  しか無いときはそれを選ぶ（寄せ先なしよりは開ける方がよい）。 */
+function pickBest<T extends { creator: string | null; n: number; tag?: string | null }>(
+  cands: T[],
+  names: string[]
+): T | undefined {
   const score = (c: T) => c.n * (creatorMatches(c.creator, names) ? 4 : 1);
-  return [...cands].sort((a, b) => score(b) - score(a))[0];
+  const tagged = (c: T) => (c.tag ? 1 : 0);
+  return [...cands].sort((a, b) => tagged(a) - tagged(b) || score(b) - score(a))[0];
 }
 
 // 照合用のゆるいキー: 全角半角を寄せ、空白と区切り記号（「ちいかわ : なんか…」の「:」、
@@ -449,10 +461,15 @@ const sameWork = (title: string, work: string): boolean => {
   return looseKey(title) === w || looseKey(t) === w || looseKey(baseTitle(title)) === w;
 };
 
+// 候補と一緒に引く列。タグは search.ts SERIES_COLS と同じ相関サブクエリなので D1 の往復は増えない。
+const CAND_COLS = `s.id, s.name, s.creator,
+        (SELECT t.tag FROM label_tag t WHERE t.label = s.label) AS tag,
+        (SELECT COUNT(*) FROM volumes v WHERE v.series_id = s.id) AS n`;
+
 async function seriesByName(env: Env, work: string, names: string[]): Promise<string | null> {
   const exact = [...new Set([normTitle(work), workKey(work)])];
   const r = await env.DB.prepare(
-    `SELECT s.id, s.name, s.creator, (SELECT COUNT(*) FROM volumes v WHERE v.series_id = s.id) AS n
+    `SELECT ${CAND_COLS}
        FROM series s WHERE s.name_norm IN (${exact.map(() => "?").join(",")})`
   )
     .bind(...exact)
@@ -460,7 +477,7 @@ async function seriesByName(env: Env, work: string, names: string[]): Promise<st
   let cands = r.results ?? [];
   if (!cands.length) {
     const like = await env.DB.prepare(
-      `SELECT s.id, s.name, s.creator, (SELECT COUNT(*) FROM volumes v WHERE v.series_id = s.id) AS n
+      `SELECT ${CAND_COLS}
          FROM series s WHERE ${NAME_NORM_PREFIX} LIMIT 500`
     )
       .bind(namePrefix(work), namePrefix(work))
@@ -479,15 +496,21 @@ async function groupByTitle(env: Env, work: string, names: string[]): Promise<st
     .bind(likePrefix(work))
     .all<{ isbn: string; title: string; creator: string | null; label: string | null }>();
   // まとまりは「書名 + 著者 + レーベル」（groups.groupKey、loadGroup と同じ粒度）。
-  const groups = new Map<string, { isbn: string; creator: string | null; n: number }>();
+  const groups = new Map<string, { isbn: string; creator: string | null; label: string; n: number }>();
   for (const v of r.results ?? []) {
     if (!sameWork(v.title, work)) continue;
     const g = groupKey(v);
     const slot = groups.get(g);
     if (slot) slot.n++;
-    else groups.set(g, { isbn: v.isbn, creator: v.creator, n: 1 });
+    else groups.set(g, { isbn: v.isbn, creator: v.creator, label: v.label ?? "", n: 1 });
   }
-  const best = pickBest([...groups.values()], names);
+  if (!groups.size) return null;
+  // まとまりは series 行が無いので、レーベルのタグは別に引く（候補があるときだけ）。
+  const tags = await tagsForLabels(env, [...groups.values()].map((g) => g.label));
+  const best = pickBest(
+    [...groups.values()].map((g) => ({ ...g, tag: tags.get(g.label) ?? null })),
+    names
+  );
   return best ? "G" + best.isbn : null;
 }
 

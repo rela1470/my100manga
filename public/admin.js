@@ -314,6 +314,13 @@ function coverThumb(url, cls, noimgCls, alt) {
   return el("div", { className: noimgCls, textContent: "No Image" });
 }
 
+// レーベルに付いた運営のタグ（"廉価版" / "文庫版" / "傑作選"。src/labels.ts）の印。公開側の
+// カード（public/app.js labelTagBadge）と同じ見た目・同じ class を使う。タグが無ければ null。
+function labelTagBadge(tag) {
+  if (!tag) return null;
+  return el("span", { className: "label-tag", textContent: tag, title: "レーベルから判定した版（レーベル管理で設定）" });
+}
+
 // coverThumb を、画像があればクリックで拡大オーバーレイを開けるようにしたもの。表紙の修正で
 // 現在の表紙と提案表紙を小さいサムネイルのまま見比べづらいので、押すと重ねて拡大表示する。
 function zoomableCover(url, alt) {
@@ -2042,24 +2049,33 @@ async function openSeriesVolumes(seriesId, label) {
 
   // 結合の判断に使えるよう、1 冊ごとに作者・出版社/レーベル・発行日・ISBN（版違いの数）まで
   // 出す。押すと本の詳細（book-detail.js。あらすじ・他の版の ISBN）を重ねて開く。
-  for (const v of vols) {
-    const others = (v.isbns || []).length - 1;
-    const body = [
-      el("div", { className: "di-pos", textContent: v.volume_number || "-" }),
-      el("div", { className: "di-title", textContent: v.title || "（タイトルなし）" }),
-      el("div", { className: "di-author", textContent: v.creators || v.author || "" }),
-      el("div", { className: "di-meta", textContent: [v.publisher, v.label].filter(Boolean).join(" / ") }),
-      el("div", { className: "di-meta", textContent: v.pubdate || "" }),
-      el("div", { className: "di-meta di-isbn", textContent: (v.isbn || "") + (others > 0 ? `（他${others}版）` : "") }),
-    ];
-    if (v.correction) body.push(el("div", { className: "di-flags", textContent: "ユーザ投稿" }));
-    const item = el("div", { className: "detail-item clickable", title: "本の詳細を表示" }, [
-      coverThumb(v.cover_url, "di-cover", "di-noimg", v.title),
-      el("div", { className: "di-body" }, body),
-    ]);
-    item.addEventListener("click", () => openBookDetail(v, { noSeries: true }));
-    grid.append(item);
+  for (const v of vols) grid.append(volumeDetailItem(v, () => openBookDetail(v, { noSeries: true })));
+}
+
+// 巻 1 冊のカード（巻一覧モーダルと、寄せ先モーダルの巻プレビューで共通）。onClick を渡すと
+// 押せるカードになる。dialog の中で使うときは渡さない ー 本の詳細（book-detail.js）は div の
+// オーバーレイなので、top layer の dialog の後ろに出てしまう。
+function volumeDetailItem(v, onClick) {
+  const others = (v.isbns || []).length - 1;
+  const body = [
+    el("div", { className: "di-pos", textContent: v.volume_number || "-" }),
+    el("div", { className: "di-title", textContent: v.title || "（タイトルなし）" }),
+    el("div", { className: "di-author", textContent: v.creators || v.author || "" }),
+    el("div", { className: "di-meta", textContent: [v.publisher, v.label].filter(Boolean).join(" / ") }),
+    el("div", { className: "di-meta", textContent: v.pubdate || "" }),
+    el("div", { className: "di-meta di-isbn", textContent: (v.isbn || "") + (others > 0 ? `（他${others}版）` : "") }),
+  ];
+  if (v.correction) body.push(el("div", { className: "di-flags", textContent: "ユーザ投稿" }));
+  const item = el("div", { className: "detail-item" }, [
+    coverThumb(v.cover_url, "di-cover", "di-noimg", v.title),
+    el("div", { className: "di-body" }, body),
+  ]);
+  if (onClick) {
+    item.classList.add("clickable");
+    item.title = "本の詳細を表示";
+    item.addEventListener("click", onClick);
   }
+  return item;
 }
 
 async function approveCorrection(seriesId, isbn, seriesName, btn) {
@@ -3404,6 +3420,17 @@ async function loadCirculation() {
       ])
     );
   }
+  // 寄せ先のレーベルにタグ（廉価版・文庫版・傑作選）が付いている行。状態（manual /
+  // suggested …）とは別の軸なので、サーバの states ではなく行から数えて 1 枚足す。
+  const tagged = circRows.filter((r) => r.series_label_tag).length;
+  if (tagged) {
+    $("circStates").append(
+      el("div", { className: "stat-card warn" }, [
+        el("div", { className: "n", textContent: String(tagged) }),
+        el("div", { className: "k", textContent: "寄せ先が廉価版・文庫版・傑作選" }),
+      ])
+    );
+  }
   renderCircRows();
 }
 
@@ -3418,14 +3445,28 @@ const CIRC_STATE_LABEL = {
 // 目で確かめたいもの。サジェストのままでも問題は無いので、ここには入れない。
 const CIRC_ISSUE = new Set(["auto", "none", "stale"]);
 
+// 「要確認だけ」で残す行。状態のほかに、寄せ先のレーベルにタグ（廉価版・文庫版・傑作選）が
+// 付いているものも含める ー 状態としては正常（サジェスト / 手動）でも、ランキングから開きたい
+// 本編の単行本ではない可能性が高く、200 行の中から印を目で探すのは現実的でないため。
+const circNeedsCheck = (r) => CIRC_ISSUE.has(r.state) || Boolean(r.series_label_tag);
+
 function renderCircRows() {
   const onlyIssues = $("circOnlyIssues").checked;
-  const rows = onlyIssues ? circRows.filter((r) => CIRC_ISSUE.has(r.state)) : circRows;
+  const rows = onlyIssues ? circRows.filter(circNeedsCheck) : circRows;
   const body = $("circRowsBody");
   body.textContent = "";
   $("circRowsCount").textContent = onlyIssues ? `${rows.length} / ${circRows.length} 件` : `${circRows.length} 件`;
 
   for (const r of rows) {
+    // 寄せ先のレーベルに付いたタグ（廉価版・文庫版・傑作選）は、寄せ先が本編の単行本かを
+    // 疑うしるしなので一覧に出す（ランキングから開きたいのは本編）。
+    const targetMeta = el("div", {
+      className: "muted",
+      style: "font-size:12px",
+      textContent: [r.series_label, r.volume_count ? `${r.volume_count}巻` : ""].filter(Boolean).join(" / "),
+    });
+    const targetTag = labelTagBadge(r.series_label_tag);
+    if (targetTag) targetMeta.append(targetTag);
     const target = r.series_id
       ? el("div", {}, [
           el("a", {
@@ -3433,11 +3474,7 @@ function renderCircRows() {
             target: "_blank",
             textContent: r.series_name || r.series_id,
           }),
-          el("div", {
-            className: "muted",
-            style: "font-size:12px",
-            textContent: [r.series_label, r.volume_count ? `${r.volume_count}巻` : ""].filter(Boolean).join(" / "),
-          }),
+          targetMeta,
         ])
       : el("a", {
           href: `/?q=${encodeURIComponent(r.search_q || r.title)}`,
@@ -3471,7 +3508,7 @@ function renderCircRows() {
         ]),
         el("td", { className: "wrap" }, [target]),
         el("td", {
-          className: CIRC_ISSUE.has(r.state) ? "" : "muted",
+          className: circNeedsCheck(r) ? "" : "muted",
           textContent: CIRC_STATE_LABEL[r.state] || r.state,
         }),
         el("td", {}, [actions]),
@@ -3516,16 +3553,28 @@ async function runCircPickSearch() {
   }
   hint.textContent = results.length ? "" : "見つかりませんでした。語を短くして試してください。";
   for (const r of results) {
+    // レーベルのタグ（廉価版・文庫版・傑作選）は、同名で並ぶ候補のどれが本編かの手がかりに
+    // なるので候補にも出す（検索 API がシリーズ行と一緒に返している。src/search.ts）。
+    const labelCell = el("td", { className: "wrap muted", textContent: r.label || "" });
+    const tag = labelTagBadge(r.label_tag);
+    if (tag) labelCell.append(tag);
     body.append(
       el("tr", {}, [
         el("td", { className: "wrap", textContent: r.title }),
         el("td", { className: "wrap muted", textContent: r.creators || r.creator || "" }),
-        el("td", { className: "wrap muted", textContent: r.label || "" }),
+        labelCell,
         el("td", { className: "num", textContent: String(r.volume_count ?? "") }),
         el("td", {}, [
           el("button", {
             type: "button",
+            textContent: "巻",
+            title: "このシリーズの巻を見る",
+            onclick: () => openCircVols(r.series_id, r.title),
+          }),
+          el("button", {
+            type: "button",
             textContent: "これにする",
+            style: "margin-left:6px",
             onclick: () => {
               $("circPickDlg").close();
               setCircLink(circPickArticle, r.series_id, "");
@@ -3536,6 +3585,42 @@ async function runCircPickSearch() {
     );
   }
   $("circPickTable").style.display = results.length ? "" : "none";
+}
+
+// 候補の巻を、寄せ先モーダルに重ねて見せる。同名のシリーズが並んだときに「どれが本編か」は
+// レーベルと巻数だけでは決めきれない（新装版・大判・傑作選が同じ名前で並ぶ）ので、巻の書名と
+// 発行日と表紙まで見てから選べるようにしてある。巻一覧は公開 API をそのまま使う（まとまりの
+// G-id も同じ経路で開ける）。表紙はキャッシュにあるものだけ（管理用途には十分）。
+async function openCircVols(seriesId, label) {
+  const grid = $("circVolsGrid");
+  const meta = $("circVolsMeta");
+  grid.textContent = "";
+  meta.textContent = "読み込み中…";
+  $("circVolsTitle").textContent = label || seriesId;
+  $("circVolsDlg").showModal();
+
+  let data;
+  try {
+    const res = await fetch(`/api/series/${encodeURIComponent(seriesId)}/volumes`);
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    data = await res.json();
+  } catch (e) {
+    meta.textContent = "読み込みに失敗しました: " + e.message;
+    return;
+  }
+
+  const vols = data.volumes || [];
+  const creator = data.creators || data.creator || "";
+  $("circVolsTitle").textContent = data.title || label || seriesId;
+  meta.textContent = [creator, `${vols.length}巻`, `series_id: ${seriesId}`].filter(Boolean).join(" ｜ ");
+  const tag = labelTagBadge(data.label_tag);
+  if (tag) meta.append(tag);
+  if (!vols.length) {
+    grid.append(el("p", { className: "hint", textContent: "巻が見つかりませんでした。" }));
+    return;
+  }
+  // 本の詳細（div のオーバーレイ）は dialog の後ろに出てしまうので、ここでは押せなくする。
+  for (const v of vols) grid.append(volumeDetailItem(v, null));
 }
 
 /** series_id: 文字列 = そこへ寄せる / "" = 寄せない / null = 指定を外す。 */

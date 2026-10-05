@@ -19,13 +19,15 @@ import { makeIsbns } from "./helpers";
 
 let nextIsbn = 0;
 
-/** マスタのシリーズと巻を作る。巻数 = num_items。 */
-async function seedSeries(id: string, name: string, volumes: number): Promise<string[]> {
+/** マスタのシリーズと巻を作る。巻数 = num_items。label を渡すとそのレーベルに属させる
+ *  （レーベルのタグ = 廉価版・文庫版・傑作選 の効きを見るため）。 */
+async function seedSeries(id: string, name: string, volumes: number, label = ""): Promise<string[]> {
   const isbns = makeIsbns(volumes, (nextIsbn += 1000));
   await env.DB.prepare(
-    `INSERT INTO series (id, name, name_norm, creator, publisher, num_items) VALUES (?, ?, ?, '作者', '出版社', ?)`
+    `INSERT INTO series (id, name, name_norm, creator, publisher, label, num_items)
+     VALUES (?, ?, ?, '作者', '出版社', ?, ?)`
   )
-    .bind(id, name, normTitle(name), volumes)
+    .bind(id, name, normTitle(name), label, volumes)
     .run();
   await env.DB.batch(
     isbns.map((isbn, i) =>
@@ -62,6 +64,7 @@ beforeEach(async () => {
     env.DB.prepare(`DELETE FROM volumes`),
     env.DB.prepare(`DELETE FROM series`),
     env.DB.prepare(`DELETE FROM covers`),
+    env.DB.prepare(`DELETE FROM label_tag`),
     env.DB.prepare(`DELETE FROM meta`),
   ]);
 });
@@ -89,6 +92,31 @@ describe("発行部数ランキングの集計", () => {
     expect(payload.entries[1].series_id).toBe("C2");
     // 寄せ先があるときは検索語を出さない（公開ページは巻一覧へリンクする）。
     expect(payload.entries[0].search_q).toBe("");
+  });
+
+  it("自動照合は、レーベルにタグの付いたシリーズ（文庫版）を後回しにする", async () => {
+    // 同名で並ぶ候補のうち、文庫版の方が巻数が多い（本編が複数シリーズに分かれていて、
+    // 文庫版が 1 本にまとまっている作品で起きる）状況。巻数だけで選ぶと文庫版が勝つ。
+    await seedSeries("C1", "テスト作品A", 8, "講談社漫画文庫");
+    await seedSeries("C2", "テスト作品A", 3, "テスト通常コミックス");
+    await env.DB.prepare(
+      `INSERT INTO label_tag (label, tag, created_at, updated_at) VALUES ('講談社漫画文庫', '文庫版', 1, 1)`
+    ).run();
+    await seedCirculation([{ title: "テスト作品A", copies: 100_000_000 }]);
+
+    const payload = await computeCirculation(env);
+    expect(payload.entries[0].series_id).toBe("C2");
+  });
+
+  it("タグの付いたシリーズしか無ければ、それを寄せ先にする", async () => {
+    await seedSeries("C1", "テスト作品A", 8, "講談社漫画文庫");
+    await env.DB.prepare(
+      `INSERT INTO label_tag (label, tag, created_at, updated_at) VALUES ('講談社漫画文庫', '文庫版', 1, 1)`
+    ).run();
+    await seedCirculation([{ title: "テスト作品A", copies: 100_000_000 }]);
+
+    const payload = await computeCirculation(env);
+    expect(payload.entries[0].series_id).toBe("C1");
   });
 
   it("マスタに無い作品も順位には出し、検索語を添える", async () => {

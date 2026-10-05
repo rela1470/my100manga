@@ -686,6 +686,10 @@
         作品ごとの寄せ先（巻一覧を開く先）です。既定では自動照合の結果が「サジェスト」として入っていて、
         間違っているものだけここで直します。「変更」でマスタのシリーズを検索して選び、本編が収録されていない作品は
         「寄せない」にします（検索結果へのリンクだけになります）。「戻す」で指定を外すと自動照合に戻ります。
+        <br>寄せ先のレーベルに「廉価版」「文庫版」「傑作選」のタグ（<a href="#labels">レーベル管理</a>）が付いていると印が出て、「要確認だけ」に残ります。
+        ランキングから開きたいのは本編の単行本なので、印が付いている行は「変更」で本編に寄せ直してください
+        （自動照合もタグの付いたレーベルは後回しにしますが、本編がマスタに無いときは選ばれます）。
+        「変更」の候補は「巻」で中身（巻数・書名・発行日・表紙）を確かめてから選べます。
         <br>「サジェストを取り込む」は、指定の無い作品を自動照合して埋めます（既にある指定は変わりません）。
         マスタを取り込み直したあと、新しく収録された作品を拾うのに使ってください。
         サジェストのままの行も付け直したいときは <code>POST /api/admin/circulation/suggest?overwrite=1</code>（手動指定は残ります）。
@@ -709,6 +713,19 @@
             <thead><tr><th>シリーズ名</th><th>著者</th><th>レーベル</th><th class="num">巻数</th><th></th></tr></thead>
             <tbody id="circPickBody"></tbody>
           </table>
+          <div class="cover-actions">
+            <button value="cancel">閉じる</button>
+          </div>
+        </form>
+      </dialog>
+
+      <!-- 寄せ先を選ぶ前に中身を確かめる巻一覧。寄せ先モーダルに重ねて開くので、div の
+           オーバーレイ（リスト詳細モーダル）ではなく dialog にしてある（top layer）。 -->
+      <dialog id="circVolsDlg" class="admin-dialog">
+        <form method="dialog">
+          <h3 id="circVolsTitle">巻一覧</h3>
+          <p class="hint" id="circVolsMeta"></p>
+          <div class="detail-grid" id="circVolsGrid"></div>
           <div class="cover-actions">
             <button value="cancel">閉じる</button>
           </div>

@@ -50,10 +50,23 @@ interface Card {
 async function listLabels(q = "", filter = "", era = "") {
   const res = await adminListLabels(adminEnv, q, filter, era);
   expect(res.status).toBe(200);
+  // src/labels.ts adminListLabels の応答そのまま（増えた列を足し忘れると型検査で落ちる）。
   return (await res.json()) as {
     tags: string[];
-    labels: { label: string; series_count: number; tag: string; samples: string }[];
+    labels: {
+      label: string;
+      series_count: number;
+      tag: string;
+      samples: string;
+      publisher: string;
+      publisher_n: number;
+      year_from: string;
+      year_to: string;
+    }[];
     total: number;
+    shown: number;
+    truncated: boolean;
+    limit: number;
     tagged: number;
     by_tag: Record<string, number>;
   };

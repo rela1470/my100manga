@@ -103,6 +103,35 @@ body {
   color: var(--text);
   line-height: 1.7;
 }
+/* 地のトーン。マスクで数か所だけに出す。::before は細かいアミ点、::after は斜線。
+   模様ごとに疑似要素を分けているのは、1 つにまとめると全部のパッチに全部の模様が
+   重なってしまうため。パネルは不透明なので、見えるのは主に本文の外側の余白。 */
+body::before, body::after {
+  content: "";
+  position: fixed; inset: 0;
+  pointer-events: none; z-index: -1;
+}
+body::before {
+  background-image: radial-gradient(var(--ink) 1.4px, transparent 1.7px);
+  background-size: 10px 10px;
+  opacity: .2;
+  -webkit-mask-image:
+    radial-gradient(ellipse 230px 190px at 2% 26%, #000 40%, transparent 74%),
+    radial-gradient(ellipse 190px 240px at 99% 70%, #000 40%, transparent 74%);
+  mask-image:
+    radial-gradient(ellipse 230px 190px at 2% 26%, #000 40%, transparent 74%),
+    radial-gradient(ellipse 190px 240px at 99% 70%, #000 40%, transparent 74%);
+}
+body::after {
+  background-image: repeating-linear-gradient(-38deg, var(--ink) 0 2px, transparent 2px 11px);
+  opacity: .14;
+  -webkit-mask-image:
+    radial-gradient(ellipse 200px 160px at 98% 18%, #000 38%, transparent 72%),
+    radial-gradient(ellipse 170px 210px at 1% 82%, #000 38%, transparent 72%);
+  mask-image:
+    radial-gradient(ellipse 200px 160px at 98% 18%, #000 38%, transparent 72%),
+    radial-gradient(ellipse 170px 210px at 1% 82%, #000 38%, transparent 72%);
+}
 
 a { color: var(--accent-2); }
 
@@ -402,9 +431,29 @@ button:disabled { opacity: .45; cursor: not-allowed; transform: none; box-shadow
 }
 .hero-balloon::before { left: 24%; bottom: -17px; border-top: 18px solid var(--ink); }
 .hero-balloon::after { left: calc(24% + 5px); bottom: -8px; border-top: 12px solid var(--panel); }
-.hero-balloon.b1 { width: 104px; height: 62px; left: 52%; top: 15%; transform: rotate(-4deg); }
-.hero-balloon.b2 { width: 70px; height: 44px; left: 66%; top: 32%; transform: rotate(6deg); }
-.hero-balloon.b3 { width: 60px; height: 38px; left: 45%; top: 76%; transform: rotate(3deg); }
+.hero-balloon.b1 { width: 104px; height: 62px; left: 51%; top: 12%; transform: rotate(-4deg); }
+/* 2 つ目は角丸四角（楕円と見分けがつくように）。 */
+.hero-balloon.b2 {
+  width: 82px; height: 48px; left: 57%; top: 40%;
+  border-radius: 14px; transform: rotate(6deg);
+}
+.hero-balloon.b3 { width: 60px; height: 38px; left: 56%; top: 84%; transform: rotate(3deg); }
+/* 3 つ目はギザギザの吹き出し。clip-path では枠線が引けないので、黒を一回り大きく敷いて
+   その上に白を少し小さく重ね、縁取りに見せる。 */
+.hero-burst-balloon {
+  position: absolute; left: 63%; top: 58%;
+  width: 104px; height: 76px;
+  transform: rotate(-6deg);
+}
+.hero-burst-balloon::before, .hero-burst-balloon::after {
+  content: ""; position: absolute; inset: 0;
+  clip-path: polygon(
+    50% 0%, 62% 11%, 78% 4%, 80% 18%, 96% 16%, 90% 30%, 100% 44%, 88% 54%,
+    96% 70%, 79% 70%, 76% 86%, 62% 76%, 50% 100%, 39% 77%, 24% 86%, 21% 70%,
+    5% 71%, 12% 55%, 0% 44%, 11% 30%, 4% 15%, 20% 18%, 22% 4%, 38% 11%);
+}
+.hero-burst-balloon::before { background: var(--ink); }
+.hero-burst-balloon::after { background: var(--panel); inset: 5px; }
 
 /* 文字側は伸び、メーターは折り返したら中央に来る。 */
 .hero-copy { flex: 999 1 520px; min-width: 0; display: flex; flex-direction: column; gap: 24px; }
@@ -754,15 +803,19 @@ body.admin header.site h1 { font-size: 22px; }
   margin: 0 0 20px;
 }
 .stat-grid.site-stats .stat-card { position: relative; overflow: hidden; }
-/* コマの地のトーン。 */
-.stat-grid.site-stats .stat-card::before {
+/* コマの地のトーンも 1 枚ずつ変える（2 枚目は粗いアミ点、3 枚目は無地）。 */
+.stat-grid.site-stats .stat-card::before { content: none; }
+.stat-grid.site-stats .stat-card:nth-child(2)::before {
   content: "";
-  position: absolute; inset: 0; pointer-events: none; opacity: .07;
-  background-image: radial-gradient(var(--ink) 1.2px, transparent 1.4px);
-  background-size: 9px 9px;
+  position: absolute; inset: 0; pointer-events: none; opacity: .1;
+  background-image: radial-gradient(var(--ink) 2.2px, transparent 2.5px);
+  background-size: 15px 15px;
+  -webkit-mask-image: linear-gradient(160deg, #000 10%, transparent 70%);
+  mask-image: linear-gradient(160deg, #000 10%, transparent 70%);
 }
-/* 数字の後ろの集中線。中心（数字が乗るところ）はマスクで抜く。 */
-.stat-grid.site-stats .stat-card::after {
+/* 数字の後ろの集中線は 1 枚目だけ。 */
+.stat-grid.site-stats .stat-card::after { content: none; }
+.stat-grid.site-stats .stat-card:nth-child(1)::after {
   content: "";
   position: absolute; inset: 0; pointer-events: none; opacity: .16;
   background: repeating-conic-gradient(from 0deg at 50% 42%, var(--ink) 0deg 0.3deg, transparent 0.3deg 3deg);
@@ -2561,6 +2614,24 @@ a.bd-series:hover { background: var(--accent-strong-2); }
   box-shadow: var(--shadow-sm);
 }
 .empty-guide[hidden] { display: none; }
+/* 右上の角からはみ出す飾りの吹き出し。中身は空（装飾）。 */
+.empty-guide { position: relative; }
+.empty-guide::before, .empty-guide::after {
+  content: ""; position: absolute; pointer-events: none;
+}
+.empty-guide::before {
+  right: 38px; top: -30px; width: 86px; height: 52px;
+  background: var(--panel); border: var(--bw) solid var(--ink); border-radius: 50%;
+  transform: rotate(5deg);
+}
+/* しっぽ。黒い三角の上に白を重ねて枠線だけ残す。 */
+.empty-guide::after {
+  right: 92px; top: 16px; width: 0; height: 0;
+  border-left: 8px solid transparent; border-right: 14px solid transparent;
+  border-top: 17px solid var(--ink);
+  transform: rotate(5deg);
+}
+@media (max-width: 760px) { .empty-guide::before, .empty-guide::after { display: none; } }
 .empty-guide-title { margin: 0 0 14px; font-weight: 900; font-size: 17px; }
 /* 3 コマ横並び。番号は counter でコマの角に打つ。狭い画面では 1 列に積む。 */
 .empty-guide-steps {
@@ -2584,14 +2655,25 @@ a.bd-series:hover { background: var(--accent-strong-2); }
   border-radius: var(--radius-sm);
   box-shadow: var(--shadow-sm);
 }
-/* コマの地の集中線（薄く）。 */
+/* コマの地はコマごとに変える。全部そろえると整いすぎて、かえって手抜きに見えるため。
+   1 コマ目は集中線、2 コマ目は無地、3 コマ目は斜線。 */
 .empty-guide-steps li::after {
   content: "";
-  position: absolute; inset: 0; pointer-events: none; opacity: .09;
+  position: absolute; inset: 0; pointer-events: none;
   border-radius: inherit;
+}
+.empty-guide-steps li:nth-child(1)::after {
+  opacity: .09;
   background: repeating-conic-gradient(from 0deg at 88% 22%, var(--ink) 0deg 0.3deg, transparent 0.3deg 3.4deg);
   -webkit-mask-image: radial-gradient(ellipse 52% 60% at 88% 22%, transparent 24%, #000 80%);
   mask-image: radial-gradient(ellipse 52% 60% at 88% 22%, transparent 24%, #000 80%);
+}
+.empty-guide-steps li:nth-child(2)::after { content: none; }
+.empty-guide-steps li:nth-child(3)::after {
+  opacity: .1;
+  background: repeating-linear-gradient(-40deg, var(--ink) 0 2px, transparent 2px 10px);
+  -webkit-mask-image: linear-gradient(200deg, #000 0%, transparent 58%);
+  mask-image: linear-gradient(200deg, #000 0%, transparent 58%);
 }
 .empty-guide-steps li > * { position: relative; z-index: 1; }
 .step-head {

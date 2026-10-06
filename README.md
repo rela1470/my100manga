@@ -215,7 +215,7 @@ npx wrangler secret put AMAZON_ASSOCIATE_TAG --env dev
 
 | 対象 | 保持 | キーに含むもの | TTL 以外の無効化 |
 |---|---|---|---|
-| `GET /api/search` | 60 分 | 検索語・offset・表示世代 | 管理者の変更（世代） |
+| `GET /api/search` | 60 分 | 検索語・offset・検索の対象（作品名 / 作者名）・表示世代 | 管理者の変更（世代） |
 | `GET /api/suggest` | 60 分 | 入力中の語・表示世代 | 管理者の変更（世代） |
 | `GET /api/series/:id/volumes` | 60 秒 | シリーズ id・表示世代 | 手動追加 / 補完取得（その colo）・管理者の変更 |
 | `GET /api/public-lists` | 新着 60 秒 / アクセス数順 5 分 | sort・page | 公開・更新（その colo の 1 ページ目） |
@@ -252,6 +252,7 @@ npm run dev
 `http://localhost:8787/` でエディタが開く。
 
 - `GET /api/search?q=<タイトル>` — シリーズ検索（ローカル MADB マスタ）。カードは `version`（版表示）と `first_year`（初版の発行年）も返す（下記「同名の版違いの見分け」）
+- `GET /api/search?q=<作者名>&by=creator` — 作者名だけの検索。書名を一切見ないので、書名に作者名が入っているだけの別人の作品は落ちる。並びは「作者名がまるごと一致 → 検索語で始まる → 途中に含む」の段ごとに巻数の多い順。照合先は `creators_norm`（取り込みが役割を外して `|` でつないだ全作者名）なので、共著の 2 人目（`原作：丸戸史明` など）でも当たる。作者名に読み仮名のデータが無いので、書名検索と違いひらがな ⇔ カナの折り返しはしない。検索結果の「作品名 / 作者名」で切り替える（`public/app.js` `searchBy`）。結果の下の「最新DBから取得」（`/api/live-search`）も同じ `by=creator` を付けて、SPARQL 側も作者名で探す
 - `GET /api/suggest?q=<入力中の語>` — 検索欄の入力補完。前方一致する作品名を最大 8 件返す（`{q, suggestions: string[]}`）。読み（かな）・記号抜きの綴り・管理者が直した名前でも引ける。専用の前方一致索引 `series_suggest` を引くので検索本体より桁違いに軽い。`src/suggest.ts` / `public/suggest.js`
 - `GET /api/series/:id/volumes` — シリーズの全巻一覧（巻順）
 - `POST /api/lists` — リスト作成 `{owner_name, items[], slug?}` → `{slug, edit_token}`。`slug` は任意（英数字・ハイフン・アンダースコアのみ、15文字以内）。未指定ならランダム10文字。既存と衝突すると `409`
@@ -259,7 +260,7 @@ npm run dev
 - `PUT /api/lists/:slug` — 更新（`edit_token` 必須）
 - `GET /api/cover-candidates?isbn=&title=` — 表紙ピッカー用。Google / 楽天ISBN一致 / 楽天タイトル検索の候補を返す
 - `GET /api/ranking` — 本が追加されている回数ランキング。巻(ISBN)単位・選んだ人数(`COUNT(DISTINCT slug)`)で集計。`{windows:{cumulative,d30,d7,d24}, computed_at}` を返す（各窓 top100）。`src/ranking.ts`。閲覧ページは `/ranking`（`public/ranking.html`）
-- `GET /api/sales-ranking` — 売上ランキング。楽天ブックスのコミック「売れている順」（書籍検索API `sort=sales`）の上位 300 件を毎日 Cron（05:00 JST）で `sales_snapshot` に記録し、作品単位で集計する。日ごとの順位をポイント（1 位 = 300pt）にし、同じ日の同じ作品は最高順位だけを数える。`{windows:{day,d7,d30,year}, latest_day, first_day, year, computed_at}` を返す（各窓 top100）。作品名は楽天の書名から巻数・版の表記を除いたもので、シリーズ / まとまり（G-id）へ書名で寄せて巻一覧へのリンクにする（寄せ先が無い作品はトップの検索 `/?q=<作品名>` へのリンク）。`src/salesRanking.ts`。閲覧ページは `/sales-ranking`（`public/sales-ranking.html`）
+- `GET /api/sales-ranking` — 売上ランキング。楽天ブックスのコミック「売れている順」（書籍検索API `sort=sales`）の上位 300 件を毎日 Cron（05:00 JST）で `sales_snapshot` に記録し、作品単位で集計する。日ごとの順位をポイント（1 位 = 300pt）にし、同じ日の同じ作品は最高順位だけを数える。`{windows:{day,d7,d30,year}, latest_day, first_day, year, computed_at}` を返す（各窓 top100）。作品名は楽天の書名から巻数・版の表記を除いたもので、シリーズ / まとまり（G-id）へ ISBN → 書名 → 読み → 副題・外伝を落とした書名の順に寄せて巻一覧へのリンクにする（寄せ先が無い作品はトップの検索 `/?q=<作品名>` へのリンク）。読みでの照合はマスタが英字・楽天がカタカナの作品（「BLACK LAGOON」↔「ブラック・ラグーン」）を拾うもので、同音の別作品に当たらないよう著者が合う候補に限り、記号しか違わない候補（「もやしもん」に対する「もやしもん＋」）は外す。書名の方は、楽天がダッシュで囲む副題（「ながたんと青とーいちかの料理帖ー」= マスタ「ながたんと青と : いちかの料理帖」）と、マスタにまだ無い外伝（「ホタルの嫁入り外伝」→ 本編「ホタルの嫁入り」）を落としてもう一度照合する。`src/salesRanking.ts`。閲覧ページは `/sales-ranking`（`public/sales-ranking.html`）
 - `GET /api/circulation` — 発行部数ランキング。英語版 Wikipedia「List of best-selling manga」（累計 2000 万部以上の約 200 作品）から取り込んだ累計発行部数を部数の降順で返す。`{entries, source, computed_at}`。各作品は日本語の作品名でシリーズ / まとまりへ寄せて巻一覧へのリンクにし、寄せ先が無い作品はトップの検索 `/?q=<作品名>` へ。元データは取り込みでしか変わらないので `meta.circulation_ranking_json` に materialize し、TTL では作り直さない。`src/circulation.ts`。閲覧ページは `/circulation`（`public/circulation.html`）。取り込み元の記事は CC BY-SA 4.0 で、出典・ライセンス・改変はページ内に表示し、`/terms` の無断複製の禁止からこの一覧を適用除外にしている
 - `POST /api/admin/suggest/rebuild` — 入力補完の前方一致索引（`series_suggest`）を今のマスタ・結合・シリーズ名の修正から作り直す（`{ok, rows}`）。ふだんは月次取り込みが作り直すので、管理者の修正をすぐ候補に反映したいときだけ。shadow テーブルに作ってから入れ替えるので、失敗しても今の索引はそのまま。管理画面「概要」から押せる
 - `GET /api/admin/circulation` — 管理画面「発行部数ランキング」用。取り込み件数・取り込んだ版（oldid）・リンク付き件数・巻一覧へのリンクが付かなかった作品を返す
@@ -267,9 +268,14 @@ npm run dev
 - `POST /api/admin/circulation/suggest` — 寄せ先の指定が無い作品を自動照合して `circulation_link` に `source='suggested'` で入れる（手動指定は触らない）。`?overwrite=1` を付けると `'suggested'` の行も付け直す（マスタを取り込み直したあと用）
 - `POST /api/admin/circulation/link` — 寄せ先を確定する。`{article, series_id}` で、`series_id` が文字列ならそのシリーズへ（`'manual'`）、`""` なら「寄せない」として確定、`null` なら指定を外して自動照合に戻す
 - `GET /api/admin/master-fixes?page=&per=` — 管理画面「マスタ行の修正」用。差し替え済みの一覧。`applied` は今の `volumes` がその値になっているか（`false` = 取り込みの載せ直しが抜けている合図）、`restores` は取り消しの結末（`restore` = 元のマスタ行に戻す / `delete` = マスタから消す）
-- `GET /api/admin/master-fixes/lookup?isbn=&series=` — 下書きの材料。今のマスタ行・既にある修正・openBD の書誌（鍵なしの外部 API。書名・著者・出版社・発行日）・`series` に指定したシリーズの手本（そのシリーズで最多の書名/著者/出版社/レーベルの組）を返す
+- `GET /api/admin/master-fixes/lookup?isbn=&series=` — 下書きの材料。今のマスタ行・既にある修正・openBD の書誌（鍵なしの外部 API。書名・著者・出版社・発行日）・**楽天ブックスの書誌**（ISBN 直引き。openBD が持たない絶版・古い巻の受け皿で、レーベルと表紙も持つ）・**Yahoo! ショッピングの出品名**（楽天にも無い絶版巻の最後の手掛かり。出品者の自由入力なのでそのまま材料として出す）・`series` に指定したシリーズの手本（そのシリーズで最多の書名/著者/出版社/レーベルの組）を返す
 - `POST /api/admin/master-fixes` — 差し替えを保存。`{isbn, series_id, volume_number, vol_sort, title, subtitle, creator, creators, publisher, label, pubdate, is_adult, note}`。`title_search` / `creators_norm`（検索キー）はサーバが作り直し、`vol_sort` は空なら巻番号から導く。`volume_master_fix` に upsert して、その場で `volumes` へ当てる
 - `DELETE /api/admin/master-fixes/:isbn` — 差し替えの取り消し。控え（`prev_json`）があればその行を `volumes` へ書き戻し、無ければ（上流に無い巻を足していたので）`volumes` から消す
+- `POST /api/series-register-requests` — 「この作品をシリーズとして登録してほしい」依頼（MADB に 1 巻も無い作品）。body は `{isbn}` **だけ**で、書名・著者・出版社はサーバが自分の控え（`live_volumes` / `book_meta`）から引く（利用者の自由入力を一切通さないので、通報・伏字の対象になる文字列がキューに入らない）。collect-only で全体反映は管理者の確定まで行わない。Turnstile（`feedback`）とレート制限の対象。マスタが既に持つ ISBN は `{queued: false, already: true}`、成年向けは 400
+- `GET /api/admin/series-register-requests?page=&per=&resolved=` — 依頼のキュー。`resolved=1` で処理済み（登録 / 却下）の履歴。`in_master` は依頼のあと別経路でマスタに入ったかの合図
+- `DELETE /api/admin/series-register-requests/:isbn` — 却下（行は残す。また依頼されたら開き直る）
+- `GET /api/admin/series-register/candidates?isbn=&title=&creator=&publisher=` — 代表 ISBN から作品を同定し（楽天の ISBN 直引き → `salesWorkTitle` で巻数表記を外す）、その作品の巻を楽天ブックスのタイトル検索で集める。巻数の穴は Yahoo の商品名検索で拾う（楽天は新刊書店なので絶版の古い巻を持たない）。`title` / `creator` / `publisher` を渡すとその値で引き直す。マスタが既に持つ巻・成年向けの巻には印が付く
+- `POST /api/admin/series-register` — 確定。`{isbn, name, creator, creators, publisher, label, note, volumes: [{isbn, volume_number, title, subtitle, pubdate}]}`。`custom_series` に独自シリーズ（U-id）を 1 行作り、選んだ巻を `volume_master_fix` 行として書いてその場で `volumes` へ当てる。マスタが既に持つ巻・成年向けの巻は拒否（1 冊でも駄目なら何も作らない）。取り消しは `DELETE /api/admin/master-fixes/:isbn`
 - `GET /api/admin/labels?page=&per=&q=&filter=` — 管理画面「レーベル管理」用。レーベルをシリーズ数の多い順に、現在のタグ・そのレーベルの主な作品 3 件つきで返す。`q` はレーベル名の部分一致で、**空白区切りは AND**（マスタは同じレーベルを何通りにも表記するので、`ジャンプ セレクション` で `ジャンプコミックスセレクション`・`ジャンプ コミックス セレクション`・`ジャンプ・コミックス・セレクション` を一度に拾ってまとめてタグを付けられる）。`filter` は `untagged` / `tagged` / タグ名（`廉価版` など）、`era` は `dated` / `undated`（巻の発行年の有無）。
   **ページ送りはせず、絞り込んだ結果を 1 回で全部返す**（全選択 → まとめて設定が作業の中心なので）。上限 1,000 件で、超えたら `truncated: true` と件数を返して絞り込みを促す。実測は「文庫」426 件で 0.3 秒・84KB、絞り込み無しの 1,000 件で 0.8 秒・230KB
 - `POST /api/series/:id/tag-request` — 「この作品は廉価版/文庫版/傑作選です」の申請。`{tag}`（`LABEL_TAGS` のいずれか、または `""` =「ついている印を外してほしい」）。collect-only で件数だけ記録し、反映は管理者が確定してから。Turnstile（`feedback`）とレート制限の対象
@@ -408,6 +414,7 @@ MADB の取り込みでは成年コミック（MADB の `schema:contentRating` �
 - `volumes` — MADB 単行本。`isbn`(PK), `series_id`, `volume_number`, `vol_sort`, `title`, `subtitle`(巻の副題。MADB `schema:alternateName`), `title_search`(検索専用、`name_search` と同じ変換), `creator`, `creators`, `creators_norm`, `publisher`, `label`, `pubdate`
 - `series_suggest` — 検索欄の入力補完（サジェスト）の前方一致索引。`(key, series_id)`(PK), `name`(候補として出す表示名), `name_key`(表示名の揺れを畳むキー), `weight`(並び順＝巻数), `is_adult`。シリーズ 1 件につき「引ける綴り」1 つで 1 行（`name_norm` / `name_search` / `name_kana_norm` の読みを 1 つずつ / 管理者が直した名前）。実データで 24.5 万行・約 29MB。`LIKE 'q%'` は SQLite の LIKE 最適化が ASCII にしか効かず全表走査になるので、`key >= q AND key < q+(最大符号位置)` のレンジで引く。中身は月次取り込み（`scripts/ingest.mjs` `SUGGEST_SQL`）が `series` / `volumes` の入れ替えの直後に作り直し、管理者の結合・名前修正のあとは管理画面「概要」の「サジェスト索引の再構築」で作り直す。どちらも `series_suggest_new` に作ってから `RENAME` で入れ替えるので、途中で失敗しても今の索引は残る。`src/suggest.ts`、`db/add-series-suggest.sql`。
 - `volume_master_fix` — 上流（MADB）が壊している巻の**マスタ行の差し替え**。列は `volumes` と同じ並び（`isbn`(PK) 〜 `is_adult`）＋ `note`(根拠のメモ), `created_at`, `prev_json`(差し替える前のマスタ行。取り消しの戻し先。`NULL` = 上流に無い巻を足したので取り消しでは消す)。MADB は巻の ISBN 自体を取り違えていることがあり（`9784063129502` は『Rave』9 巻なのに『超感電少女モナ』の巻として登録されている）、表示名だけの上書き（`volume_title_override`）ではシリーズ・巻番号・著者・発行日が直らないので、マスタ行そのものを置き換える。管理画面「マスタ行の修正」で編集し、保存時にその場で `volumes` へ当てる。`volumes` は月次取り込みで作り直されるので、取り込みの最後に `INSERT OR REPLACE` で載せ直す（`scripts/ingest.mjs` の `APPLY_MASTER_FIX_SQL`）。`src/masterFix.ts`、`db/add-volume-master-fix.sql`。
+- `series_register_request` — 「この作品をシリーズとして登録してほしい」依頼。`isbn`(PK), `title`/`creator`/`publisher`(依頼を受けた時点でサーバが引けた書誌。利用者からは受け取らない), `report_count`, `first_reported_at`, `last_reported_at`, `resolved_at`, `resolution`(`''` / `registered` / `dismissed`), `series_id`(登録して作った U-id)。MADB に 1 巻も載っていない作品（例: `9784758061780`『このこここのこ』は `series` / `volumes` に 1 行も無く、楽天ブックスだけが全 3 巻を持つ）は ISBN 検索で楽天由来の 1 冊ライブカードにしかならず、シリーズとして開けない。管理者が確定すると `custom_series` に独自シリーズを 1 件作り、選んだ巻を `volume_master_fix` 行として登録する（＝取り込み後も載せ直される）。できあがるのは普通のシリーズ 1 件と普通のマスタ巻 n 行なので、読み出し側はこの仕組みを知らなくていい。`src/seriesRegister.ts`、`db/add-series-register.sql`。
 - `series_tag` — シリーズ個別のタグ（`label_tag` より優先）。`series_id`(PK, C-id / U-id / G-id), `tag`, `created_at`, `updated_at`。`tag` が `''` の行は「タグ無し」を**明示する上書き**で、レーベル由来の印を打ち消す（行が無い＝レーベルに従う、と区別するため NULL ではなく空文字）。`src/labels.ts` の `effectiveTagSql` が `COALESCE(series_tag, label_tag)` で解決し、検索とシリーズ詳細のクエリに畳み込む。`db/add-series-tag.sql`。
 - `series_tag_request` — 閲覧者からのタグの申請。`(series_id, tag)`(PK), `report_count`, `first_reported_at`, `last_reported_at`。シリーズ名の通報・結合/分離依頼と同じ collect-only で、件数を積むだけ。全体への反映は管理者が「シリーズのタグの申請」で確定したときだけ。
 - `label_tag` — レーベルに付けた運営のタグ。`label`(PK, `series.label` / `volumes.label` の値そのまま), `tag`(`廉価版` / `文庫版` / `傑作選`), `created_at`, `updated_at`。管理画面「レーベル管理」で付ける。`series` / `volumes` は月次取り込みで表ごと作り直されるので、シリーズ ID ではなくレーベル名を鍵にして取り込みで消えないようにしてある。`src/labels.ts`、`db/add-label-tag.sql`。

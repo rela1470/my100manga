@@ -19,7 +19,12 @@ export function turnstileAction(method: string, path: string): string | null {
   if (method !== "POST") return null;
   if (path === "/api/lists") return "publish";
   if (LIST_REPORT_PATH.test(path)) return "report";
-  if (FEEDBACK_PATH.test(path) || path === "/api/volume-title-reports" || path === "/api/cover-suggestions") {
+  if (
+    FEEDBACK_PATH.test(path) ||
+    path === "/api/volume-title-reports" ||
+    path === "/api/cover-suggestions" ||
+    path === "/api/series-register-requests"
+  ) {
     return "feedback";
   }
   return null;

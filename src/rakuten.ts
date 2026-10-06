@@ -83,6 +83,17 @@ async function isRealCover(url: string): Promise<boolean> {
   }
 }
 
+/** 楽天の発売日表記（salesDate）（「2009年12月」「2015年08月04日」「2026年11月04日頃」）を
+ *  マスタの形（"2009-12" / "2015-08-04"）へ。読めなければ ""。 */
+export function masterPubdate(raw: string): string {
+  const s = (raw ?? "").normalize("NFKC");
+  const m = /(\d{4})\s*年(?:\s*(\d{1,2})\s*月(?:\s*(\d{1,2})\s*日)?)?/.exec(s);
+  if (!m) return /^\d{4}(-\d{2}(-\d{2})?)?$/.test(s.trim()) ? s.trim() : "";
+  const pad = (x: string) => x.padStart(2, "0");
+  if (!m[2]) return m[1];
+  return m[3] ? `${m[1]}-${pad(m[2])}-${pad(m[3])}` : `${m[1]}-${pad(m[2])}`;
+}
+
 /** Parse a volume number out of a Rakuten book title (「ワカコ酒（27）」→ "27"). */
 function parseVolume(title: string): string {
   const m = title.match(/[（(]\s*(\d{1,4})\s*[）)]\s*$/) || title.match(/\s(\d{1,4})\s*$/);

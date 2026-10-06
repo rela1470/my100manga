@@ -13,6 +13,8 @@ import {
   volSort,
 } from "./util";
 import { excludeAdult } from "./site";
+import { masterPubdate, rakutenComicByIsbn } from "./rakuten";
+import { yahooListingByIsbn } from "./yahoo";
 
 // 上流（MADB）が壊している巻のマスタ行を、管理画面から直すための API 群。
 // 表は volume_master_fix（db/schema.sql）で、中身は「直した後のマスタ行そのもの」。保存すると
@@ -24,7 +26,7 @@ import { excludeAdult } from "./site";
 // 直し方の実例と経緯は db/MIGRATIONS.md「上流が取り違えた ISBN を直す仕組み」を参照。
 
 /** volumes の列（volume_master_fix と同じ並び）。載せ直しの SQL とフォームの往復で使う。 */
-const VOLUME_COLS = [
+export const VOLUME_COLS = [
   "isbn",
   "series_id",
   "volume_number",
@@ -42,7 +44,7 @@ const VOLUME_COLS = [
 ] as const;
 
 type VolumeCol = (typeof VOLUME_COLS)[number];
-type MasterRow = Record<VolumeCol, string | number | null>;
+export type MasterRow = Record<VolumeCol, string | number | null>;
 
 const COL_LIST = VOLUME_COLS.join(", ");
 const COL_PLACEHOLDERS = VOLUME_COLS.map(() => "?").join(", ");
@@ -78,6 +80,70 @@ function creatorsNormOf(creators: string, creator: string): string | null {
     .filter(Boolean);
   const uniq = [...new Set(names)];
   return uniq.length ? uniq.join("|") : null;
+}
+
+/** マスタ行 1 件分の素材（人が入れる値だけ）。検索キー（title_search / creators_norm）と
+ *  vol_sort は buildMasterRow が導くので渡さない。 */
+export interface MasterRowInput {
+  isbn: string;
+  title: string;
+  series_id?: string;
+  volume_number?: string;
+  /** 省略・0 なら volume_number から導く。漢数字や「上/下」も util.volSort が扱う。 */
+  vol_sort?: number;
+  subtitle?: string;
+  creator?: string;
+  creators?: string;
+  publisher?: string;
+  label?: string;
+  pubdate?: string;
+  is_adult?: boolean;
+}
+
+/** 素材から volumes の 1 行を組み立てる。検索キーをここで作るので、呼び手（管理画面の
+ *  フォーム・シリーズの新規登録 src/seriesRegister.ts）が作り方を知らなくて済む。 */
+export function buildMasterRow(v: MasterRowInput): MasterRow {
+  const volumeNumber = v.volume_number ?? "";
+  const rawSort = Number(v.vol_sort);
+  return {
+    isbn: v.isbn,
+    series_id: nullable(v.series_id ?? ""),
+    volume_number: nullable(volumeNumber),
+    vol_sort: Number.isFinite(rawSort) && rawSort !== 0 ? Math.floor(rawSort) : volSort(volumeNumber),
+    title: v.title,
+    subtitle: nullable(v.subtitle ?? ""),
+    title_search: searchKey(v.title),
+    creator: nullable(v.creator ?? ""),
+    creators: nullable(v.creators ?? ""),
+    creators_norm: creatorsNormOf(v.creators ?? "", v.creator ?? ""),
+    publisher: nullable(v.publisher ?? ""),
+    label: nullable(v.label ?? ""),
+    pubdate: nullable(v.pubdate ?? ""),
+    is_adult: v.is_adult ? 1 : 0,
+  };
+}
+
+/** 修正 1 件を volume_master_fix へ upsert し、その場で volumes へ当てる 2 文。
+ *  prevJson は差し替える前のマスタ行の控え（上流に無い巻を足すときは null = 取り消しで消す）。
+ *  2 回目以降の保存で控えが自分の値に化けないよう、ON CONFLICT 側は prev_json を触らない。 */
+export function masterFixStmts(
+  env: Env,
+  row: MasterRow,
+  note: string,
+  now: number,
+  prevJson: string | null
+): D1PreparedStatement[] {
+  const setCols = VOLUME_COLS.filter((c) => c !== "isbn")
+    .map((c) => `${c} = excluded.${c}`)
+    .join(", ");
+  return [
+    env.DB.prepare(
+      `INSERT INTO volume_master_fix (${COL_LIST}, note, created_at, prev_json)
+       VALUES (${COL_PLACEHOLDERS}, ?, ?, ?)
+       ON CONFLICT (isbn) DO UPDATE SET ${setCols}, note = excluded.note, created_at = excluded.created_at`
+    ).bind(...VOLUME_COLS.map((c) => row[c]), note, now, prevJson),
+    env.DB.prepare(APPLY_ONE_SQL).bind(row.isbn),
+  ];
 }
 
 interface AdminMasterFixRow {
@@ -222,7 +288,7 @@ export async function adminLookupMasterFix(env: Env, url: URL): Promise<Response
   if (!isValidIsbn(isbn)) return badRequest("ISBN を正しく指定してください");
   const seriesId = str(url.searchParams.get("series"), 32);
 
-  const [master, fix, openbd] = await Promise.all([
+  const [master, fix, openbd, rakuten, yahoo] = await Promise.all([
     env.DB.prepare(
       `SELECT v.${VOLUME_COLS.join(", v.")}, ${seriesNameSql("s", "so")} AS series_name
          FROM volumes v
@@ -238,6 +304,11 @@ export async function adminLookupMasterFix(env: Env, url: URL): Promise<Response
       .bind(isbn)
       .first<MasterRow & { note: string; created_at: number; prev_json: string | null }>(),
     openbdLookup(isbn),
+    // openBD が持たない本（絶版・古い巻・一部の出版社）の受け皿。楽天ブックスは
+    // 書名・著者・出版社・レーベル（seriesName）・発売日・書影を構造化して持っている。
+    rakutenComicByIsbn(env, isbn).catch(() => null),
+    // 楽天にも無い絶版巻の最後の手掛かり。出品者の自由入力なので「材料」としてそのまま出す。
+    yahooListingByIsbn(env, isbn).catch(() => null),
   ]);
 
   let series = null;
@@ -328,6 +399,19 @@ export async function adminLookupMasterFix(env: Env, url: URL): Promise<Response
           }
         : null,
       openbd,
+      // 楽天ブックス（ISBN 直引き）。発売日はマスタの表記（"2009-12"）に寄せて渡す。
+      rakuten: rakuten
+        ? {
+            title: rakuten.title,
+            volume: rakuten.volume,
+            author: rakuten.author,
+            publisher: rakuten.publisher,
+            pubdate: masterPubdate(rakuten.pubdate),
+            cover_url: rakuten.cover_url,
+          }
+        : null,
+      // Yahoo!ショッピングの出品名（構造化されていない。書名を起こすための材料）。
+      yahoo,
       series,
       // 成年向けの印を出すのは R18版だけ（本家の volumes には成年向けの行を入れない）。
       allow_adult: !excludeAdult(env),
@@ -361,7 +445,6 @@ export async function adminSaveMasterFix(request: Request, env: Env): Promise<Re
 
   const volumeNumber = str(body.volume_number, 32);
   const rawSort = Number(body.vol_sort);
-  const volSortValue = Number.isFinite(rawSort) && rawSort !== 0 ? Math.floor(rawSort) : volSort(volumeNumber);
 
   const pubdate = str(body.pubdate, 20);
   if (pubdate && !/^\d{4}(-\d{2}(-\d{2})?)?$/.test(pubdate)) {
@@ -380,23 +463,20 @@ export async function adminSaveMasterFix(request: Request, env: Env): Promise<Re
   const label = str(body.label, 200);
   const note = str(body.note, 500);
 
-  const row: MasterRow = {
+  const row = buildMasterRow({
     isbn,
-    series_id: nullable(seriesId),
-    volume_number: nullable(volumeNumber),
-    vol_sort: volSortValue,
+    series_id: seriesId,
+    volume_number: volumeNumber,
+    vol_sort: rawSort,
     title,
-    subtitle: nullable(subtitle),
-    title_search: searchKey(title),
-    creator: nullable(creator),
-    creators: nullable(creators),
-    creators_norm: creatorsNormOf(creators, creator),
-    publisher: nullable(publisher),
-    label: nullable(label),
-    pubdate: nullable(pubdate),
-    is_adult: isAdult ? 1 : 0,
-  };
-  const values = VOLUME_COLS.map((c) => row[c]);
+    subtitle,
+    creator,
+    creators,
+    publisher,
+    label,
+    pubdate,
+    is_adult: isAdult,
+  });
 
   // 差し替える前のマスタ行の控え。既に修正行があるときは取らない（上書き保存で控えが
   // 自分の値に化けるのを防ぐ）。上流に行が無ければ NULL のまま＝取り消しで消す。
@@ -411,17 +491,7 @@ export async function adminSaveMasterFix(request: Request, env: Env): Promise<Re
     if (prev) prevJson = JSON.stringify(prev);
   }
 
-  const setCols = VOLUME_COLS.filter((c) => c !== "isbn")
-    .map((c) => `${c} = excluded.${c}`)
-    .join(", ");
-  await env.DB.batch([
-    env.DB.prepare(
-      `INSERT INTO volume_master_fix (${COL_LIST}, note, created_at, prev_json)
-       VALUES (${COL_PLACEHOLDERS}, ?, ?, ?)
-       ON CONFLICT (isbn) DO UPDATE SET ${setCols}, note = excluded.note, created_at = excluded.created_at`
-    ).bind(...values, note, Date.now(), prevJson),
-    env.DB.prepare(APPLY_ONE_SQL).bind(isbn),
-  ]);
+  await env.DB.batch(masterFixStmts(env, row, note, Date.now(), prevJson));
 
   return json({ ok: true, isbn, restores: existing || prevJson ? "restore" : "delete" });
 }

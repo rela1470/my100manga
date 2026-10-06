@@ -40,7 +40,11 @@
 
     <div class="toolbar">
       <div class="name-field">
-        <input type="text" id="topSearch" placeholder="漫画のタイトルで検索して追加（2文字以上）">
+        <div class="search-box">
+          <input type="text" id="topSearch" placeholder="漫画のタイトルで検索して追加（2文字以上）">
+          <!-- 打った語を 1 タップで消す。語が入っている間だけ app.js が出す。 -->
+          <button type="button" id="topSearchClear" class="search-clear" aria-label="検索欄を空にする" title="消す" hidden><span class="search-clear-x" aria-hidden="true">×</span></button>
+        </div>
         <button id="topSearchBtn">検索</button>
       </div>
     </div>
@@ -113,6 +117,12 @@
       <label class="all-ages" id="allAgesBar" hidden>
         <input type="checkbox" id="allAges"> 全年齢の作品も含める
       </label>
+      <!-- 検索の対象の切り替え。検索したあとだけ出る（app.js renderResults）。「作品名」は今までの
+           検索（書名中心で、作者名は最後に当たる）、「作者名」は作者名だけで引き直す。 -->
+      <div class="search-mode" id="searchMode" role="group" aria-label="検索の対象" hidden>
+        <button type="button" class="search-mode-btn active" data-by="title" aria-pressed="true">作品名</button>
+        <button type="button" class="search-mode-btn" data-by="creator" aria-pressed="false">作者名</button>
+      </div>
       <div class="vol-bar search-bar" id="searchBar" hidden></div>
       <div class="spinner" id="searchSpinner" style="display:none">検索中...</div>
       <div class="results" id="results"></div>

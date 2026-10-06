@@ -168,9 +168,15 @@ export async function handleSearch(request: Request, env: Env): Promise<Response
   // runaway client can't page through the whole table.
   const offset = Math.min(Math.max(Math.floor(Number(url.searchParams.get("offset"))) || 0, 0), SEARCH_MAX_OFFSET);
 
+  // 作者名だけで探す（検索結果の「作品名 / 作者名」の切り替え。public/app.js searchBy）。既定は
+  // 今までどおり書名中心の検索で、作者名は一番下の段（mt=1）でしか当たらない。by=creator のときは
+  // 書名を一切見ず、作者名だけで引く。
+  const byCreator = url.searchParams.get("by") === "creator";
+
   // ISBN 検索は索引 1 本で引けて軽く、マスタに無いときの楽天の結果（レート制限で取れなかった
-  // 「無し」を含む）を固定したくないのでキャッシュしない。
-  const isbn = isbnQuery(q);
+  // 「無し」を含む）を固定したくないのでキャッシュしない。「9784…」という名前の作者は居ないので
+  // 作者名の検索では見ない。
+  const isbn = byCreator ? "" : isbnQuery(q);
   // ISBN は 1 冊を名指しで引く操作なので、成年向けの既定の絞り込みは掛けない（R18版では
   // どちらの巻も収録していて、ISBN を知っているなら出していい）。
   if (isbn) return searchByIsbn(env, isbn);
@@ -189,10 +195,12 @@ export async function handleSearch(request: Request, env: Env): Promise<Response
       offset,
       // 絞り込みの有無で結果が変わるので鍵に混ぜる（本家は常に 0 なので今までと同じ鍵）。
       a: adultOnly ? 1 : 0,
+      // 検索の対象（0 = 書名中心 / 1 = 作者名だけ）。同じ語でも結果が別物なので鍵を分ける。
+      b: byCreator ? 1 : 0,
       e: await getViewEpoch(env),
     }),
     SEARCH_CACHE_SEC,
-    () => searchByKeyword(env, q, offset, adultOnly)
+    () => (byCreator ? searchByCreator(env, q, offset, adultOnly) : searchByKeyword(env, q, offset, adultOnly))
   );
 }
 
@@ -360,18 +368,7 @@ async function searchByKeyword(env: Env, q: string, offset: number, adultOnly: b
 
   // Fetch the promoted series with the same columns as the keyword query so they render
   // as ordinary series cards. Ordered longest-first, mirroring the keyword tie-break.
-  let promotedRows: SeriesRow[] = [];
-  if (promoteIds.length) {
-    const placeholders = promoteIds.map(() => "?").join(",");
-    const pr = await env.DB.prepare(
-      `SELECT ${SERIES_COLS} FROM series s
-       LEFT JOIN series_name_override o ON o.series_id = s.id
-       WHERE s.id IN (${placeholders}) ORDER BY vol_count DESC`
-    )
-      .bind(...promoteIds)
-      .all<SeriesRow>();
-    promotedRows = pr.results ?? [];
-  }
+  const promotedRows = await fetchSeriesRows(env, promoteIds);
 
   // Cache-only: return instantly. The client fills blank covers via POST /api/covers.
   const covers = await readCachedCovers(
@@ -426,6 +423,116 @@ async function searchByKeyword(env: Env, q: string, offset: number, adultOnly: b
       results: [...results, ...promoted, ...standalone].slice(0, PAGE + extra),
       next_offset: hasMore && offset + PAGE <= SEARCH_MAX_OFFSET ? offset + PAGE : null,
       ...(adultHits ? { adult_hits: true, adult_message: ADULT_BLOCK_MESSAGE } : {}),
+    },
+    200,
+    { "cache-control": "no-store" }
+  );
+}
+
+/** 促し（promote）や結合先として結果に足すシリーズを、キーワード検索のカードと同じ列で引く。
+ *  巻数の多い順。書名検索・作者名検索のどちらからも使う。 */
+async function fetchSeriesRows(env: Env, ids: string[]): Promise<SeriesRow[]> {
+  if (!ids.length) return [];
+  const placeholders = ids.map(() => "?").join(",");
+  const res = await env.DB.prepare(
+    `SELECT ${SERIES_COLS} FROM series s
+     LEFT JOIN series_name_override o ON o.series_id = s.id
+     WHERE s.id IN (${placeholders}) ORDER BY vol_count DESC`
+  )
+    .bind(...ids)
+    .all<SeriesRow>();
+  return res.results ?? [];
+}
+
+// 作者名だけで探す（/api/search?by=creator）。書名は一切見ないので、「ヤマダ」なら書名に
+// 「ヤマダ」が入っているだけの作品は落ち、ヤマダ某の作品だけが並ぶ。
+// 照合先は creators_norm（取り込みが役割を外して「|」でつないだ全作者名。creatorsMatchCol）だけ。
+// 段（mt）は
+//   3 … 作者名がまるごと一致（囲んだ blob に「|名前|」として入っている）
+//   2 … いずれかの作者名が検索語で始まる（「ヤマダ」→「ヤマダ玲司」）
+//   1 … それ以外（名前の途中に含む）
+// で、同じ段の中は書名検索と同じく巻数 → num_items → id。段ごとに数えてページの行だけ巻数を
+// 出す組み立て（hit → tier → win → page）も searchByKeyword と同じ。
+// 読みでは引けない: MADB の schema:creator に読み仮名が無く、作者名の読みをどこにも持っていない
+// （書名の name_kana_norm に当たるものが無い）ので、ひらがな⇔カナの折り返しはしない。
+async function searchByCreator(env: Env, q: string, offset: number, adultOnly: boolean): Promise<Response> {
+  const nq = normTitle(q);
+  // 「%|…|%」の囲みで最大 4 バイト増えるぶんを引いて D1 の LIKE 長の上限に収める。
+  const esc = escapeLikeClamped(nq, LIKE_MAX_BYTES - 4);
+  const like = "%" + esc + "%";
+  const nameExact = "%|" + esc + "|%";
+  const namePrefix = "%|" + esc + "%";
+  // 作者名の blob を「|」で囲む。作者が 1 人の行（creators_norm が無く creator から作る行を含む）
+  // でも「|名前|」になるので、まるごと一致・前方一致を同じ式で見られる。
+  const creators = `('|' || ${creatorsMatchCol("s.")} || '|')`;
+
+  const res = await env.DB.prepare(
+    `WITH hit AS MATERIALIZED (
+       SELECT s.id, s.num_items,
+              CASE WHEN ${creators} LIKE ? ESCAPE '\\' THEN 3
+                   WHEN ${creators} LIKE ? ESCAPE '\\' THEN 2
+                   ELSE 1 END AS mt
+       FROM series s
+       WHERE ${creators} LIKE ? ESCAPE '\\'
+         AND EXISTS (SELECT 1 FROM volumes v WHERE v.series_id = s.id)
+         ${adultOnly ? "AND s.is_adult = 1" : ""}),
+     tier AS (
+       SELECT mt, COUNT(*) AS n, SUM(COUNT(*)) OVER (ORDER BY mt DESC) - COUNT(*) AS before
+       FROM hit GROUP BY mt),
+     win AS (SELECT mt, before FROM tier WHERE before < ${offset + PAGE + 1} AND before + n > ${offset}),
+     page AS (
+       SELECT s.id, s.mt, s.num_items, ${VOL_COUNT} AS vol_count
+       FROM hit s JOIN win w ON w.mt = s.mt
+       ORDER BY s.mt DESC, vol_count DESC, s.num_items DESC, s.id
+       LIMIT ${PAGE + 1} OFFSET ${offset} - (SELECT COALESCE(MIN(before), 0) FROM win))
+     SELECT ${SERIES_COLS}, p.mt
+     FROM page p JOIN series s ON s.id = p.id
+     LEFT JOIN series_name_override o ON o.series_id = s.id
+     ORDER BY p.mt DESC, p.vol_count DESC, p.num_items DESC, p.id`
+  )
+    .bind(nameExact, namePrefix, like)
+    .all<SeriesRow & { mt: number }>();
+
+  // 管理者が結合したシリーズ（series_merge）は自分のカードを出さず、結合先を代わりに出す。
+  // 書名検索と同じ扱い。
+  const hasMore = (res.results ?? []).length > PAGE;
+  const hitRows = (res.results ?? []).slice(0, PAGE);
+  const absorbedTo = await mergeTargetsFor(env, hitRows.map((r) => r.id));
+  const rows = hitRows.filter((r) => !absorbedTo.has(r.id));
+  const keptIds = new Set(rows.map((r) => r.id));
+  const mergedTargets = [...new Set(absorbedTo.values())].filter((id) => !keptIds.has(id));
+
+  // シリーズに属さない巻（マスタの約 2 割）にも作者名で当たる。作者名の検索ではここが効きやすい:
+  // 共著の片方だけが迷子巻に載っている作品（原作リュート / 作画 鍋島テツヒロ）は、シリーズ行の
+  // creators_norm に名前が無く、上の照合では 1 件も当たらない。
+  const seriesTitles = new Set(rows.map((r) => normTitle(r.name)));
+  const existingIds = new Set([...keptIds, ...mergedTargets]);
+  const { promoteIds: discovered, standalone } = await discoverUnlinked(
+    env,
+    like,
+    like, // 書名は見ないので使われない（creatorOnly）
+    seriesTitles,
+    existingIds,
+    hasMore ? 0 : PAGE - rows.length - mergedTargets.length,
+    adultOnly,
+    true
+  );
+  const discoveredTo = await mergeTargetsFor(env, discovered);
+  const promoteIds = [
+    ...new Set([...mergedTargets, ...discovered.map((id) => discoveredTo.get(id) ?? id)]),
+  ].filter((id) => !keptIds.has(id));
+  const promotedRows = await fetchSeriesRows(env, promoteIds);
+
+  const covers = await readCachedCovers(env, [...rows, ...promotedRows].map((r) => r.first_isbn ?? ""));
+  // 成年向けの注記（adult_hits）は出さない。adult_volumes は書名しか持たず、作者名では引けない。
+  return json(
+    {
+      results: [
+        ...rows.map((r) => toSeriesResult(r, covers)),
+        ...promotedRows.map((r) => toSeriesResult(r, covers)),
+        ...standalone,
+      ].slice(0, PAGE),
+      next_offset: hasMore && offset + PAGE <= SEARCH_MAX_OFFSET ? offset + PAGE : null,
     },
     200,
     { "cache-control": "no-store" }
@@ -614,6 +721,8 @@ async function rakutenCard(env: Env, isbn: string) {
 // way normTitle() does the query. `likeS` is the searchKey() form (symbols / width ignored),
 // matched against title_search. Titles already shown by the keyword query are skipped,
 // and series already in `existingIds` are not promoted again (dedup).
+// `creatorOnly`（作者名だけの検索 /api/search?by=creator）のときは書名を見ず、作者名だけで拾う
+// （likeS はそのとき使わない）。
 async function discoverUnlinked(
   env: Env,
   like: string,
@@ -621,24 +730,28 @@ async function discoverUnlinked(
   seriesTitles: Set<string>,
   existingIds: Set<string>,
   limit: number,
-  adultOnly: boolean
+  adultOnly: boolean,
+  creatorOnly = false
 ): Promise<{ promoteIds: string[]; standalone: UnlinkedCard[] }> {
   if (limit <= 0) return { promoteIds: [], standalone: [] };
 
   const norm = (col: string) => `REPLACE(REPLACE(LOWER(${col}), ' ', ''), '　', '')`;
   // Cap the scan so a prolific unlinked author can't pull unbounded rows; a single
   // work rarely exceeds ~100 volumes, so 2000 comfortably covers the cards we keep.
+  const match = creatorOnly
+    ? `${creatorsMatchCol("")} LIKE ? ESCAPE '\\'`
+    : `${norm("title")} LIKE ? ESCAPE '\\' OR COALESCE(title_search, ${norm("title")}) LIKE ? ESCAPE '\\'
+            OR ${creatorsMatchCol("")} LIKE ? ESCAPE '\\'`;
   const res = await env.DB.prepare(
     `SELECT isbn, volume_number, vol_sort, title, subtitle, creator, creators, publisher, label, pubdate
      FROM volumes
      WHERE series_id IS NULL
-       AND (${norm("title")} LIKE ? ESCAPE '\\' OR COALESCE(title_search, ${norm("title")}) LIKE ? ESCAPE '\\'
-            OR ${creatorsMatchCol("")} LIKE ? ESCAPE '\\')
+       AND (${match})
        ${adultOnly ? "AND is_adult = 1" : ""}
      ORDER BY vol_sort, pubdate, isbn
      LIMIT 2000`
   )
-    .bind(like, likeS, like)
+    .bind(...(creatorOnly ? [like] : [like, likeS, like]))
     .all<GroupRow>();
 
   // Group matched volumes into works keyed on normalized title + creator + label (same
@@ -696,10 +809,12 @@ export async function handleLiveSearch(request: Request, env: Env): Promise<Resp
   const url = new URL(request.url);
   const q = (url.searchParams.get("q") ?? "").trim();
   if (q.length < 2) return badRequest("検索語を2文字以上で入力してください");
+  // 検索結果が「作者名」側のときは、取得も作者名で探す（書名で探すと別人の作品が返る）。
+  const byCreator = url.searchParams.get("by") === "creator";
 
   let series;
   try {
-    series = await liveSearchByKeyword(q, excludeAdult(env));
+    series = await liveSearchByKeyword(q, excludeAdult(env), byCreator ? "creator" : "name");
   } catch {
     return json({ error: "最新データベースに接続できませんでした。時間をおいて再試行してください。" }, 502);
   }

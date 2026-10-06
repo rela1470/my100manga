@@ -3,16 +3,20 @@
 // ランキングページ（/ranking・/sales-ranking）の本の詳細ポップアップ。100 冊の閲覧画面
 // （view.html / view.js openDetail）と同じ見た目で、ページを離れずに本のデータ
 // （作者・出版社・発行日・あらすじ。/api/book がマスタ + 楽天ブックスから返す）と購入リンク
-// （affiliate.js）を出す。シリーズの巻一覧（= 自分の100への追加）はエディタへの遷移になる。
+// （affiliate.js）を出す。シリーズの巻一覧は series-volumes.js がその場で開く。
 //
 // 管理画面（admin.js の巻一覧ドリルダウン）からも使う。
 //
-// window.openBookDetail(book, { seriesHref, noSeries })
+// window.openBookDetail(book, { seriesHref, noSeries, onAdd, added, addLabel })
 //   book: { isbn, title, author, cover_url }。手元にあれば creators / publisher / label /
 //         pubdate / volume_number / isbns も渡すと、/api/book を待たずに先に出す。
 //   seriesHref: /api/book がシリーズを返さないとき（マスタにまだ無い新刊など）の巻一覧・
 //               検索へのリンク（売上ランキングの寄せ先）。省略可。
 //   noSeries: 「巻一覧を開く」を出さない（巻一覧から開いたとき）。
+//   onAdd(book): 「リストに追加」を出し、押されたら詳細を閉じてから呼ぶ。渡さなければ
+//                ボタンは出ない（管理画面や、追加の受け皿が無いページ）。
+//   added:    すでに下書きに入っている（ボタンを「追加済み」にして押せなくする）。
+//   addLabel: ボタンの文言を変える（既定「リストに追加」）。
 (function () {
   // 巻の副題（MADB の schema:alternateName）。同じシリーズに「上」「下」しか巻番号を持たない
   // 別作品が並ぶとき、巻番号だけでは全部同じ表示になるので足す（public/app.js と同じ）。
@@ -55,11 +59,14 @@
       <div class="modal-actions">
         <div style="flex:1"></div>
         <button type="button" id="bdClose">閉じる</button>
+        <button type="button" class="primary" id="bdAdd" style="display:none">リストに追加</button>
       </div>
     </div>`;
 
   let modal = null;
   let seq = 0; // 遅れて返った /api/book が別の本の表示を上書きしないように
+  let current = null; // 表示中の本（「リストに追加」が渡す）
+  let onAdd = null; // opts.onAdd（無ければ追加ボタンを出さない）
 
   const $ = (id) => document.getElementById(id);
 
@@ -71,6 +78,12 @@
     modal.innerHTML = MODAL_HTML;
     document.body.appendChild(modal);
     $("bdClose").addEventListener("click", close);
+    // 追加したらこの詳細は閉じる。下に開いている巻一覧へ戻り、続けて別の巻を見られる。
+    $("bdAdd").addEventListener("click", () => {
+      const fn = onAdd, book = current;
+      close();
+      if (fn && book) fn(book);
+    });
     $("bdSeries").addEventListener("click", (ev) => {
       if (ev.metaKey || ev.ctrlKey || ev.shiftKey || ev.button !== 0) return;
       const id = $("bdSeries").dataset.seriesId;
@@ -212,6 +225,12 @@
   window.openBookDetail = function (book, opts = {}) {
     ensureModal();
     const mySeq = ++seq;
+    current = book;
+    onAdd = typeof opts.onAdd === "function" ? opts.onAdd : null;
+    const add = $("bdAdd");
+    add.style.display = onAdd ? "" : "none";
+    add.disabled = !!opts.added;
+    add.textContent = opts.added ? "追加済み" : opts.addLabel || "リストに追加";
     $("bdTitle").textContent = book.title || "";
     const author = book.creators || book.author || "";
     $("bdAuthor").textContent = author;

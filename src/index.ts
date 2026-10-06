@@ -100,6 +100,13 @@ import {
   adminLookupMasterFix,
   adminSaveMasterFix,
 } from "./masterFix";
+import {
+  adminDismissRegisterRequest,
+  adminListRegisterRequests,
+  adminRegisterCandidates,
+  adminRegisterSeries,
+  requestSeriesRegister,
+} from "./seriesRegister";
 import { handleSiteFile } from "./robots";
 import { ageGate } from "./ageGate";
 import { fetchSiteAsset, isAdultAssetPath } from "./siteAssets";
@@ -419,6 +426,11 @@ const worker = {
       if (path === "/api/volume-title-reports" && request.method === "POST") {
         return await reportVolumeTitle(request, env);
       }
+      // 「マスタに無い作品をシリーズとして登録してほしい」依頼。collect-only で、運ぶのは
+      // ISBN 1 つだけ（書名はサーバが控えから引く）。src/seriesRegister.ts
+      if (path === "/api/series-register-requests" && request.method === "POST") {
+        return await requestSeriesRegister(request, env);
+      }
       if (path === "/api/volume-candidates" && request.method === "GET") {
         return await volumeCandidates(request, env);
       }
@@ -697,6 +709,22 @@ const worker = {
       if (adminMasterFixMatch && request.method === "DELETE") {
         // 取り消し: 控えがあればマスタ行を戻し、無ければ（足した巻なので）消す。
         return await adminDeleteMasterFix(env, adminMasterFixMatch[1]);
+      }
+      // マスタに無い作品のシリーズ登録（custom_series + volume_master_fix）。src/seriesRegister.ts
+      if (path === "/api/admin/series-register-requests" && request.method === "GET") {
+        // ?resolved=1 で処理済み（登録/却下）の履歴、無ければ未処理のキュー。
+        return await adminListRegisterRequests(env, parsePage(url), url);
+      }
+      const adminRegisterReqMatch = path.match(/^\/api\/admin\/series-register-requests\/([0-9Xx]+)$/);
+      if (adminRegisterReqMatch && request.method === "DELETE") {
+        return await adminDismissRegisterRequest(env, adminRegisterReqMatch[1]);
+      }
+      if (path === "/api/admin/series-register/candidates" && request.method === "GET") {
+        // 代表 ISBN から作品を同定し、その作品の巻を楽天（+ 絶版巻は Yahoo）から集める。
+        return await adminRegisterCandidates(env, url);
+      }
+      if (path === "/api/admin/series-register" && request.method === "POST") {
+        return await adminRegisterSeries(request, env);
       }
       if (path === "/api/admin/cover-suggestions" && request.method === "GET") {
         // ?resolved=1 で処理済み(承認/却下/差し替え)の履歴、無ければレビュー待ちキュー。

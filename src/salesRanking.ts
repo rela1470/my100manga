@@ -1,5 +1,5 @@
 import { Env } from "./types";
-import { baseTitle, escapeLikeClamped, json, LIKE_MAX_BYTES, normTitle } from "./util";
+import { baseTitle, escapeLikeClamped, hiraToKata, json, LIKE_MAX_BYTES, normTitle, searchKey, vuFold } from "./util";
 import { rakutenBestsellers, rakutenReady, type RakutenBestseller } from "./rakuten";
 import { resolveUnit } from "./merge";
 import { groupKey, isGroupId, loadGroup, NAME_NORM_PREFIX } from "./groups";
@@ -26,6 +26,8 @@ const TOP_N = 100; // 各窓に載せる作品数
 const DAY_MS = 24 * 60 * 60 * 1000;
 const JST_MS = 9 * 60 * 60 * 1000;
 const CHUNK = 90; // D1 の bind 上限よけ（readCachedCovers と同じ）
+// 読みの照合（seriesByKana）は索引が使えず series 全行を走査するので、1 文に詰める読みは少なめに。
+const KANA_CHUNK = 20;
 
 const META_JSON_KEY = "sales_ranking_json";
 // Cron が最後にスナップショットを保存した日（JST）。その日の分は Cron のものを正とし、
@@ -365,6 +367,9 @@ const creatorMatches = (creator: string | null, names: string[]): boolean => {
  *   2. 作品名と同じ名前のシリーズ（完全一致 → 区切り記号・全角半角を無視した一致 /「:」「=」
  *      以降を除いた基本書名の一致）。同名が複数（レーベル違いの文庫版・総集編など）なら pickBest
  *   3. シリーズの無い巻のまとまり（書名 + 著者 + レーベル）。複数なら同じく pickBest
+ *   4. 読み（name_kana_norm）の一致。マスタが英字で楽天がカタカナの作品
+ *      （「BLACK LAGOON」↔「ブラック・ラグーン」）を拾う
+ *   5. 副題・外伝を落とした名前（workVariants）で 2 / 3 をもう一度
  *  最後に resolveUnit で結合済みの読み替え・まとまりの正規 ID への寄せをする。 */
 export async function resolveTargets(env: Env, works: WorkRef[]): Promise<Map<string, string>> {
   const found = new Map<string, string>();
@@ -388,11 +393,29 @@ export async function resolveTargets(env: Env, works: WorkRef[]): Promise<Map<st
   }
 
   // 2. シリーズ名 / 3. シリーズの無い巻のまとまり
+  const rest: WorkRef[] = [];
   for (const w of works) {
     if (found.has(w.key)) continue;
     const names = authorNames(w.author);
     const id = (await seriesByName(env, w.work, names)) ?? (await groupByTitle(env, w.work, names));
     if (id) found.set(w.key, id);
+    else rest.push(w);
+  }
+
+  // 4. 読み
+  for (const [key, id] of await seriesByKana(env, rest)) found.set(key, id);
+
+  // 5. 副題・外伝を落とした名前（確かなものから順に、最初に当たったもの）
+  for (const w of rest) {
+    if (found.has(w.key)) continue;
+    const names = authorNames(w.author);
+    for (const v of workVariants(w.work).slice(1)) {
+      const id = (await seriesByName(env, v, names)) ?? (await groupByTitle(env, v, names));
+      if (id) {
+        found.set(w.key, id);
+        break;
+      }
+    }
   }
 
   const out = new Map<string, string>();
@@ -409,6 +432,11 @@ interface NamedSeries {
   creator: string | null;
   n: number;
   tag: string | null; // レーベルに付いた運営のタグ（廉価版 / 文庫版 / 傑作選。src/labels.ts）
+}
+
+interface KanaSeries extends NamedSeries {
+  kana: string; // name_kana_norm（「|」区切りの読み）
+  creators: string; // creators_norm（取り込みが「|」でつないだ全作者名）
 }
 
 /** 同名の候補から 1 つ選ぶ。巻の多いもの（本編の単行本）を優先し、著者が合うものは 4 倍に
@@ -512,6 +540,95 @@ async function groupByTitle(env: Env, work: string, names: string[]): Promise<st
     names
   );
   return best ? "G" + best.isbn : null;
+}
+
+// ダッシュとして使われる記号。楽天は副題を「ー」「-」で囲むことがある
+// （「ながたんと青とーいちかの料理帖ー」= マスタ「ながたんと青と : いちかの料理帖」、
+// 「ホタルの嫁入り外伝 -人斬りと幼童ー」）。長音「ー」と区別が付かないので、作品名そのままで
+// 寄せ先が見つからなかったときの二の矢（workVariants）としてだけ切る。
+const DASH_RE = /[-－‐‑–—ー]/;
+// 「ホタルの嫁入り外伝」のような外伝・番外編。新刊はマスタに無いことが多いので本編に寄せる。
+const SPINOFF_RE = /[\s　]*(?:外伝|番外編|番外篇|スピンオフ)$/;
+
+/** 作品名の照合に使う名前を、確かなものから順に。
+ *   1. 作品名そのまま
+ *   2. 最初のダッシュから後ろ（副題）を落としたもの。長音を切ってしまっても
+ *      （「スキップとローファー」→「スキップとロ」）照合は完全一致（sameWork / baseTitle）なので
+ *      別の作品には当たらない。2 文字以下（「ワールドトリガー」→「ワ」）は短すぎるので使わない
+ *   3. さらに末尾の「外伝」「番外編」を落としたもの（本編のシリーズに寄せる）。外伝そのものが
+ *      マスタにあれば 2 までで当たるので、本編に寄るのは外伝がマスタに無いときだけ */
+export function workVariants(work: string): string[] {
+  const out = [work];
+  const head = work.split(DASH_RE)[0].replace(/[\s　]+$/, "");
+  if (head.length >= 3 && head !== work) out.push(head);
+  const base = out[out.length - 1].replace(SPINOFF_RE, "");
+  if (base.length >= 2 && !out.includes(base)) out.push(base);
+  return out;
+}
+
+/** 読みの照合キー。記号・全角半角を無視し（「ブラック・ラグーン」→「ブラックラグーン」）、
+ *  ひらがなをカタカナに、ヴをバ行に寄せる（ingest が name_kana_norm に入れる形に合わせる）。 */
+const kanaKey = (s: string): string => vuFold(hiraToKata(searchKey(s)));
+
+/** 読み（series.name_kana_norm）での照合。マスタが英字・楽天がカタカナのように書名の字が違う
+ *  作品（「BLACK LAGOON」↔「ブラック・ラグーン」）を拾う。読みだけの一致は同音の別作品に
+ *  当たりやすいので、著者が合う候補に限る。
+ *
+ *  name_kana_norm は読みを「|」でつないだもの（英字の別名も読みのひとつ: ONE PIECE なら
+ *  「onepiece|ワンピース」）で、当たりが先頭とは限らないから読みの索引では引けない。全行走査に
+ *  なるので作品ごとに引かず、残り全部の読みを 1 文にまとめる。 */
+async function seriesByKana(env: Env, works: WorkRef[]): Promise<Map<string, string>> {
+  const out = new Map<string, string>();
+  const byKey = new Map<string, WorkRef[]>();
+  for (const w of works) {
+    const k = kanaKey(w.work);
+    if (k.length < 3 || !authorNames(w.author).length) continue; // 短い読み・著者不明は当てにしない
+    const slot = byKey.get(k);
+    if (slot) slot.push(w);
+    else byKey.set(k, [w]);
+  }
+  const keys = [...byKey.keys()];
+  for (let i = 0; i < keys.length; i += KANA_CHUNK) {
+    const chunk = keys.slice(i, i + KANA_CHUNK);
+    const r = await env.DB.prepare(
+      `SELECT ${CAND_COLS}, s.name_kana_norm AS kana, COALESCE(s.creators_norm, '') AS creators
+         FROM series s
+        WHERE ${chunk.map(() => `('|' || s.name_kana_norm || '|') LIKE ? ESCAPE '\\'`).join(" OR ")}`
+    )
+      .bind(...chunk.map((k) => "%|" + escapeLikeClamped(k, LIKE_MAX_BYTES - 4) + "|%"))
+      .all<KanaSeries>();
+    const cands = new Map<string, KanaSeries[]>();
+    for (const row of r.results ?? []) {
+      for (const k of new Set((row.kana ?? "").split("|").map(kanaKey))) {
+        if (!byKey.has(k)) continue;
+        const slot = cands.get(k);
+        if (slot) slot.push(row);
+        else cands.set(k, [row]);
+      }
+    }
+    for (const [k, rows] of cands) {
+      for (const w of byKey.get(k) ?? []) {
+        const names = authorNames(w.author);
+        // 読みが同じでも、記号の有無しか違わない候補（「もやしもん＋」に対する「もやしもん」）は
+        // 別の作品。記号を落とした一致を作品の同定に使わないのはマスタ側の決まりでもある
+        // （src/util.ts searchKey）。区切り記号の揺れだけの候補（「ブラック・ラグーン」↔
+        // 「ブラックラグーン」）は looseKey で一致する＝同じ作品なので残す。
+        const sk = searchKey(w.work);
+        const lk = looseKey(w.work);
+        const sameButForSymbols = (name: string) => searchKey(name) === sk && looseKey(name) !== lk;
+        const best = pickBest(
+          rows.filter(
+            (s) =>
+              !sameButForSymbols(s.name) &&
+              (creatorMatches(s.creator, names) || creatorMatches(s.creators, names))
+          ),
+          names
+        );
+        if (best) out.set(w.key, best.id);
+      }
+    }
+  }
+  return out;
 }
 
 async function storePayload(env: Env, payload: SalesPayload): Promise<void> {

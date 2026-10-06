@@ -188,14 +188,20 @@ export interface LiveSeries {
  *  取得" button for works absent from the monthly dump entirely. Unlike the
  *  per-series supplement this is a broad substring scan, so it's user-triggered
  *  only and never cached in D1. Throws on fetch failure. */
-export async function liveSearchByKeyword(keyword: string, exclude = true): Promise<LiveSeries[]> {
+export async function liveSearchByKeyword(
+  keyword: string,
+  exclude = true,
+  // 照合先。"name" = 書名（既定）、"creator" = 作者名（検索結果の「作者名」側から呼ばれる）。
+  // schema:creator は "[著]尾田栄一郎" のように役割が付いた文字列なので、そのまま部分一致で見る。
+  field: "name" | "creator" = "name"
+): Promise<LiveSeries[]> {
   const rows = await runSparql(`PREFIX schema: <https://schema.org/>
 SELECT ?name ?isbn ?vol ?creator ?publisher ?date WHERE {
   ?book schema:name ?name ;
         schema:isbn ?isbn ;
         schema:volumeNumber ?vol ;
         schema:creator ?creator .
-  FILTER(CONTAINS(?name, ${sparqlString(keyword)}))
+  FILTER(CONTAINS(?${field}, ${sparqlString(keyword)}))
   ${sparqlNotAdult("?book", exclude)}
   OPTIONAL { ?book schema:publisher ?publisher }
   OPTIONAL { ?book schema:datePublished ?date }

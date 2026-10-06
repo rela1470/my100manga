@@ -52,6 +52,7 @@ DB 側に記録されないので、この表で管理する。
 | `add-volume-master-fix.sql` | `volume_master_fix`（上流が壊している巻のマスタ行を丸ごと差し替える）＋ 9784063129502（Rave 9 巻）と 9784063029505（超感電少女モナ）の 2 件。管理画面「マスタ行の修正」が読み書きするので**デプロイ前に** | ○ | 2026-10-05 | 2026-10-05（R18版も dev / 本番とも同日 適用・デプロイ済み） |
 | `remove-redundant-name-overrides.sql` | タグ（廉価版・文庫版・傑作選）で言えるようになったシリーズ名の修正 13 件を外す（`series_name_override` の DELETE）。管理画面の「修正を外す」導線と同時に入れるので**デプロイ後でも可**（SQL だけでも成立する） | ○ | 2026-10-05（0 件。該当行が無い） | 2026-10-05（13 件削除。R18版も dev / 本番とも同日 適用・デプロイ済み、どちらも 0 件） |
 | `add-series-suggest.sql` | `series_suggest`（検索欄の入力補完の前方一致索引。マスタから作り直すので中身も入る）。`src/suggest.ts` が読むので**デプロイ前に**。適用後にファイルを `series_suggest_new` + `RENAME` 方式へ書き換えたが、出来上がる表は同じなので流し直しは不要 | ○ | 2026-10-06（245,177 行） | 2026-10-06（245,179 行。R18版も dev / 本番とも同日 適用・デプロイ済み、どちらも 257,560 行） |
+| `add-series-register.sql` | `series_register_request`（マスタに丸ごと無い作品の「シリーズとして登録してほしい」依頼。collect-only）。`src/seriesRegister.ts` が読み書きするので**デプロイ前に** | ○ | 2026-10-06 | 2026-10-06（R18版も dev / 本番とも同日 適用・デプロイ済み） |
 
 冪等: ○ = 何度流しても同じ結果。× = 2 回目はエラーになる（`ALTER TABLE ... ADD COLUMN` など。エラーで
 止まるだけで壊れはしないが、同じファイルの後続の文も流れない）。
@@ -1364,3 +1365,112 @@ share-x.js の SNS パネルと種別選択、account.js の紐付け・退会�
 
 R18 2 環境は年齢確認ゲートがあるため実機操作は未実施。配信物が同一であることは上の 4 ファイルの
 確認で担保している。
+
+## 2026-10-06 マスタに無い作品をシリーズとして登録する（`series_register_request`）
+
+MADB に **1 巻も載っていない作品**がある。実例:
+
+- `9784758061780`『このこここのこ』1 巻（藤こよみ / 一迅社 IDコミックス REXコミックス / 2009-12 / 全 3 巻完結）。
+  `series` にも `volumes` にも 1 行も無い（著者の他作品『ひとつ屋根の下の』『買い食いハラペコラ』は入っている）。
+  openBD・NDLサーチ・版元ドットコムも 0 件。**楽天ブックスだけが 3 巻とも持っている**
+  （`9784758061780` / `9784758061957` / `9784758062251`、表紙つき）。Yahoo! ショッピングにも中古出品がある。
+
+症状: ISBN 検索は `rakutenCard`（`src/search.ts`）の**楽天ブックス由来の 1 冊ライブカード**を返す
+（`series_id` が `rakuten<ISBN>` の擬似 ID）。リストには入れられるが、シリーズとして開けず、全巻まとめて
+追加できず、書名「このこここのこ」で検索しても出ず、結合・分離・名前修正・タグ・抜け巻穴埋めのどの導線にも
+乗らない。
+
+> 楽天 API を直に叩いて確かめるときは **`outOfStockFlag=1` を必ず付ける**こと。既定では品切れ・絶版が
+> 隠れるので、持っている本でも `count: 0` に見える（`src/rakuten.ts` の `call()` は付けている）。
+
+### 仕組み（新しい読み出し経路は増やさない）
+
+既にある 3 つの部品の組み合わせ。できあがるのは「普通のシリーズ 1 件と普通のマスタ巻 n 行」なので、
+巻一覧・検索・リスト表示・詳細はこの仕組みを一切知らなくていい。
+
+1. `custom_series` … 独自シリーズ（`U` + 6 桁）。取り込み後も `APPLY_LINKS_SQL` が `series` へ載せ直す。
+2. `volume_master_fix` … 「足したマスタ行そのもの」。`prev_json` が NULL の行＝上流に無い巻を足したもので、
+   取り込み後は `APPLY_MASTER_FIX_SQL` が載せ直す（`APPLY_LINKS_SQL` の**後**なので、シリーズ ID も含めて
+   ここが最終の値）。
+3. 楽天ブックスのタイトル検索（`rakutenSeriesPage`）＋ 絶版巻の保険に Yahoo の商品名検索
+   （`yahooVolumeIsbns`）… 残りの巻の ISBN を集める。
+
+`series_register_request` はそこに足した**利用者からの依頼キュー**だけ。他の申し出
+（`series_report` / `series_merge_request` / `cover_suggestion`）と同じ collect-only 方針で、全体反映は
+管理者の確定まで行わない。**依頼が運ぶのは ISBN 1 つだけ**で、書名・著者・出版社はサーバが自分の控え
+（`live_volumes` / `book_meta`）から引く。利用者の自由入力を 1 文字も受けないので、通報・伏字の対象になる
+文字列がこの表に入ることはない。
+
+### 導線
+
+- **利用者**: ISBN 検索の結果の末尾に「シリーズとして登録を依頼」（`public/app.js` `buildRegisterBar`）。
+  出るのは ① 0 件（`isbn_miss`）② 結果が楽天ブックスの 1 冊ライブカードだけ、のどちらか。
+  ボット確認（Turnstile, action `feedback`）と公開書き込みのレート制限の対象。
+- **管理画面「シリーズの新規登録」**（`#series-register`, `src/seriesRegister.ts`）:
+  依頼キュー →「候補を集める」で代表 ISBN から作品を同定し（楽天の ISBN 直引き → `salesWorkTitle` で
+  巻数表記を外す）、その作品名＋著者で楽天のタイトル検索をページ送り、巻数の穴は Yahoo で拾う。
+  同じ作品かの判定は `normTitle(salesWorkTitle(title))` の一致（取りこぼしより拾いすぎを選び、
+  管理者がチェックを外す）。マスタが既に持つ巻・成年向けの巻は選べない印を付け、確定側でも弾く。
+- **確定**: `custom_series` 1 行 ＋ 選んだ巻の `volume_master_fix` 行（`series_id` = U-id）を 1 バッチで書き、
+  その場で `volumes` へ当てる。依頼の行は `resolution='registered'` になる。
+- **取り消し**: 管理画面「マスタ行の修正」の取り消し（控えが無いので `volumes` から消える）。巻が 1 つも
+  残らなくなった独自シリーズは `adminUnlinkVolumes` と同じ孤児判定（`volumes` を見る）で片付く。
+- **サジェスト**: 新規登録した作品は、結合・シリーズ名の修正と同じく `series_suggest` には即時反映されない。
+  入力補完にも出したいときは管理画面「概要」の「サジェスト索引 → 再構築」を押す（月次取り込みでも直る）。
+
+### ついでに直したところ
+
+- `src/masterFix.ts` の「ISBN で調べる」の下書き材料に **楽天ブックス（ISBN 直引き）と Yahoo の出品名**を
+  足した。openBD は収録率 97% だが、この種の絶版巻ではまるごと持っていない（上の実例は `[null]`）。
+  楽天は書名・著者・出版社・レーベル・発売日・表紙を構造化して持ち、楽天にも無い巻は Yahoo の出品名だけが
+  書名の在りかになる。
+- マスタ行の組み立て（検索キー `title_search` / `creators_norm`、`vol_sort` の導出）と
+  `volume_master_fix` への upsert ＋ `volumes` への反映を `buildMasterRow` / `masterFixStmts` に括り出し、
+  フォーム保存とシリーズの新規登録で共有した。
+
+### テスト
+
+`test/seriesRegister.test.ts`（22 件）。依頼が ISBN しか受け取らないこと（書名を送っても無視）、
+再依頼が回数だけ増えること、却下した依頼が再依頼で開き直ること、マスタに既にある ISBN は依頼にならないこと、
+成年向けの拒否、Turnstile の対象、候補集めの作品名の導出、確定で独自シリーズ＋マスタ巻ができること、
+**月次取り込みで作り直しても `APPLY_LINKS_SQL` → `APPLY_MASTER_FIX_SQL` で元に戻ること**、
+取り消しで巻が消えること、マスタが既に持つ巻の拒否、入力の検査、U-id の連番、キューの未処理／処理済み。
+
+ローカルの `wrangler dev` で実物も通した（候補集めが楽天から全 3 巻を表紙つきで返す → 確定 → `U000004` →
+ISBN 検索・書名検索・`/api/series/U000004/volumes` がどれも全 3 巻のシリーズとして返す → `/api/covers` が
+3 巻とも表紙を解決 → 取り消しで巻が消え、足し直しで戻る）。
+
+### 適用
+
+**migration → デプロイの順**（逆だと依頼の受付と管理画面のキューが `no such table: series_register_request`
+で落ちる）。ingest は不要（マスタの列は増えていない）。
+
+1. `wrangler d1 execute DB [--env dev|r18dev|r18] --remote --file db/add-series-register.sql`
+2. `npm run deploy:dev` → `deploy:prod` → `deploy:r18:dev` → `deploy:r18:prod`
+
+| 環境 | Version ID | 適用後のブックマーク |
+|---|---|---|
+| dev | `28b1afc9-11c0-45cc-bc93-7479418b9a32` → `11e9f843-1d9e-4f27-8459-9291a1a7e161` | `00000108-00000006-000050fc-97630c3d037206464f14954a60f094ea` |
+| 本番 | `b6a0a795-9d9e-43e3-8cab-bf599b6e05a6` | `00000122-00000000-000050fc-641f3ecb99bb00413057a5e474775c64` |
+| R18 dev | `75cfbb28-09a2-4e05-88d3-cb0f85e08aee` | `0000002b-00000000-000050fc-7335f2ed64f47de085af1753e97484c0` |
+| R18 本番 | `e4431b68-55f5-4cfc-8edd-713a96f1c512` | `00000034-00000000-000050fc-097557e0dde7086590dc9e38bc62fca1` |
+
+本番 / R18 2 環境は 2026-10-06 に `my100manga-1e` が適用・デプロイした（3 環境とも `success` /
+rows written 4 / num_tables 41。適用前のブックマークは本番 `0000011e-00000000-000050fc-640325d568d7403957063aa5103b1038`、
+R18 dev `00000029-00000000-000050fc-cf17ab3d9ebbf341cf99f7b45b46046f`、
+R18 本番 `00000032-00000000-000050fc-bdc1db1cb53bb29a11b047da4ba5e923`）。`--file` は D1 の import API を
+使うので、query API（`--command`）が通る状態でも `Authentication error [code: 10000]` で落ちることがある
+（1 回目が失敗・そのまま再実行で成功した）。同じデプロイに売上ランキングの寄せの改善
+（`my100manga-1e`。読み / 副題・外伝での寄せ、DB 変更なし）も一緒に出ている。
+
+dev は 2026-10-06 に並行セッション（`my100manga-4f`）が代表して適用・デプロイした（`success` / 2 queries /
+rows written 4 / num_tables 41）。同じデプロイに 3 セッション分が一緒に出ている: こちらのシリーズ新規登録、
+`my100manga-dc` の作者名検索（`/api/search?by=creator`、DB 変更なし）、`my100manga-4f` のランキング巻一覧からの
+リスト追加（`public/draft-add.js` 新規 ＋ `series-volumes.js` / `book-detail.js` / `app.js` / `styles.css` と
+ranking・sales-ranking・circulation の 3 HTML。DB 変更なし）。
+
+dev での確認（HTTP で見られる範囲。管理画面は Cloudflare Access が要るのでブラウザから目視する）:
+
+- `GET /api/search?q=9784758061780` → 楽天ブックスのライブカード 1 件（`series_id: "rakuten9784758061780"`）。登録前の期待どおり
+- `GET /api/admin/series-register-requests` → 401（Access 未通過。`no such table` の 500 ではない ＝ 表は効いている）
+- `POST /api/series-register-requests`（Turnstile トークン無し）→ 403（ルートは通っている）

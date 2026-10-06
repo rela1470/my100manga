@@ -27,6 +27,7 @@ const pageState = {
   seriesReports: 1,
   corr: 1,
   mfix: 1,
+  sreg: 1,
   coverSuggest: 1,
   sup: 1,
   bookMeta: 1,
@@ -64,6 +65,7 @@ const TODO_ITEMS = [
   ["corrections", "シリーズへの手動追加", "corrections"],
   ["cover_suggestions", "表紙の修正", "cover-suggestions"],
   ["series_tag_requests", "シリーズのタグの申請", "series-tags"],
+  ["series_register_requests", "シリーズの新規登録の依頼", "series-register"],
 ];
 
 function fmtDate(ms) {
@@ -3442,7 +3444,7 @@ function mfixRenderSources() {
   const box = $("mfixSources");
   box.textContent = "";
   if (!mfixLookup) return;
-  const { master, openbd, series } = mfixLookup;
+  const { master, openbd, rakuten, yahoo, series } = mfixLookup;
 
   if (master) {
     box.append(
@@ -3491,6 +3493,52 @@ function mfixRenderSources() {
     );
   } else {
     box.append(mfixSourceCard("openBD の書誌", [["", "この ISBN は openBD に無い（取れなかった）"]], "", null));
+  }
+
+  // 楽天ブックス（ISBN 直引き）。openBD が持たない絶版・古い巻の主な受け皿で、
+  // openBD に無いレーベル（seriesName）と書影まで持っている。
+  if (rakuten) {
+    box.append(
+      mfixSourceCard(
+        "楽天ブックスの書誌",
+        [
+          ["書名", rakuten.title],
+          ["巻", rakuten.volume],
+          ["著者", rakuten.author],
+          ["出版社", rakuten.publisher],
+          ["発行日", rakuten.pubdate],
+        ],
+        "反映",
+        () =>
+          mfixFill(
+            {
+              // 楽天の書名は「このこここのこ（1）」のように巻数込み。巻は volume 側に出ているので
+              // 書名からは末尾の括弧の巻数だけ落とす。
+              title: (rakuten.title || "").replace(/[\s　]*[（(]\s*\d{1,4}\s*[）)]\s*$/, ""),
+              volume_number: rakuten.volume,
+              creator: rakuten.author,
+              publisher: rakuten.publisher,
+              pubdate: rakuten.pubdate,
+            },
+            ["title", "volume_number", "creator", "publisher", "pubdate"]
+          )
+      )
+    );
+  } else {
+    box.append(mfixSourceCard("楽天ブックスの書誌", [["", "この ISBN は楽天ブックスに無い（取れなかった）"]], "", null));
+  }
+
+  // Yahoo!ショッピングの出品名。出品者の自由入力なので構造化された書誌としては使えないが、
+  // openBD にも楽天にも無い絶版巻では、これだけが書名の在りか（memory の調査どおり）。
+  if (yahoo) {
+    box.append(
+      mfixSourceCard(
+        "Yahoo!ショッピングの出品名",
+        [["商品名", yahoo.name], ["", "出品者の自由入力です。書名はここから起こしてください"]],
+        "",
+        null
+      )
+    );
   }
 
   if (series) {
@@ -3722,6 +3770,313 @@ $("mfixCancel").addEventListener("click", () => {
 });
 $("reloadMfix").addEventListener("click", () => loadMasterFixes(pageState.mfix));
 
+/* ---------- シリーズの新規登録（マスタに丸ごと無い作品, src/seriesRegister.ts） ---------- */
+// MADB に 1 巻も載っていない作品は、ISBN 検索では楽天ブックス由来の 1 冊カードにしかならず
+// （series_id が "rakuten<ISBN>" の擬似 ID）、シリーズとして開けない。ここで独自シリーズ
+// （custom_series の U-id）を 1 件作り、選んだ巻を volume_master_fix 行として登録する。
+// できあがるのは普通のシリーズ 1 件と普通のマスタ巻 n 行なので、読み出し側は何も知らなくていい。
+
+// 「候補を集める」で引いた結果（work_title / creator / publisher / label / candidates）。
+let sregLookup = null;
+// 依頼一覧で処理済み（登録・却下）を見ているか。
+let sregResolved = false;
+
+/** 候補 1 件を 1 行に。マスタが既に持つ巻・成年向けの巻は選べない（サーバも弾く）。 */
+function sregCandRow(c) {
+  const blocked = c.in_master || c.adult;
+  const check = el("input", { type: "checkbox", checked: !blocked, disabled: blocked });
+  check.dataset.isbn = c.isbn;
+  const note = c.in_master
+    ? el("div", { className: "warn", textContent: "マスタが既に持っています" })
+    : c.adult
+      ? el("div", { className: "warn", textContent: "成年向け（登録できません）" })
+      : null;
+  const titleCell = el("td", { className: "owner" }, [el("div", { textContent: c.title })]);
+  if (note) titleCell.append(note);
+  return el("tr", { dataset: { isbn: c.isbn } }, [
+    el("td", null, [check]),
+    el("td", null, [coverThumb(c.cover_url, "corr-thumb", "corr-noimg", c.title)]),
+    el("td", null, [el("input", { type: "text", value: c.volume_number, className: "sreg-vol" })]),
+    el("td", { className: "slug", textContent: c.isbn }),
+    titleCell,
+    el("td", null, [el("input", { type: "text", value: c.pubdate, className: "sreg-pub" })]),
+    el("td", { className: "owner", textContent: c.label }),
+    el("td", { className: "muted", textContent: c.source === "yahoo" ? "Yahoo出品" : "楽天ブックス" }),
+  ]);
+}
+
+function sregRenderCandidates() {
+  const body = $("sregCandBody");
+  const table = $("sregCandTable");
+  const hint = $("sregCandHint");
+  body.textContent = "";
+  const cands = (sregLookup && sregLookup.candidates) || [];
+  if (!cands.length) {
+    table.style.display = "none";
+    hint.textContent =
+      "この作品名では候補が 1 件も見つかりませんでした。上の「引き直す」で作品名を変えて集め直してください。";
+    return;
+  }
+  for (const c of cands) body.append(sregCandRow(c));
+  table.style.display = "";
+  const selectable = cands.filter((c) => !c.in_master && !c.adult).length;
+  const notes = [`候補 ${cands.length} 件（登録できるのは ${selectable} 件）。`];
+  // 楽天だけに頼ると絶版の古い巻が抜ける。Yahoo の探索を上限で打ち切ったときは、
+  // これで全部とは限らないと言っておく（押し直しでは進まないので、手で足す導線を示す）。
+  if (sregLookup.yahoo_capped) {
+    notes.push("絶版巻の探索（Yahoo）を上限で打ち切りました。抜けている巻はマスタ行の修正から 1 冊ずつ足せます。");
+  }
+  if (!sregLookup.rakuten) notes.push("楽天ブックスの鍵が未設定のため、楽天からは集めていません。");
+  notes.push("巻と発行日はその場で直せます。間違った巻はチェックを外してください。");
+  hint.textContent = notes.join(" ");
+  $("sregCheckAll").checked = selectable > 0;
+}
+
+/** ISBN（または画面の作品名）で候補を集め直す。 */
+async function sregDoLookup(opts = {}) {
+  const isbn = $("sregIsbn").value.trim();
+  const msg = $("sregLookupMsg");
+  if (!isbn) {
+    msg.textContent = "ISBN を入れてください";
+    return;
+  }
+  msg.textContent = "集めています…（楽天・Yahoo を順に引くので数秒かかります）";
+  let qs = `isbn=${encodeURIComponent(isbn)}`;
+  if (opts.relookup) {
+    const t = $("sregWorkTitle").value.trim();
+    const c = $("sregCreator").value.trim();
+    const pub = $("sregPublisher").value.trim();
+    if (t) qs += `&title=${encodeURIComponent(t)}`;
+    if (c) qs += `&creator=${encodeURIComponent(c)}`;
+    if (pub) qs += `&publisher=${encodeURIComponent(pub)}`;
+  }
+  let data;
+  try {
+    const res = await fetch(`/api/admin/series-register/candidates?${qs}`);
+    data = await res.json();
+    if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
+  } catch (e) {
+    msg.textContent = "取得に失敗しました: " + e.message;
+    return;
+  }
+
+  sregLookup = data;
+  msg.textContent = "";
+  $("sregIsbn").value = data.isbn;
+  $("sregEditor").hidden = false;
+  $("sregSaveMsg").textContent = "";
+  $("sregWorkTitle").value = data.work_title;
+  // 引き直しでは管理者が直した欄を上書きしない（作品名だけ変えて集め直せるように）。
+  if (!opts.relookup) {
+    $("sregName").value = data.work_title;
+    $("sregCreator").value = data.creator;
+    $("sregCreators").value = "";
+    $("sregPublisher").value = data.publisher;
+    $("sregLabel").value = data.label;
+    $("sregNote").value = "";
+  } else if (!$("sregLabel").value) {
+    $("sregLabel").value = data.label;
+  }
+  sregRenderCandidates();
+}
+
+async function sregSave(btn) {
+  if (!sregLookup) return;
+  const msg = $("sregSaveMsg");
+  const name = $("sregName").value.trim();
+  if (!name) {
+    msg.textContent = "シリーズ名は必須です";
+    return;
+  }
+  const byIsbn = new Map((sregLookup.candidates || []).map((c) => [c.isbn, c]));
+  const volumes = [];
+  for (const tr of $("sregCandBody").querySelectorAll("tr")) {
+    const check = tr.querySelector('input[type="checkbox"]');
+    if (!check || !check.checked || check.disabled) continue;
+    const isbn = tr.dataset.isbn;
+    const c = byIsbn.get(isbn) || {};
+    volumes.push({
+      isbn,
+      volume_number: tr.querySelector(".sreg-vol").value.trim(),
+      pubdate: tr.querySelector(".sreg-pub").value.trim(),
+      title: name,
+      subtitle: "",
+    });
+  }
+  if (!volumes.length) {
+    msg.textContent = "登録する巻を 1 冊以上選んでください";
+    return;
+  }
+
+  if (
+    !(await uiConfirm(
+      `「${name}」を新しいシリーズとして登録し、選んだ ${volumes.length} 冊をマスタ行として入れます。` +
+        `全ての閲覧者の検索・巻一覧・リスト表示に反映され、月次の取り込みのあとも載せ直されます。よろしいですか？`,
+      { okLabel: "登録する" }
+    ))
+  )
+    return;
+
+  const payload = {
+    isbn: $("sregIsbn").value.trim(),
+    name,
+    creator: $("sregCreator").value.trim(),
+    creators: $("sregCreators").value.trim(),
+    publisher: $("sregPublisher").value.trim(),
+    label: $("sregLabel").value.trim(),
+    note: $("sregNote").value.trim(),
+    volumes,
+  };
+  const orig = btn.textContent;
+  btn.disabled = true;
+  btn.textContent = "登録中…";
+  try {
+    const res = await fetch("/api/admin/series-register", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(payload),
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
+    $("sregEditor").hidden = true;
+    $("sregIsbn").value = "";
+    sregLookup = null;
+    await loadRegisterRequests(pageState.sreg);
+    await uiAlert(`シリーズ ${data.series_id}「${data.name}」を ${data.volumes} 冊で登録しました。`);
+  } catch (e) {
+    msg.textContent = "登録に失敗しました: " + e.message;
+  } finally {
+    btn.disabled = false;
+    btn.textContent = orig;
+  }
+}
+
+async function sregDismiss(r, btn) {
+  if (!(await uiConfirm(`ISBN ${r.isbn} の登録依頼を却下します。よろしいですか？`, { okLabel: "却下する" }))) return;
+  btn.disabled = true;
+  try {
+    const res = await fetch(`/api/admin/series-register-requests/${encodeURIComponent(r.isbn)}`, {
+      method: "DELETE",
+    });
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    await loadRegisterRequests(pageState.sreg);
+  } catch (e) {
+    btn.disabled = false;
+    await uiAlert("却下に失敗しました: " + e.message);
+  }
+}
+
+async function loadRegisterRequests(page = 1) {
+  const body = $("sregBody");
+  const table = $("sregTable");
+  const hint = $("sregHint");
+  const count = $("sregCount");
+  body.textContent = "";
+  table.style.display = "none";
+  hint.style.display = "none";
+  $("toggleSregResolved").textContent = sregResolved ? "未処理を表示" : "処理済みを表示";
+
+  let data;
+  try {
+    const res = await fetch(
+      `/api/admin/series-register-requests?page=${page}&per=${PER}${sregResolved ? "&resolved=1" : ""}`
+    );
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    data = await res.json();
+  } catch {
+    hint.textContent = "登録依頼の取得に失敗しました";
+    hint.style.display = "";
+    return;
+  }
+
+  const requests = data.requests || [];
+  const total = data.total ?? requests.length;
+  if (requests.length === 0 && page > 1 && total > 0) {
+    return loadRegisterRequests(Math.min(page - 1, Math.max(1, Math.ceil(total / PER))));
+  }
+  pageState.sreg = page;
+  count.textContent = `${total.toLocaleString("ja-JP")}件`;
+
+  if (total === 0) {
+    hint.textContent = sregResolved
+      ? "処理済みの登録依頼はまだありません。"
+      : "未処理の登録依頼はありません。上の「ISBN で候補を集める」から自分で登録することもできます。";
+    hint.style.display = "";
+    return;
+  }
+
+  for (const r of requests) {
+    const openBtn = el("button", { textContent: "候補を集める" });
+    openBtn.addEventListener("click", () => {
+      $("sregIsbn").value = r.isbn;
+      sregDoLookup();
+      $("sregIsbn").scrollIntoView({ block: "center" });
+    });
+    const actions = [openBtn];
+    if (!r.resolved_at) {
+      const no = el("button", { className: "danger", textContent: "却下" });
+      no.addEventListener("click", () => sregDismiss(r, no));
+      actions.push(no);
+    }
+
+    // 状態: 未処理 / 登録済み（作ったシリーズへのリンク）/ 却下。依頼のあと別経路で
+    // マスタに入った ISBN は、確定の必要がもう無い合図として出す。
+    const stateCell = el("td", { className: "owner" });
+    if (r.resolution === "registered" && r.series_id) {
+      stateCell.append(
+        el("div", { textContent: "登録済み" }),
+        seriesVolumesLink(r.series_id, r.series_name || r.series_id, r.series_name || "")
+      );
+    } else if (r.resolution === "dismissed") {
+      stateCell.append(el("div", { className: "muted", textContent: "却下" }));
+    } else if (r.in_master) {
+      stateCell.append(el("div", { className: "warn", textContent: "別経路でマスタに入りました" }));
+    } else {
+      stateCell.append(el("div", { textContent: "未処理" }));
+    }
+
+    body.append(
+      el("tr", { dataset: { key: r.isbn } }, [
+        el("td", null, [coverThumb(r.cover_url, "corr-thumb", "corr-noimg", r.title)]),
+        el("td", { className: "slug", textContent: r.isbn }),
+        el("td", { className: "owner" }, [
+          el("div", { textContent: r.title || "（書名が引けませんでした）" }),
+          el("div", { className: "muted", textContent: [r.creator, r.publisher].filter(Boolean).join(" / ") }),
+        ]),
+        el("td", { textContent: `${r.report_count}件` }),
+        el("td", { textContent: fmtDate(r.last_reported_at) }),
+        stateCell,
+        el("td", { className: "report-actions" }, actions),
+      ])
+    );
+  }
+
+  table.style.display = "";
+  renderPager("sregPager", page, total, loadRegisterRequests);
+}
+
+$("sregLookup").addEventListener("click", () => sregDoLookup());
+$("sregIsbn").addEventListener("keydown", (e) => {
+  if (e.key === "Enter") sregDoLookup();
+});
+$("sregRelookup").addEventListener("click", () => sregDoLookup({ relookup: true }));
+$("sregSave").addEventListener("click", (e) => sregSave(e.currentTarget));
+$("sregCancel").addEventListener("click", () => {
+  $("sregEditor").hidden = true;
+  $("sregSaveMsg").textContent = "";
+  sregLookup = null;
+});
+$("sregCheckAll").addEventListener("change", (e) => {
+  for (const c of $("sregCandBody").querySelectorAll('input[type="checkbox"]')) {
+    if (!c.disabled) c.checked = e.currentTarget.checked;
+  }
+});
+$("toggleSregResolved").addEventListener("click", () => {
+  sregResolved = !sregResolved;
+  loadRegisterRequests(1);
+});
+$("reloadSreg").addEventListener("click", () => loadRegisterRequests(pageState.sreg));
+
 // --- ハッシュルーティング（各セクションを個別ページに分割）------------------
 // ページ切替時にそのページのデータだけをロードする。ページャーで大量データでも破綻しない。
 const PAGES = {
@@ -3756,6 +4111,13 @@ const PAGES = {
     $("mfixIsbn").value = "";
     $("mfixLookupMsg").textContent = "";
     loadMasterFixes(1);
+  },
+  "series-register": () => {
+    $("sregEditor").hidden = true;
+    $("sregIsbn").value = "";
+    $("sregLookupMsg").textContent = "";
+    sregLookup = null;
+    loadRegisterRequests(1);
   },
   "cover-suggestions": () => {
     resetHistory("coverSuggestions");

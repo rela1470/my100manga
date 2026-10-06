@@ -54,11 +54,13 @@ async function init() {
   syncCovers();
   renderMyLists();
   syncServerDraft();
+  watchDraftFromOtherTabs();
   window.Account?.onBeforeLogout(flushServerDraft);
   document.addEventListener("my100manga:account-lists", () => renderMyLists());
   loadSiteStats();
   wireEvents();
   initAllAges();
+  initSearchMode();
   openSeriesFromUrl(params);
   openSearchFromUrl(params);
   // /l/:slug が見つからなかったときはサーバがここへリダイレクトしてくる。
@@ -120,6 +122,7 @@ function openSearchFromUrl(params) {
   history.replaceState(null, "", location.pathname + (qs ? `?${qs}` : "") + location.hash);
   if (q.length < 2) return;
   $("topSearch").value = q;
+  syncTopSearchClear();
   openAdd();
   doSearch(q);
 }
@@ -603,6 +606,25 @@ async function syncCovers() {
   render();
 }
 
+// 別のタブがこの下書きを書き換えたら、こちらのメモリ上の state を合わせる。ランキングの
+// 巻一覧からの追加（public/draft-add.js）は localStorage を直接書くので、合わせずにいると
+// このタブで次に saveDraft したときに向こうの追加を巻き戻してしまう。並べ替え中（選択が
+// index で決まる）と、公開済みリストの編集中（見ているのが別の下書き）は触らない。
+function watchDraftFromOtherTabs() {
+  window.addEventListener("storage", (e) => {
+    if (e.key !== DRAFT_KEY || !e.newValue || state.editSlug || state.reorder) return;
+    let d;
+    try {
+      d = JSON.parse(e.newValue);
+    } catch (err) {
+      return;
+    }
+    if (!d || !Array.isArray(d.items)) return;
+    state.items = d.items.filter(Boolean).map(normItem);
+    render();
+  });
+}
+
 function clearEditDraft(slug) {
   try {
     localStorage.removeItem(editDraftKey(slug));
@@ -963,6 +985,9 @@ function numBadge(index) {
 // コメント/ネタバレ/表紙は追加後に編集ポップアップで設定する（本の差し替えは「削除して再追加」の運用）。
 // モーダルに検索欄は置かず、再検索はモーダルを閉じてトップの検索欄から行う。
 function openAdd() {
+  // トップの検索欄に候補が出たままモーダルを開くと、候補（position:fixed で z-index が
+  // モーダルより上）がモーダルに被さって残る。引き直し待ちもまとめて取り消す。
+  topSuggest.close();
   state.editIndex = -1;
   state.pending = null;
   clearResults();
@@ -977,9 +1002,35 @@ function focusTopSearch() {
 }
 
 // 付けていないサジェストの取っ手の代わり（null 判定をあちこちに書かないため）。
-const NO_SUGGEST = { refresh() {}, detach() {} };
+const NO_SUGGEST = { refresh() {}, close() {}, detach() {} };
 // 今出ている再検索フォーム（buildRetryForm）のサジェスト。clearResults で片付ける。
 let retrySuggest = NO_SUGGEST;
+
+/** 検索欄の「×」（入力を消す）を配線する。語が入っている間だけ出す。
+ *  @param {HTMLInputElement} input
+ *  @param {HTMLButtonElement} btn 欄に重ねて置く × （.search-clear）
+ *  @param {() => {close: () => void}} getSuggest 今その欄に付いているサジェストの取っ手
+ *  @returns {() => void} コードから欄の値を入れ替えたときに × の出し入れを合わせる関数 */
+function wireSearchClear(input, btn, getSuggest) {
+  const sync = () => { btn.hidden = !input.value; };
+  input.addEventListener("input", sync);
+  input.addEventListener("compositionend", sync); // IME の確定は input が出ないことがある
+  // mousedown は「フォーカスを外さない」ためだけに止める。消したあとも欄に居たいので
+  // （スマホでソフトキーボードが閉じて開き直すのを防ぐ）、実際の処理は click でやる
+  // （キーボードの Enter / Space でも押せるように）。
+  btn.addEventListener("mousedown", (e) => e.preventDefault());
+  btn.addEventListener("click", () => {
+    input.value = "";
+    sync();
+    getSuggest().close(); // 消す前の語の候補が残らないように
+    input.focus();
+  });
+  sync();
+  return sync;
+}
+
+/** トップの検索欄の × の出し入れを合わせる（コードから値を入れたとき）。wireEvents で入る。 */
+let syncTopSearchClear = () => {};
 
 // Empties the modal body, the series title under the heading (searchSubtitle), the
 // header bar under it (searchBar: 巻一覧の「検索結果へ戻る」「全N巻を追加」) and the
@@ -991,6 +1042,7 @@ function clearResults() {
   // 検索をやり直すたびに増えるのを次のスクロールまで待たない）。
   retrySuggest.detach();
   retrySuggest = NO_SUGGEST;
+  syncSearchMode(false); // 巻一覧など、結果一覧以外の画面には持ち越さない
   $("searchActions").innerHTML = "";
   const hbar = $("searchBar");
   hbar.innerHTML = "";
@@ -1472,6 +1524,12 @@ function topSearch() {
 // オンにすると all=1 を付けて絞り込みを外す。本家ではトグル自体を出さないので常に素の URL。
 let searchAllAges = false;
 
+// 検索の対象。"title" = 今までの検索（書名中心で、作者名は最後の段でしか当たらない）、
+// "creator" = 作者名だけ（by=creator, src/search.ts searchByCreator）。結果の上の切り替え
+// （#searchMode）で行き来する。トップの検索欄から引き直すときは "title" に戻す
+// （欄の文言も入力補完も書名のものなので）。
+let searchBy = "title";
+
 /** トップの検索欄のサジェストの取っ手（全年齢トグルで候補を引き直す）。wireEvents で入る。 */
 let topSuggest = NO_SUGGEST;
 
@@ -1484,7 +1542,39 @@ function searchUrl(q, offset) {
   let u = `/api/search?q=${encodeURIComponent(q)}`;
   if (offset != null) u += `&offset=${offset}`;
   if (searchAllAges) u += "&all=1";
+  if (searchBy === "creator") u += "&by=creator";
   return u;
+}
+
+/** ISBN で引いた検索か（サーバ src/search.ts isbnQuery と同じ判定）。ISBN は 1 冊を名指しする
+ *  操作で作者名に切り替える意味が無いので、そのときは切り替えを出さない。 */
+function looksLikeIsbn(q) {
+  const s = String(q || "").normalize("NFKC").replace(/[\s\-‐－ー]/g, "");
+  return /^(97[89]\d{10}|\d{9}[\dXx])$/.test(s);
+}
+
+/** 「作品名 / 作者名」の切り替え。押した側の語で引き直す。 */
+function initSearchMode() {
+  for (const btn of document.querySelectorAll("#searchMode .search-mode-btn")) {
+    btn.addEventListener("click", () => {
+      const by = btn.dataset.by;
+      if (by === searchBy || !lastQuery) return;
+      topSuggest.close(); // 作者名に切り替えた先で書名の候補が残らないように
+      doSearch(lastQuery, by);
+    });
+  }
+}
+
+/** 切り替えの見た目を今の対象に合わせ、検索したあと（結果が出ている間）だけ出す。 */
+function syncSearchMode(show) {
+  const bar = document.getElementById("searchMode");
+  if (!bar) return;
+  for (const btn of bar.querySelectorAll(".search-mode-btn")) {
+    const on = btn.dataset.by === searchBy;
+    btn.classList.toggle("active", on);
+    btn.setAttribute("aria-pressed", on ? "true" : "false");
+  }
+  bar.hidden = !show;
 }
 
 function initAllAges() {
@@ -1495,12 +1585,13 @@ function initAllAges() {
   box.addEventListener("change", () => {
     searchAllAges = box.checked;
     topSuggest.refresh(); // 出ている候補は古い絞り込みのものなので引き直す
-    if (lastQuery) doSearch(lastQuery); // 同じ語で引き直す
+    if (lastQuery) doSearch(lastQuery, searchBy); // 同じ語・同じ対象で引き直す
   });
 }
 
-async function doSearch(q) {
+async function doSearch(q, by) {
   lastQuery = q;
+  searchBy = by === "creator" ? "creator" : "title";
   liveFetchedQuery = "";
   searchNextOffset = null;
   searchAdult = { blocked: "", hits: "" };
@@ -1557,6 +1648,8 @@ let searchAdult = { blocked: "", hits: "" };
 function renderResults(results, isbnMiss = false) {
   lastResults = results;
   const box = clearResults();
+  // 検索したあとに作品名 ⇔ 作者名を切り替えられるようにする（ISBN で引いたときは出さない）。
+  syncSearchMode(!!lastQuery && !looksLikeIsbn(lastQuery));
 
   if (results.length === 0 && searchAdult.blocked) {
     // 収録漏れではなく成年向けで追加できない ISBN。最新DBからの取得でも出ないので導線は出さない。
@@ -1573,7 +1666,11 @@ function renderResults(results, isbnMiss = false) {
     // 最新DBからの取得は書名で探すので、ISBN で見つからないときは書名検索へ誘導する。
     p.textContent = isbnMiss
       ? "このISBNはまだ収録されていません。書名で検索して、下の「最新DBから取得」を試してください。"
-      : "見つかりませんでした。別の語か、下の「最新DBから取得」を試してください。";
+      : searchBy === "creator"
+        // 作者名は表記ゆれ（「あだち充」/「安達充」）や共著の役割違いで外れることがあるので、
+        // 作品名側に戻す道も示す。
+        ? "この作者名では見つかりませんでした。上の「作品名」に切り替えるか、別の表記を試してください。"
+        : "見つかりませんでした。別の語か、下の「最新DBから取得」を試してください。";
     box.appendChild(p);
     box.appendChild(buildRetryForm());
   }
@@ -1589,9 +1686,82 @@ function renderResults(results, isbnMiss = false) {
     box.appendChild(p);
   }
 
+  // ISBN で引いたときだけ出す「シリーズとして登録してほしい」依頼の導線。
+  // マスタ(MADB)に 1 巻も無い作品は、楽天ブックス由来の 1 冊カードにしかならず
+  // (live / source=rakuten / 全1巻)、シリーズとして開けず全巻まとめても追加できない。
+  // 0 件(isbn_miss)のときも同じ依頼を受ける。see src/seriesRegister.ts
+  const regIsbn = looksLikeIsbn(lastQuery)
+    ? lastQuery.normalize("NFKC").replace(/[\s\-\u2010\uff0d\u30fc]/g, "")
+    : "";
+  if (regIsbn && !searchAdult.blocked) {
+    const only = results.length === 1 ? results[0] : null;
+    const liveOne = only && only.live && only.source === "rakuten";
+    if (isbnMiss || liveOne) box.appendChild(buildRegisterBar(regIsbn, liveOne ? only.title : ""));
+  }
+
   // 常設: マスタ(月次ダンプ)に無い作品を live MADB からキーワードで取得する導線。
   // マスタ検索が0件でも手詰まりにならないよう、結果の有無にかかわらず末尾に出す。
   box.appendChild(buildLiveBar());
+}
+
+// 依頼を送った ISBN。描き直し(さらに表示・表紙の後追い)でボタンが未送信に戻らないように。
+const registerRequested = new Set();
+
+// 「シリーズとして登録してほしい」依頼のバー。送るのは ISBN だけで、書名・著者は
+// サーバが自分の控え(live_volumes / book_meta)から引く。利用者の自由入力は一切通さない。
+function buildRegisterBar(isbn, title) {
+  const bar = document.createElement("div");
+  bar.className = "vol-bar live-bar";
+  const p = document.createElement("span");
+  p.className = "hint";
+  p.textContent = title
+    ? `「${title}」は1冊ぶんの情報しかありません。シリーズ(全巻)として登録を依頼できます。`
+    : "この本はまだ収録されていません。シリーズとして登録を依頼できます。";
+  bar.appendChild(p);
+
+  const done = () => {
+    bar.replaceChildren();
+    const ok = document.createElement("span");
+    ok.className = "hint";
+    ok.textContent = "登録の依頼を受け付けました。確認して収録しますので、しばらくお待ちください。";
+    bar.appendChild(ok);
+  };
+  if (registerRequested.has(isbn)) {
+    done();
+    return bar;
+  }
+
+  const btn = document.createElement("button");
+  btn.type = "button";
+  btn.className = "sup-btn";
+  btn.textContent = "シリーズとして登録を依頼";
+  btn.addEventListener("click", async () => {
+    btn.disabled = true;
+    const orig = btn.textContent;
+    btn.textContent = "送信中…";
+    try {
+      const data = await apiFetch("/api/series-register-requests", {
+        method: "POST",
+        headers: { "content-type": "application/json", ...(await botHeaders("feedback")) },
+        body: JSON.stringify({ isbn }),
+      });
+      if (data.already) {
+        uiAlert("この本はもう収録されています。検索し直すとシリーズとして開けます。");
+        bar.remove();
+        return;
+      }
+      // queued=false は受付上限に当たった場合。利用者にできることは無いので、
+      // 受け付けた場合と同じ文言にして終わる(押し直させない)。
+      registerRequested.add(isbn);
+      done();
+    } catch (e) {
+      btn.disabled = false;
+      btn.textContent = orig;
+      uiAlert(apiErrorMessage(e, "依頼の送信に失敗しました"));
+    }
+  });
+  bar.appendChild(btn);
+  return bar;
 }
 
 // 0 件のときだけ出す検索語の編集欄。普段はモーダルに検索欄を置かず再検索はトップの検索欄から
@@ -1604,27 +1774,49 @@ function buildRetryForm() {
   input.type = "text"; // .modal input[type="text"] のスタイル（iOS のズーム防止の 16px も）に揃える
   input.enterKeyHint = "search";
   input.value = lastQuery;
-  input.placeholder = "タイトル・著者で検索";
+  input.placeholder = searchBy === "creator" ? "作者名で検索" : "タイトル・著者で検索";
   const btn = document.createElement("button");
   btn.type = "submit";
   btn.textContent = "検索";
-  row.appendChild(input);
+  // トップの検索欄と同じ、語を消す ×。欄に重ねるので .search-box で包む。
+  const box = document.createElement("div");
+  box.className = "search-box";
+  const clear = document.createElement("button");
+  clear.type = "button";
+  clear.className = "search-clear";
+  clear.setAttribute("aria-label", "検索欄を空にする");
+  clear.title = "消す";
+  clear.hidden = true;
+  const clearX = document.createElement("span");
+  clearX.className = "search-clear-x";
+  clearX.setAttribute("aria-hidden", "true");
+  clearX.textContent = "×";
+  clear.appendChild(clearX);
+  box.append(input, clear);
+  row.appendChild(box);
   row.appendChild(btn);
-  // 入力補完。候補を選んだら、下の submit と同じ経路で検索し直す。
-  retrySuggest = attachSuggest(input, {
-    onPick: (name) => {
-      $("topSearch").value = name;
-      doSearch(name);
-    },
-    params: suggestParams,
-  });
+  const syncClear = wireSearchClear(input, clear, () => retrySuggest);
+  // 入力補完。候補を選んだら、下の submit と同じ経路で検索し直す。サジェスト索引は作品名しか
+  // 持たない（src/suggest.ts）ので、作者名で探しているときは付けない。
+  if (searchBy !== "creator") {
+    retrySuggest = attachSuggest(input, {
+      onPick: (name) => {
+        syncClear(); // 候補で欄が埋まるので × を出す
+        $("topSearch").value = name;
+        syncTopSearchClear();
+        doSearch(name, searchBy);
+      },
+      params: suggestParams,
+    });
+  }
   row.addEventListener("submit", (e) => {
     e.preventDefault();
     const q = input.value.trim();
     if (q.length < 2) { uiAlert("2文字以上で検索してください"); return; }
     input.blur();
     $("topSearch").value = q;
-    doSearch(q);
+    syncTopSearchClear();
+    doSearch(q, searchBy); // 対象（作品名 / 作者名）は変えずに引き直す
   });
   return row;
 }
@@ -1805,7 +1997,9 @@ async function liveFetch(q, btn) {
   const orig = btn.textContent;
   btn.textContent = "最新DBを検索中…";
   try {
-    const data = await apiFetch(`/api/live-search?q=${encodeURIComponent(q)}`);
+    const data = await apiFetch(
+      `/api/live-search?q=${encodeURIComponent(q)}` + (searchBy === "creator" ? "&by=creator" : "")
+    );
     const live = data.results || [];
     liveFetchedQuery = q;
     if (!live.length) {
@@ -4438,7 +4632,11 @@ function wireEvents() {
   $("topSearchBtn").addEventListener("click", topSearch);
   $("topSearch").addEventListener("keydown", (e) => { if (e.key === "Enter" && !e.isComposing) topSearch(); });
   // 入力補完（public/suggest.js）。候補を選んだらそのまま検索する。
-  topSuggest = attachSuggest($("topSearch"), { onPick: () => topSearch(), params: suggestParams });
+  topSuggest = attachSuggest($("topSearch"), {
+    onPick: () => { syncTopSearchClear(); topSearch(); }, // 候補で欄が埋まるので × を出す
+    params: suggestParams,
+  });
+  syncTopSearchClear = wireSearchClear($("topSearch"), $("topSearchClear"), () => topSuggest);
   $("fetchCovers").addEventListener("click", fetchMissingCovers);
   wireShareX($("shareXPost"), $("shareXImage"), () => ({ slug: shareSlug, owner: state.owner }));
   $("fixMissing").addEventListener("click", startFixMissing);

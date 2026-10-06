@@ -18,15 +18,16 @@
   let uid = 0; // 候補の要素 id（aria-activedescendant 用）の通し番号
 
   /** 何もしない取っ手（欄が無い等で付けられなかったとき。呼び出し側で null 判定をさせない）。 */
-  const NOOP = { refresh() {}, detach() {} };
+  const NOOP = { refresh() {}, close() {}, detach() {} };
 
   /** 入力欄にサジェストを付ける。
    *  @param {HTMLInputElement} input
    *  @param {{ onPick: (name: string) => void, params?: () => string }} opts
    *    onPick … 候補を選んだとき（欄には既に名前が入っている）
    *    params … /api/suggest に足すクエリ文字列（R18版の「全年齢も含める」など。"all=1" 形式）
-   *  @returns {{ refresh: () => void, detach: () => void }}
+   *  @returns {{ refresh: () => void, close: () => void, detach: () => void }}
    *    refresh … params の中身が変わったとき、開いている候補を引き直す
+   *    close   … 呼び出し側が検索を始めたとき（候補を無視した Enter / 検索ボタン）に畳む
    *    detach  … 欄を捨てるときに呼ぶ（箱と listener を片付ける） */
   function attachSuggest(input, opts) {
     if (!input || !opts || typeof opts.onPick !== "function") return NOOP;
@@ -55,7 +56,17 @@
     // 結び付けないと aria-activedescendant の参照先が宙に浮く。
     input.setAttribute("aria-controls", boxId);
 
+    /** 出しかけの候補を取り消す。待っている debounce を止め、飛んでいる応答に古い番号を付けて
+     *  捨てさせる。これをしないと、候補を無視して検索した（＝畳んだ）あとに応答が返って
+     *  候補が出直し、開いたモーダルの上に残る。 */
+    function cancel() {
+      clearTimeout(timer);
+      timer = 0;
+      seq++;
+    }
+
     function close() {
+      cancel();
       if (box.hidden) return;
       box.hidden = true;
       box.replaceChildren();
@@ -203,9 +214,8 @@
       clearTimeout(timer);
       const q = input.value.trim();
       if (q.length < MIN) {
-        seq++; // 飛んでいる応答を捨てる
         lastQuery = "";
-        close();
+        close(); // 飛んでいる応答もここで捨てる
         return;
       }
       if (q === lastQuery && !box.hidden) return;
@@ -312,6 +322,9 @@
         lastQuery = "";
         schedule();
       },
+      // 呼び出し側が検索を始めたとき用（候補を無視して Enter / 検索ボタン）。畳むだけでなく
+      // 待っている引き直しも取り消すので、このあとモーダルを開いても候補は出てこない。
+      close,
       detach: teardown,
     };
   }

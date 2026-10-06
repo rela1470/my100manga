@@ -30,6 +30,7 @@
       <a href="#volume-title-reports" data-page="volume-title-reports">本のタイトルの修正</a>
       <a href="#corrections" data-page="corrections">シリーズへの手動追加</a>
       <a href="#master-fixes" data-page="master-fixes">マスタ行の修正</a>
+      <a href="#series-register" data-page="series-register">シリーズの新規登録</a>
       <a href="#cover-suggestions" data-page="cover-suggestions">表紙の修正</a>
       <a href="#covers" data-page="covers">表紙キャッシュ</a>
       <a href="#supplements" data-page="supplements">補完キャッシュ</a>
@@ -45,13 +46,13 @@
       <div class="stat-grid" id="statGrid"></div>
 
       <!-- 検索欄の入力補完（サジェスト）の前方一致索引。ふだんは月次の取り込みが作り直すので、
-           結合・シリーズ名の修正をした分を今すぐ候補に反映したいときだけ押す。 -->
+           結合・シリーズ名の修正・シリーズの新規登録をした分を今すぐ候補に反映したいときだけ押す。 -->
       <div class="toolbar">
         <strong>サジェスト索引</strong>
         <div style="flex:1"></div>
         <button id="suggestRebuild">再構築</button>
       </div>
-      <p class="hint">検索欄の入力補完に出す候補（作品名の前方一致）を、今のマスタ・結合・シリーズ名の修正から作り直します。月次の取り込みでも自動で作り直されます。</p>
+      <p class="hint">検索欄の入力補完に出す候補（作品名の前方一致）を、今のマスタ・結合・シリーズ名の修正・<a href="#series-register">シリーズの新規登録</a>から作り直します。月次の取り込みでも自動で作り直されます。</p>
     </section>
 
     <!-- 通報（自由入力の監査） -->
@@ -623,6 +624,102 @@
         <tbody id="mfixBody"></tbody>
       </table>
       <div class="pager" id="mfixPager" style="display:none"></div>
+    </section>
+
+    <!-- シリーズの新規登録（マスタに丸ごと無い作品） -->
+    <section class="admin-page" id="page-series-register" hidden>
+      <div class="toolbar">
+        <strong>シリーズの新規登録</strong>
+        <span class="count" id="sregCount"></span>
+        <div style="flex:1"></div>
+        <button id="toggleSregResolved">処理済みを表示</button>
+        <button id="reloadSreg">再読み込み</button>
+      </div>
+      <p class="hint">
+        上流（MADB）に<strong>1 巻も載っていない作品</strong>を、シリーズとして登録します。MADB に無い本は
+        ISBN 検索でも<strong>楽天ブックス由来の 1 冊カード</strong>にしかならず（実例:
+        <code>9784758061780</code>『このこここのこ』1 巻 / 一迅社・全 3 巻）、シリーズとして開けず、
+        全巻まとめて追加することも、書名で検索して当てることもできません。
+        <br>ここで確定すると<strong>独自シリーズ（U-id）を 1 件作り、選んだ巻をマスタ行として登録</strong>します
+        （<a href="#master-fixes">マスタ行の修正</a>と同じ <code>volume_master_fix</code> なので、
+        月次の取り込みのあとも自動で載せ直されます）。取り消しは「マスタ行の修正」の一覧から行います。
+        <br>マスタが<strong>既に持っている巻は登録できません</strong>。シリーズ無しのまとまりをシリーズに
+        するのは<a href="#series-merges">シリーズの結合</a>、壊れた 1 行を直すのは
+        <a href="#master-fixes">マスタ行の修正</a>の仕事です。
+        <br>登録した作品が<strong>検索欄の入力補完にも出るようにするには</strong>、
+        <a href="#dashboard">概要</a>の「サジェスト索引」を再構築してください（結合やシリーズ名の修正と同じで、
+        ふだんは月次の取り込みが作り直します）。検索・巻一覧・リスト表示には再構築を待たずに出ます。
+      </p>
+
+      <div class="toolbar" style="margin-top:4px">
+        <strong>ISBN で候補を集める</strong>
+        <input type="text" id="sregIsbn" placeholder="9784758061780" style="width:190px" inputmode="numeric">
+        <button id="sregLookup">候補を集める</button>
+        <span class="count" id="sregLookupMsg"></span>
+      </div>
+
+      <div id="sregEditor" hidden>
+        <table class="admin-table mfix-form">
+          <tbody>
+            <tr><th>シリーズ名</th><td><input type="text" id="sregName" placeholder="このこここのこ"></td></tr>
+            <tr><th>著者</th><td>
+              <input type="text" id="sregCreator" placeholder="藤こよみ">
+              <span class="muted">表示用（役割付き・任意）</span>
+              <input type="text" id="sregCreators" placeholder="原作：A、作画：B">
+            </td></tr>
+            <tr><th>出版社 / レーベル</th><td>
+              <input type="text" id="sregPublisher" placeholder="一迅社" style="width:180px">
+              <input type="text" id="sregLabel" placeholder="IDコミックス　REXコミックス" style="width:260px">
+            </td></tr>
+            <tr><th>メモ</th><td><input type="text" id="sregNote" placeholder="なぜ登録したか・根拠（楽天ブックス / Yahoo の出品 など）"></td></tr>
+            <tr><th>引き直す</th><td>
+              <span class="muted">作品名</span>
+              <input type="text" id="sregWorkTitle" placeholder="このこここのこ" style="width:220px">
+              <button id="sregRelookup" type="button">この作品名で集め直す</button>
+            </td></tr>
+          </tbody>
+        </table>
+
+        <p class="hint" id="sregCandHint"></p>
+        <table class="admin-table" id="sregCandTable" style="display:none">
+          <thead>
+            <tr>
+              <th><input type="checkbox" id="sregCheckAll" title="全部"></th>
+              <th>表紙</th>
+              <th>巻</th>
+              <th>ISBN</th>
+              <th>書名</th>
+              <th>発行日</th>
+              <th>レーベル</th>
+              <th>出どころ</th>
+            </tr>
+          </thead>
+          <tbody id="sregCandBody"></tbody>
+        </table>
+
+        <div class="cover-actions">
+          <button id="sregSave">このシリーズを登録する</button>
+          <button id="sregCancel">やめる</button>
+          <span class="count" id="sregSaveMsg"></span>
+        </div>
+      </div>
+
+      <p class="hint" id="sregHint" style="display:none"></p>
+      <table class="admin-table" id="sregTable" style="display:none">
+        <thead>
+          <tr>
+            <th>表紙</th>
+            <th>ISBN</th>
+            <th>書名 / 著者</th>
+            <th>依頼</th>
+            <th>最終依頼</th>
+            <th>状態</th>
+            <th></th>
+          </tr>
+        </thead>
+        <tbody id="sregBody"></tbody>
+      </table>
+      <div class="pager" id="sregPager" style="display:none"></div>
     </section>
 
     <!-- 表紙の修正（ユーザが選び直した表紙） -->

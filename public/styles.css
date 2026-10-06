@@ -1586,6 +1586,15 @@ html:has(.modal-backdrop.open) { overflow: hidden; }
 }
 /* .slot の見た目は a 向けに書いてあるので、button で使うときに効かない分だけ戻す。 */
 .sv-slot { font: inherit; color: inherit; }
+/* すでに作成中のリスト（下書き）に入っている巻。ネタバレ/コメントのバッジと同じ形で、
+   色だけ変えて「追加済み」と出す（public/series-volumes.js paintAdded）。 */
+.sv-slot.added { outline: 2px solid var(--accent-2); outline-offset: -2px; }
+.sv-slot .sv-badge-added { background: var(--accent-2); }
+.sv-slot .sv-badge-added[hidden] { display: none; }
+/* 「全N巻を追加」のバー。巻一覧（.sv-grid）がスクロールしても押せるよう外に出してある。 */
+.sv-bar { margin: 8px 0 0; }
+/* フッターの「トップの編集画面で開く」。追加はこの画面でできるので、リンク扱いで控えめに。 */
+.sv-edit { align-self: center; }
 @media (max-width: 560px) {
   .sv-grid { grid-template-columns: repeat(auto-fill, minmax(84px, 1fr)); max-height: none; }
 }
@@ -1597,6 +1606,20 @@ html:has(.modal-backdrop.open) { overflow: hidden; }
 .all-ages { display: flex; align-items: center; gap: 6px; margin: 2px 0 8px; font-size: 13px; color: var(--muted); cursor: pointer; }
 .all-ages[hidden] { display: none; }
 .all-ages input { margin: 0; }
+/* 検索の対象（作品名 ⇔ 作者名）の切り替え（public/app.js initSearchMode）。検索したあとだけ出す。
+   結果欄の外（モーダルのヘッダ側）に置くので、結果をスクロールしても押せる。 */
+.search-mode { flex: none; display: flex; gap: 6px; margin: 2px 0 10px; }
+.search-mode[hidden] { display: none; }
+.search-mode-btn {
+  padding: 5px 14px; border: 1.5px solid var(--border); border-radius: var(--radius-pill);
+  background: var(--panel); color: var(--muted); font-size: 13px; font-weight: 600; cursor: pointer;
+  transition: transform var(--dur) var(--ease-bounce), box-shadow var(--dur) var(--ease), background var(--dur) var(--ease);
+}
+.search-mode-btn:hover { transform: translateY(-1px); box-shadow: var(--shadow-sm); }
+.search-mode-btn.active {
+  background: linear-gradient(135deg, var(--accent-strong), var(--accent-3-strong));
+  border-color: transparent; color: #fff; box-shadow: var(--shadow-pop);
+}
 .hint { color: var(--muted); font-size: 13px; }
 /* 成年向けで追加できない ISBN を検索したときの結果欄（src/adult.ts）。「見つからない」と見分けがつくよう枠付き。 */
 .adult-block {
@@ -2114,7 +2137,11 @@ button.copied { border-color: var(--ok-strong); color: var(--ok-strong); }
 /* 一覧の 2 行目（著者 / レーベル / 発行日）。td.muted と違い td の中の行に効かせる。 */
 .admin-table td > .muted { color: var(--muted); font-size: 12px; }
 .admin-table.mfix-form label { display: flex; align-items: center; gap: 4px; font-size: 13px; }
-/* 下書きの材料カード（今のマスタ行 / openBD / シリーズの手本）。stat-grid compact の中身。 */
+/* シリーズの新規登録（管理画面）の候補表で、巻と発行日をその場で直す小さい欄。 */
+.sreg-vol { width: 64px; }
+.sreg-pub { width: 110px; }
+
+/* 下書きの材料カード（今のマスタ行 / openBD / 楽天 / Yahoo / シリーズの手本）。stat-grid compact の中身。 */
 .mfix-source { text-align: left; }
 .mfix-source .mfix-source-head { display: flex; align-items: baseline; gap: 8px; margin-bottom: 4px; }
 .mfix-source .mfix-source-title { font-size: 13px; font-weight: 700; }
@@ -2128,6 +2155,35 @@ button.copied { border-color: var(--ok-strong); color: var(--ok-strong); }
    候補の一覧は <body> 直下に position:fixed で置き、入力欄の位置に合わせる（入力欄を包む要素を
    足すと、トップのツールバー・検索モーダル・管理画面の既存 flex レイアウトが崩れるため）。
    モーダル（z-index 1000 台）の上に出す必要があるので z-index はそれより大きく取る。 */
+/* 検索欄の「×」（入力を消す）。欄の右端に重ねて置くので、親を position:relative の箱にする。
+   押せる範囲はボタン本体（欄の高さ × 36px）、見えているのは中の × だけ。 */
+.search-box { position: relative; display: flex; flex: 1; min-width: 0; }
+.search-box > input[type="text"] { flex: 1; min-width: 0; }
+/* 文字が × の下に潜らないよう右に余白を足すが、出ている間だけにする（空のときは長い
+   placeholder を削りたくない）。 */
+.search-box:has(> .search-clear:not([hidden])) > input[type="text"] { padding-right: 34px; }
+.search-clear {
+  position: absolute;
+  top: 1px; bottom: 1px; right: 1px;
+  width: 34px;
+  padding: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: transparent;
+  border: none;
+  border-radius: var(--radius-pill);
+  color: var(--muted);
+  font-size: 18px;
+  font-weight: 400;
+  line-height: 1;
+}
+/* display:flex が [hidden] の display:none に勝ってしまうので、畳む側を書き直す。 */
+.search-clear[hidden] { display: none; }
+.search-clear:hover { color: var(--text); filter: none; transform: none; box-shadow: none; }
+.search-clear:active { transform: none; box-shadow: none; }
+.search-clear-x { pointer-events: none; }
+
 .suggest-list {
   position: fixed;
   z-index: 3000;

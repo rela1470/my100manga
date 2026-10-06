@@ -98,6 +98,36 @@ export async function yahooResolveCover(
   return ""; // determinate: no usable cover on Yahoo
 }
 
+export interface YahooListing {
+  name: string; // 出品の商品名（「このこここのこ(1) REX C/藤こよみ(著者)」）
+  cover_url: string; // 600px の書影（無ければ ""）
+}
+
+/** ISBN（＝ JAN）の出品そのもの。管理画面「マスタ行の修正」の下書き材料用。
+ *
+ *  openBD にも楽天ブックスにも無い絶版巻は、中古書店の出品名だけが書名の在りかになる
+ *  （memory の調査どおり）。出品名は出品者の自由入力なので構造化された書誌としては使えず、
+ *  管理者が目で見て書名を起こすための材料として**そのまま**返す。セット売りは代表 1 冊の
+ *  JAN が付くだけで中身が分からないので落とす（yahooNameIsVolume と同じ SET_ITEM）。
+ *  null = 引けなかった（枠が取れない / HTTP エラー）。*/
+export async function yahooListingByIsbn(
+  env: Env,
+  isbn: string,
+  priority: Priority = "high",
+): Promise<YahooListing | null> {
+  if (!yahooReady(env) || !isValidIsbn(isbn)) return null;
+  const data = await call(env, isbn, priority);
+  if (data === null) return null;
+  const exclude = excludeAdult(env);
+  for (const h of (data?.hits ?? []) as any[]) {
+    const name = String(h?.name ?? "");
+    if (!name || SET_ITEM.test(name.normalize("NFKC"))) continue;
+    if (exclude && ADULT.test(`${h?.genreCategory?.name ?? ""} ${name}`)) continue;
+    return { name, cover_url: bestImage(h) };
+  }
+  return null;
+}
+
 /** Yahoo cover for the correction picker (high-priority lane), "" when none. */
 export function probeYahooCover(env: Env, isbn: string): Promise<string> {
   if (!yahooReady(env) || !isbn) return Promise.resolve("");

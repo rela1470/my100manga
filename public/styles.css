@@ -7,26 +7,25 @@
    （--shadow-*）、どの面も「コマ」のように見える。色を変えるときはここだけを触る。 */
 :root {
   /* surfaces */
-  --bg: #fffdf6;          /* 紙のオフホワイト */
+  --bg: #ffffff;
   --bg-tint: var(--bg);
   --panel: #ffffff;
-  --panel-2: #fff8e3;     /* 黄色寄りの薄い面（入力欄の下地・押した状態） */
-  --border: #e3ddc9;      /* 表や区切りの細い罫線。コマ枠の黒は --ink を使う */
+  --panel-2: #fdf6e3;     /* クリーム色の面（はじめかたの地・押した状態） */
+  --border: #e2ded2;      /* 表や区切りの細い罫線。コマ枠の黒は --ink を使う */
   --ink: #111111;         /* コマ枠・ベタ・本文の黒 */
   --text: #111111;
   --muted: #6b665b;       /* 紙地・panel-2 の上でも 4.5:1 を満たす濃さ */
 
-  /* pop accents。黄 × 赤は特定の少年誌を強く連想させるので避け、わら半紙（地）×
-     朱（差し色）にしている。地と差し色は別のトークンなので、ここだけで配色を替えられる。 */
-  --accent: #d8381a;      /* 差し色の朱 */
-  --accent-rgb: 216,56,26;/* --accent の RGB（フォーカス枠用） */
-  --accent-2: #b82e12;    /* 本文中のリンク。白背景で 6.1:1 */
-  --accent-3: #1f4fd7;    /* blue */
-  --accent-4: #e9e5da;    /* わら半紙 */
-  --pop: #d8381a;         /* ロゴの 100・追加タイル・ホバーの地。黒の上でも紙の上でも効く朱 */
-  --hero-bg: #fbf8ef;     /* ヒーローの地（わら半紙。集中線とトーンは黒で刷る） */
-  --d3-face: var(--accent);  /* 立体の「100」の面 */
-  --d3-side: #7a1a06;        /* 立体の「100」の側面（面より暗く） */
+  /* pop accents。参考イメージに合わせて、白地 × マゼンタ（差し色）× ブルー（副）×
+     黄（追加タイル）。地と差し色は別のトークンなので、ここだけで配色を替えられる。 */
+  --accent: #e8308a;      /* 差し色のマゼンタ */
+  --accent-rgb: 232,48,138;/* --accent の RGB（フォーカス枠用） */
+  --accent-2: #c01a6e;    /* 本文中のリンク。白背景で 4.5:1 以上 */
+  --accent-3: #27a3dc;    /* ブルー（爆発・アイコン） */
+  --accent-4: #bfe6f7;    /* 空の水色（ヒーローの飾り） */
+  --pop: #ffd93b;         /* 黄。追加タイル・ホバーの地 */
+  --hero-bg: #ffffff;     /* ヒーローの地（白。集中線とトーンは黒で刷る） */
+  --d3-side: #2b2b6e;        /* 立体の「100」の側面 */
   /* 集中線の集まる先。見出し「自分を構成する100の漫画」を狙う。 */
   --shuchu-x: 30%;
   --shuchu-y: 46%;
@@ -34,9 +33,9 @@
   --warn: #c77700;
   --danger: #d7001f;      /* 削除・警告の赤だけは配色に関係なく残す */
   /* 白文字を載せる塗り用（WCAG AA 4.5:1 以上）。 */
-  --accent-strong: #d8381a;
-  --accent-strong-2: #ad2a0f;
-  --accent-3-strong: #1b3fae;
+  --accent-strong: #e8308a;
+  --accent-strong-2: #c01a6e;
+  --accent-3-strong: #1b7cab;
   --ok-strong: #0a6e4b;   /* 白文字で 6.3:1 */
   --ok-strong-2: #07543a;
   --warn-text: #8a5300;
@@ -157,7 +156,7 @@ header.site h1 .owner-line {
 }
 header.site h1 .owner-line[hidden] { display: none; }
 header.site h1 .owner-line .report-flag { vertical-align: middle; margin-left: 4px; }
-header.site h1 .accent { color: var(--pop); }
+header.site h1 .accent { color: var(--accent); }
 /* 説明文はロゴ・ボタンの下（帯の 2 行目）に小さく敷く。 */
 header.site p.tagline {
   order: 9;
@@ -327,6 +326,14 @@ button.ok:hover { background: var(--ok-strong-2); box-shadow: var(--shadow-sm); 
 /* 色の濃いボタンは :hover の指定（詳細度が同じ）に負けないよう、後ろで押下を上書きする。 */
 button.primary:active, a.button.primary:active, button.ok:active { transform: translate(3px, 3px); box-shadow: none; }
 button:disabled { opacity: .45; cursor: not-allowed; transform: none; box-shadow: none; filter: none; }
+/* 100 作品そろうまでの公開ボタンは、色を薄めるのではなく白地に戻して「まだ押せない」を出す
+   （薄いマゼンタだと、何色のボタンなのか分からなくなるため）。 */
+#publish:disabled {
+  opacity: 1;
+  background: var(--panel);
+  color: var(--muted);
+  box-shadow: var(--shadow-sm);
+}
 
 /* 枠も地色も持たない「文字だけ」のボタン（×・旗・リンク風）には、ベタ影を付けない。
    上の button の既定は枠のあるボタン向けなので、ここでまとめて打ち消す。 */
@@ -356,7 +363,7 @@ button:disabled { opacity: .45; cursor: not-allowed; transform: none; box-shadow
    集まる先（--shuchu-x/y）は見出しの「100 の漫画」。線の無い中心が見出しに重なる。 */
 .hero-tone {
   position: absolute; inset: 0; pointer-events: none; opacity: .85;
-  background: repeating-conic-gradient(from 0deg at var(--shuchu-x) var(--shuchu-y), var(--ink) 0deg 0.32deg, transparent 0.32deg 2.4deg);
+  background: repeating-conic-gradient(from 0deg at var(--shuchu-x) var(--shuchu-y), var(--ink) 0deg 0.3deg, transparent 0.3deg 3.4deg);
   -webkit-mask-image: radial-gradient(ellipse 44% 48% at var(--shuchu-x) var(--shuchu-y), transparent 40%, #000 72%);
   mask-image: radial-gradient(ellipse 44% 48% at var(--shuchu-x) var(--shuchu-y), transparent 40%, #000 72%);
 }
@@ -369,6 +376,14 @@ button:disabled { opacity: .45; cursor: not-allowed; transform: none; box-shadow
 /* 背景の飾り。コマの白い間（ガター）を斜めに 1 本通し、空の吹き出しをいくつか浮かせる。
    いずれも装飾なので、狭い画面では出さない（中身の邪魔になるため）。 */
 .hero-deco { position: absolute; inset: 0; pointer-events: none; }
+/* 右上のコマ。空の水色を敷いて、上に空の吹き出しを浮かせる。 */
+.hero-sky {
+  position: absolute; right: -6%; top: 0; width: 42%; height: 48%;
+  background: var(--accent-4);
+  border-left: 4px solid var(--ink);
+  border-bottom: 4px solid var(--ink);
+  transform: skewX(-10deg);
+}
 @media (max-width: 900px) { .hero-deco { display: none; } }
 .hero-gutter {
   position: absolute; left: -12%; right: -12%; top: 6%;
@@ -423,15 +438,17 @@ button:disabled { opacity: .45; cursor: not-allowed; transform: none; box-shadow
 /* 100 だけ一回り大きく、黒フチ＋右下へ押し出した立体にする。影を 2px ずつ重ねて
    側面を作り、いちばん奥に黒を一枚置いて輪郭を締める。 */
 .hero-100 {
-  /* 面は単色。グラデーション（background-clip: text）も試したが、塗りの範囲が行ボックス
-     なので、はみ出す字の上が欠ける。立体感は下の影の積み重ねで十分出る。 */
-  font-size: 1.9em; line-height: 1; color: var(--d3-face);
+  /* 面はマゼンタ。押し出した側面の色をマゼンタ → 紫 → 青と変えて、参考イメージの
+     グラデーションの印象を立体で出す。
+     （background-clip: text でのグラデーションは試したが、塗りが行ボックスに縛られて
+       字の上が欠けるうえ、面が透明になって影の色が透けるのでやめた。） */
+  font-size: 1.9em; line-height: 1; color: var(--accent);
   -webkit-text-stroke: 6px var(--ink);
   paint-order: stroke fill;
   text-shadow:
-    2px 2px 0 var(--d3-side), 4px 4px 0 var(--d3-side), 6px 6px 0 var(--d3-side),
-    8px 8px 0 var(--d3-side), 10px 10px 0 var(--d3-side), 12px 12px 0 var(--d3-side),
-    14px 14px 0 var(--ink);
+    2px 2px 0 #d8277f, 4px 4px 0 #bf2a8e, 6px 6px 0 #9b3fae,
+    8px 8px 0 #7355c6, 10px 10px 0 #4a74cf, 12px 12px 0 #2f93d6,
+    15px 15px 0 var(--ink);
 }
 
 .hero-search { display: flex; flex-wrap: wrap; justify-content: center; gap: 12px; max-width: 640px; }
@@ -476,7 +493,7 @@ button:disabled { opacity: .45; cursor: not-allowed; transform: none; box-shadow
 }
 /* 黒を一回り大きく敷いて縁取りにし、その上に差し色を少し小さく重ねる。 */
 .hero-gauge-burst::before { background: var(--ink); }
-.hero-gauge-burst::after { background: var(--accent); inset: 7px; }
+.hero-gauge-burst::after { background: var(--accent-3); inset: 7px; }
 .hero-gauge-dial {
   position: relative;
   /* 爆発は ::before / ::after で描いていて、そのままだと後から塗られて目盛りを覆う。 */
@@ -518,35 +535,11 @@ button:disabled { opacity: .45; cursor: not-allowed; transform: none; box-shadow
   .shelf-head { position: sticky; top: 0; z-index: 12; padding: 10px 0; background: var(--bg); }
 }
 .shelf-title {
-  margin: 0; display: flex; align-items: center; gap: 12px; flex-wrap: wrap;
-  font-family: var(--font-display); font-weight: 400; font-size: 28px;
-}
-.shelf-title-tag {
-  display: inline-block; background: var(--ink); color: var(--pop);
-  padding: 4px 14px; transform: skewX(-10deg);
-}
-/* 「編集中」は左のタグから言っているように、しっぽ付きの吹き出しで出す。 */
-.shelf-title-say {
-  position: relative;
-  padding: 4px 16px;
-  background: var(--panel);
-  border: var(--bw) solid var(--ink);
-  border-radius: 999px;
-  font-size: .72em;
-}
-.shelf-title-say::before, .shelf-title-say::after {
-  content: ""; position: absolute; top: 50%; width: 0; height: 0;
-  border-top: 7px solid transparent; border-bottom: 7px solid transparent;
-}
-.shelf-title-say::before {
-  left: -16px; margin-top: -7px; border-right: 14px solid var(--ink);
-}
-.shelf-title-say::after {
-  left: -10px; margin-top: -5px; border-top-width: 5px; border-bottom-width: 5px;
-  border-right: 10px solid var(--panel);
+  margin: 0;
+  font-weight: 900; font-size: 24px; letter-spacing: .02em;
 }
 .shelf-actions { display: flex; flex-wrap: wrap; gap: 10px; }
-@media (max-width: 560px) { .shelf-title { font-size: 22px; } }
+@media (max-width: 560px) { .shelf-title { font-size: 19px; } }
 
 .shelf {
   position: relative;
@@ -755,24 +748,13 @@ body.admin header.site h1 { font-size: 22px; }
 }
 @media (max-width: 640px) { .stat-grid { grid-template-columns: repeat(2, 1fr); } }
 /* トップの収録数（3 枚固定）。読み込み前は hidden で枠ごと出さない。 */
-/* トップの収録数は 1 本の帯を 3 コマに割ったように見せる（枠を共有し、間は黒い罫で仕切る）。 */
+/* トップの収録数は独立した 3 コマ。数字の後ろに集中線を敷く。 */
 .stat-grid.site-stats {
   grid-template-columns: repeat(3, 1fr);
-  gap: 0;
+  gap: 14px;
   margin: 0 0 20px;
-  border: var(--bw) solid var(--ink);
-  border-radius: var(--radius);
-  overflow: hidden;
-  box-shadow: var(--shadow-sm);
 }
-.stat-grid.site-stats .stat-card {
-  position: relative;
-  border: 0;
-  border-right: var(--bw) solid var(--ink);
-  border-radius: 0;
-  box-shadow: none;
-}
-.stat-grid.site-stats .stat-card:last-child { border-right: 0; }
+.stat-grid.site-stats .stat-card { position: relative; overflow: hidden; }
 /* コマの地のトーン。 */
 .stat-grid.site-stats .stat-card::before {
   content: "";
@@ -811,7 +793,7 @@ body.admin header.site h1 { font-size: 22px; }
 @media (hover: hover) {
   .stat-card:hover { transform: translateY(-2px); box-shadow: var(--shadow-pop); }
 }
-.stat-card .n { font-family: var(--font-display); font-size: 26px; font-weight: 400; color: var(--accent); }
+.stat-card .n { font-family: var(--font-display); font-size: 26px; font-weight: 400; color: var(--text); }
 .stat-card .k { font-size: 12px; color: var(--muted); margin-top: 2px; }
 a.stat-card.stat-link { display: block; color: inherit; text-decoration: none; }
 a.stat-card.stat-link .k::after { content: " ›"; }
@@ -1539,8 +1521,8 @@ h3.mylists-title { margin-top: 24px; font-size: 14px; }
   display: flex;
   flex-direction: column;
   justify-content: flex-end;
-  border: var(--bw) dashed #8a8578;
-  background: var(--bg);
+  border: var(--bw) dashed #b4b0a6;
+  background: #f3f2ee;
   box-shadow: none;
   cursor: default;
 }
@@ -2580,23 +2562,7 @@ a.bd-series:hover { background: var(--accent-strong-2); }
   box-shadow: var(--shadow-sm);
 }
 .empty-guide[hidden] { display: none; }
-/* 見出しは吹き出し。下向きのしっぽで本文を指す。 */
-.empty-guide-title {
-  position: relative;
-  display: inline-block;
-  margin: 0 0 18px;
-  padding: 6px 18px;
-  background: var(--panel);
-  border: var(--bw) solid var(--ink);
-  border-radius: 999px;
-  font-family: var(--font-display); font-weight: 400; font-size: 17px;
-}
-.empty-guide-title::before, .empty-guide-title::after {
-  content: ""; position: absolute; left: 24px; width: 0; height: 0;
-  border-left: 7px solid transparent; border-right: 11px solid transparent;
-}
-.empty-guide-title::before { bottom: -15px; border-top: 15px solid var(--ink); }
-.empty-guide-title::after { bottom: -9px; border-top: 11px solid var(--panel); }
+.empty-guide-title { margin: 0 0 14px; font-weight: 900; font-size: 17px; }
 /* 3 コマ横並び。番号は counter でコマの角に打つ。狭い画面では 1 列に積む。 */
 .empty-guide-steps {
   list-style: none;
@@ -2644,9 +2610,9 @@ a.bd-series:hover { background: var(--accent-strong-2); }
   content: counter(step) ". ";
   color: var(--accent);
 }
-.step-icon {
-  flex: none; width: 30px; height: 30px; color: var(--accent);
-}
+.step-icon { flex: none; width: 30px; height: 30px; color: var(--ink); }
+.empty-guide-steps li:nth-child(2) .step-icon { color: var(--accent-3); }
+.empty-guide-steps li:nth-child(3) .step-icon { color: var(--accent); }
 .step-text { margin: 0; }
 .empty-guide-link { font-weight: 900; font-size: 14px; }
 

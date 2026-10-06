@@ -78,10 +78,18 @@ export function footerHtml(env: Env, withAff = false): string {
   // MADB の利用規約は、出典に加えて「編集・加工した」旨の記載を求めている（当サイトはシリーズの
   // 結合・巻の並べ替え・表記の正規化をしている）。書影の行は外部ストアから取っている本家だけ。
   // see https://mediaarts-db.artmuseums.go.jp/terms
-  const source = s.commerce
-    ? `データ: メディア芸術データベース（国立アートリサーチセンター）を加工して作成 ／ 書影: 楽天ブックス・楽天市場・Yahoo!ショッピング`
-    : `データ: メディア芸術データベース（国立アートリサーチセンター）を加工して作成`;
-  const credits = s.commerce ? `${RAKUTEN_CREDIT}\n${YAHOO_CREDIT}` : "";
+  // 1 項目 1 行。区切りのスラッシュは使わず、改行で分ける（.foot-line が display: block）。
+  const sourceLines = s.commerce
+    ? [
+        `データ: メディア芸術データベース（国立アートリサーチセンター）を加工して作成`,
+        `書影: 楽天ブックス・楽天市場・Yahoo!ショッピング`,
+      ]
+    : [`データ: メディア芸術データベース（国立アートリサーチセンター）を加工して作成`];
+  const source = sourceLines.map((l) => `<span class="foot-line">${l}</span>`).join("");
+  // 公式スニペットは改変できないので、外側を <span class="foot-line"> で包んで行を分ける。
+  const credits = s.commerce
+    ? `<span class="foot-line">${RAKUTEN_CREDIT}</span>\n<span class="foot-line">${YAHOO_CREDIT}</span>`
+    : "";
   const links = FOOT_LINKS.map((l) => `<a href="${l.href}">${l.label}</a>`).join("");
   return (
     `<footer class="site">` +
@@ -90,7 +98,7 @@ export function footerHtml(env: Env, withAff = false): string {
     // 出典の行そのものを /about（利用ソース・広告の説明）へのリンクにする（リンク一覧には別に置かない）。
     `<p class="foot-source"><a href="/about">${source}</a></p>` +
     `<p class="foot-credits">${credits}` +
-    `<button type="button" id="reset-local-data">この端末のデータを初期化</button></p>` +
+    `<span class="foot-line"><button type="button" id="reset-local-data">この端末のデータを初期化</button></span></p>` +
     `<p class="foot-copy"><a href="/operator">© 2026 ${name} @rela1470</a></p>` +
     `</footer>` +
     ACCOUNT_SCRIPT +

@@ -41,15 +41,21 @@
   <!-- detail modal -->
   <div class="modal-backdrop modal-sheet" id="detailModal">
     <div class="modal">
-      <div class="report-menu" id="reportMenu" style="display:none">
-        <button type="button" class="report-toggle" id="reportToggle" title="通報する" aria-haspopup="true" aria-expanded="false">⚐</button>
-        <div class="report-pop" id="reportPop" hidden>
-          <button type="button" class="report-item" id="reportTitle" style="display:none">本のタイトルを修正</button>
-          <button type="button" class="report-item" id="reportCover" style="display:none">この表紙を通報</button>
-          <button type="button" class="report-item" id="reportComment" style="display:none">このコメントを通報</button>
+      <!-- 操作は右上（あらすじ・購入リンクが長くてもスクロールせずに閉じられるよう、上に貼り付ける） -->
+      <div class="modal-head">
+        <h2 id="dTitle"></h2>
+        <div class="modal-head-actions">
+          <div class="report-menu" id="reportMenu" style="display:none">
+            <button type="button" class="report-toggle" id="reportToggle" title="通報する" aria-haspopup="true" aria-expanded="false">⚐</button>
+            <div class="report-pop" id="reportPop" hidden>
+              <button type="button" class="report-item" id="reportTitle" style="display:none">本のタイトルを修正</button>
+              <button type="button" class="report-item" id="reportCover" style="display:none">この表紙を通報</button>
+              <button type="button" class="report-item" id="reportComment" style="display:none">このコメントを通報</button>
+            </div>
+          </div>
+          <button id="dClose">閉じる</button>
         </div>
       </div>
-      <h2 id="dTitle"></h2>
       <div class="detail-body">
         <div id="dCoverBox"></div>
         <div class="dinfo">
@@ -78,10 +84,6 @@
         <div class="buy-group" id="dBuyEbook"></div>
         <div class="buy-group" id="dBuyUsed"></div>
         <p class="buy-note">[AD]絶版でも電子書籍なら手に入ることがあります。リンクは各社アフィリエイトを含みます。</p>
-      </div>
-      <div class="modal-actions">
-        <div style="flex:1"></div>
-        <button id="dClose">閉じる</button>
       </div>
     </div>
     <!-- 前後の本へ（フリックと同じ移動を、クリックと ←→ キーでも。public/view.js） -->

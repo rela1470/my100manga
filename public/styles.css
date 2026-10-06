@@ -169,7 +169,7 @@ header.site h1 {
   /* ロゴは MY 100 MANGA と大文字で出す（作者名は下で元に戻す）。 */
   text-transform: uppercase;
 }
-@media (max-width: 560px) { header.site h1 { font-size: 20px; } }
+@media (max-width: 560px) { header.site h1 { font-size: 17px; } }
 /* トップ以外のページのロゴはトップへのリンク。見た目はリンクにしない。 */
 header.site h1 .site-logo { color: inherit; text-decoration: none; }
 /* 公開ビューの「○○'s ⚐ / My 100 Manga」（2 行）。作者名もロゴと同じサイズで出し、名前の
@@ -219,14 +219,11 @@ header.site .header-link-icon svg { display: block; }
   header.site .header-link,
   .account-login, .account-chip { min-height: 36px; padding: 0 10px; font-size: 13px; }
   header.site .header-link-icon { display: none; }
-  /* ロゴと並べて 1 行目に収めるため、「Googleで」を畳んで「ログイン」だけにし、
-     ログイン中の名前も短く切る（public/account.js が .account-login-long を出す）。 */
-  .account-login-long { display: none; }
-  .account-chip span { max-width: 5em; }
 }
 /* 1 行に収まらない幅では、右上に残すのはログイン（またはアカウント）。ページへのボタンは
-   <nav> ごと 2 行目へ送る。 */
-@media (max-width: 1080px) {
+   <nav> ごと 2 行目へ送る。1 行に必要なのは実測で 1159px（ロゴ 256 + ボタン群 692 +
+   ログイン 155 + 隙間 24 + 余白 32）なので、それを下回る 1200px から効かせる。 */
+@media (max-width: 1200px) {
   header.site .account-bar { order: 1; }
   header.site .header-nav { order: 2; flex-basis: 100%; }
 }
@@ -241,9 +238,20 @@ header.site .header-link-icon svg { display: block; }
   color: #fff; font-size: 14px; font-weight: 700; text-decoration: none;
   cursor: pointer;
 }
+/* gap は画像と名前を離すためのもの（.account-chip）。ログインは 1 つながりの文なので
+   隙間を入れない（「Googleで ログイン」と割れて見える）。 */
+.account-login { gap: 0; }
 .account-login:hover, .account-chip:hover { background: var(--panel); border-color: var(--panel); color: var(--ink); }
 .account-chip img { width: 22px; height: 22px; border-radius: 50%; margin-left: -6px; }
 .account-chip span { max-width: 9em; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* 狭い画面ではロゴと並べて 1 行目に収めたいので、ログインの表記と名前を縮める
+   （public/account.js が .account-login-long を出す）。基本の指定より後ろに置かないと、
+   同じ詳細度で負けて効かない。 */
+@media (max-width: 560px) {
+  .account-login-long { display: none; }
+  .account-chip span { max-width: 4em; }
+  .account-chip img { width: 20px; height: 20px; }
+}
 .account-menu {
   position: absolute; right: 0; top: calc(100% + 8px); min-width: 200px;
   display: flex; flex-direction: column; gap: 2px; padding: 8px;
@@ -1430,6 +1438,8 @@ a.stat-card.stat-link .k::after { content: " ›"; }
 }
 #detailModal h2 { padding-right: 40px; }
 .report-menu { position: absolute; top: 14px; right: 14px; z-index: 2; }
+/* 見出し行の中に置くときは重ねず、閉じるの隣に並べる（吹き出しはこの要素にぶら下がる）。 */
+.modal-head .report-menu { position: relative; top: auto; right: auto; }
 .report-toggle {
   background: none;
   border: 1px solid var(--border);
@@ -1931,6 +1941,8 @@ html:has(.modal-backdrop.open) { overflow: hidden; }
     border-radius: 0;
     padding: 16px 14px calc(14px + env(safe-area-inset-bottom));
   }
+  /* 上の padding に合わせないと、貼り付く見出し行が上下にずれる。 */
+  .modal-sheet .modal-head { margin: -16px -14px 12px; padding: 14px 14px 10px; }
 }
 
 /* 表紙の拡大表示（public/cover-zoom.js）。本の詳細（z-index 50）の上に、暗い背景で表紙だけを
@@ -2233,9 +2245,10 @@ button.x-post:hover { background: #222; border-color: #222; }
 .share-url input.new-vol-num { flex: none; width: 4.5em; text-align: right; }
 .new-vol-btn { font-size: 13px; }
 
-/* ヘッダーと同じ黒帯。中身だけ 1240px に収めるので、左右の padding で中央に寄せる。 */
+/* ヘッダーと同じ黒帯。中身だけ 1240px に収めるので、左右の padding で中央に寄せる。
+   中身は全部中央ぞろえで、項目は 1 行ずつ（.foot-line）。 */
 footer.site {
-  text-align: left;
+  text-align: center;
   background: var(--ink);
   color: #d9d6cc;
   font-size: 13px;
@@ -2246,9 +2259,11 @@ footer.site {
 }
 footer.site p { margin: 12px 0 0; }
 footer.site .foot-links {
-  display: flex; flex-wrap: wrap; gap: 8px 24px;
+  display: flex; flex-wrap: wrap; justify-content: center; gap: 8px 24px;
   font-size: 14px; font-weight: 700;
 }
+/* 出典・クレジット・端末の初期化は 1 項目ずつ改行して出す。 */
+footer.site .foot-line { display: block; }
 footer.site .foot-links a { color: #fff; text-decoration: none; }
 footer.site .foot-links a:hover { color: var(--accent-4); text-decoration: underline; }
 footer.site .aff-disclosure { margin-top: 12px; font-size: 12px; }

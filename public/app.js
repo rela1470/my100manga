@@ -655,12 +655,18 @@ function render() {
   state.items.forEach((it, i) => grid.appendChild(filledSlot(it, i)));
   // No adding while reordering — the add slot would confuse the "tap = select" mode.
   if (!state.reorder && state.items.length < MAX_ITEMS) grid.appendChild(addSlot(state.items.length));
+  // 残りの空き枠（No.00x）。100 冊そろう本棚の形を最初から見せる。並べ替え中は出さない
+  // （タップ＝選択のモードなので、押せない枠が混ざると紛らわしい）。
+  if (!state.reorder) {
+    for (let i = state.items.length + 1; i < TARGET; i++) grid.appendChild(placeholderSlot(i));
+  }
 
   const filled = state.items.length;
   // はじめての人向けの説明は、リストが空のときだけ（公開済みリストの編集中は出さない）。
   const guide = $("emptyGuide");
   if (guide) guide.hidden = filled > 0 || !!state.editSlug;
   updatePublishButton(filled);
+  renderHeroGauge(filled);
   renderReorderBar(filled);
   renderEditDiff();
 
@@ -678,8 +684,8 @@ function render() {
   fixBtn.textContent = `表紙がない本を指定（${missing}）`;
   fixBtn.style.display = showFix ? "" : "none";
 
-  // The action row only takes space when it has something to show.
-  $("actionBar").style.display = missing > 0 || state.fetchingCovers ? "" : "none";
+  // 取得ボタンは本棚の見出し行にあるので、この行に残っているのは進捗の文言だけ。
+  $("actionBar").style.display = state.fetchingCovers ? "" : "none";
 
   const clearBtn = $("clearAll");
   clearBtn.textContent = `編集中の漫画を全削除（${filled}）`;
@@ -713,6 +719,30 @@ function updatePublishButton(filled) {
   }
 }
 
+// ヒーロー右の進捗メーター（public/index.html .hero-gauge）。あと何作品かを大きく出し、
+// 下の帯で埋まり具合を見せる。ちょうど TARGET になったら公開ボタンと同じ緑にする。
+function renderHeroGauge(filled) {
+  const dial = $("heroGauge");
+  if (!dial) return; // トップ以外のページには無い
+  const remaining = Math.max(0, TARGET - filled);
+  $("heroRemaining").textContent = String(remaining);
+  $("heroCount").textContent = `${filled} / ${TARGET}`;
+  $("heroProgress").style.width = `${Math.min(100, (filled / TARGET) * 100)}%`;
+  dial.classList.toggle("ready", filled >= TARGET);
+}
+
+function placeholderSlot(index) {
+  const cell = document.createElement("div");
+  cell.className = "slot placeholder";
+  // 押せない飾りなので、読み上げからは外す（99 個ぶん読み上げられても意味がない）。
+  cell.setAttribute("aria-hidden", "true");
+  const no = document.createElement("span");
+  no.className = "ph-num";
+  no.textContent = `No.${String(index + 1).padStart(3, "0")}`;
+  cell.appendChild(no);
+  return cell;
+}
+
 function addSlot(index) {
   const slot = document.createElement("button");
   slot.className = "slot empty";
@@ -722,7 +752,7 @@ function addSlot(index) {
   plus.textContent = "＋";
   const label = document.createElement("span");
   label.className = "label";
-  label.textContent = "追加";
+  label.textContent = "作品を追加";
   slot.appendChild(plus);
   slot.appendChild(label);
   slot.addEventListener("click", focusTopSearch);

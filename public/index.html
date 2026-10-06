@@ -23,11 +23,11 @@
   <link rel="icon" href="/favicon.ico" sizes="32x32">
   <link rel="icon" href="/favicon.svg" type="image/svg+xml">
   <link rel="apple-touch-icon" href="/apple-touch-icon.png">
-  <meta name="theme-color" content="#3b82f6">
+  <meta name="theme-color" content="#111111">
   <!--ANALYTICS-->
   <link rel="stylesheet" href="/styles.css">
 </head>
-<body>
+<body class="page-top">
   <!--GTM_BODY-->
   <header class="site">
     <h1>My <span class="accent">100</span> Manga</h1>
@@ -35,19 +35,41 @@
     <!--HEADER_LINKS-->
   </header>
 
-  <div class="wrap">
-    <div class="stat-grid site-stats" id="siteStats" hidden></div>
-
-    <div class="toolbar">
-      <div class="name-field">
-        <div class="search-box">
-          <input type="text" id="topSearch" placeholder="漫画のタイトルで検索して追加（2文字以上）">
-          <!-- 打った語を 1 タップで消す。語が入っている間だけ app.js が出す。 -->
-          <button type="button" id="topSearchClear" class="search-clear" aria-label="検索欄を空にする" title="消す" hidden><span class="search-clear-x" aria-hidden="true">×</span></button>
+  <!-- トップのヒーロー。検索はここが唯一の入口（以前はグリッドの上のツールバーにあった）。
+       右の進捗メーターは app.js の renderHeroGauge() が更新する。 -->
+  <section class="hero">
+    <div class="hero-tone" aria-hidden="true"></div>
+    <div class="hero-inner">
+      <div class="hero-copy">
+        <p class="hero-bubble">選んで、並べて、URLでシェア！</p>
+        <h2 class="hero-title">
+          <span>自分を構成する</span>
+          <span class="hero-title-row"><span class="hero-100">100</span><span>の漫画</span></span>
+        </h2>
+        <div class="hero-search" role="search">
+          <label class="visually-hidden" for="topSearch">作品名・作者名で検索</label>
+          <div class="search-box">
+            <input type="text" id="topSearch" placeholder="作品名・作者名で検索（2文字以上）">
+            <!-- 打った語を 1 タップで消す。語が入っている間だけ app.js が出す。 -->
+            <button type="button" id="topSearchClear" class="search-clear" aria-label="検索欄を空にする" title="消す" hidden><span class="search-clear-x" aria-hidden="true">×</span></button>
+          </div>
+          <button id="topSearchBtn">さがす！</button>
         </div>
-        <button id="topSearchBtn">検索</button>
+      </div>
+      <div class="hero-gauge">
+        <div class="hero-gauge-dial" id="heroGauge">
+          <span class="hero-gauge-cap">あと</span>
+          <span class="hero-gauge-n" id="heroRemaining">100</span>
+          <span class="hero-gauge-cap">作品</span>
+          <div class="hero-gauge-bar"><div class="hero-gauge-fill" id="heroProgress"></div></div>
+          <span class="hero-gauge-sub" id="heroCount">0 / 100</span>
+        </div>
       </div>
     </div>
+  </section>
+
+  <div class="wrap">
+    <div class="stat-grid site-stats" id="siteStats" hidden></div>
 
     <div class="claim-bar" id="claimBar" style="display:none"></div>
 
@@ -62,11 +84,24 @@
       <a class="empty-guide-link" href="/lists">みんなのリストを見る →</a>
     </section>
 
-    <div class="grid" id="grid" aria-label="100作品グリッド"></div>
+    <!-- 本棚の見出し行。並べ替え・表紙の取得・公開はここに集める（PC では上に貼り付く）。 -->
+    <div class="shelf-head">
+      <h2 class="shelf-title"><span class="shelf-title-tag">MY本棚</span>編集中</h2>
+      <div class="shelf-actions">
+        <button id="reorderToggle" style="display:none">並べ替え</button>
+        <button id="fetchCovers" style="display:none">表紙を取得</button>
+        <button id="fixMissing" style="display:none">表紙がない本を指定</button>
+        <button class="primary" id="publish">あと100作品（0 / 100）</button>
+      </div>
+    </div>
 
+    <div class="shelf">
+      <div class="shelf-tone" aria-hidden="true"></div>
+      <div class="grid" id="grid" aria-label="100作品グリッド"></div>
+    </div>
+
+    <!-- 表紙をまとめて取得している間だけ出る進捗の行。 -->
     <div class="action-bar" id="actionBar" style="display:none">
-      <button id="fetchCovers" class="primary" style="display:none">表紙を取得</button>
-      <button id="fixMissing" style="display:none">表紙がない本を指定</button>
       <p class="cover-status" id="coverStatus" style="display:none"></p>
     </div>
 
@@ -75,12 +110,7 @@
       <button id="revertPublished" class="ghost">公開状態にもどす</button>
     </div>
 
-    <div class="publish-bar">
-      <button class="primary" id="publish">あと100作品（0 / 100）</button>
-    </div>
-
     <div class="clear-bar">
-      <button id="reorderToggle" style="display:none">並べ替え</button>
       <button id="clearAll" class="danger" style="display:none">編集中の漫画を全削除</button>
     </div>
 

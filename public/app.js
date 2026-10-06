@@ -683,6 +683,8 @@ function render() {
   fetchBtn.style.display = showFetch ? "" : "none";
   fixBtn.textContent = `表紙がない本を指定（${missing}）`;
   fixBtn.style.display = showFix ? "" : "none";
+  // 取得ボタンの行は、どちらかのボタンが出るときだけ場所を取る。
+  $("coverActions").style.display = showFetch || showFix ? "" : "none";
 
   // 取得ボタンは本棚の見出し行にあるので、この行に残っているのは進捗の文言だけ。
   $("actionBar").style.display = state.fetchingCovers ? "" : "none";

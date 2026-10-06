@@ -216,7 +216,8 @@ header.site .header-link-icon svg { display: block; }
   header.site .header-nav { display: grid; grid-template-columns: 1fr 1fr; }
 }
 @media (max-width: 560px) {
-  header.site .header-link { min-height: 36px; padding: 0 10px; font-size: 13px; }
+  header.site .header-link,
+  .account-login, .account-chip { min-height: 36px; padding: 0 10px; font-size: 13px; }
   header.site .header-link-icon { display: none; }
 }
 /* 1 行に収まらない幅では、右上に残すのはログイン（またはアカウント）。ページへのボタンは
@@ -230,9 +231,10 @@ header.site .header-link-icon svg { display: block; }
 .account-bar { position: relative; z-index: 20; text-align: left; }
 .account-login, .account-chip {
   display: inline-flex; align-items: center; gap: 6px;
-  min-height: 36px; padding: 0 12px; border-radius: var(--radius-pill);
+  /* 隣のページボタン（.header-link）と同じ高さ・余白・字の大きさにそろえる。 */
+  min-height: 40px; padding: 0 16px; border-radius: var(--radius-pill);
   background: transparent; border: 2px solid #fff;
-  color: #fff; font-size: 12px; font-weight: 700; text-decoration: none;
+  color: #fff; font-size: 14px; font-weight: 700; text-decoration: none;
   cursor: pointer;
 }
 .account-login:hover, .account-chip:hover { background: var(--panel); border-color: var(--panel); color: var(--ink); }
@@ -526,7 +528,9 @@ button:disabled { opacity: .45; cursor: not-allowed; transform: none; box-shadow
   border-top: 25px solid var(--panel);
 }
 .hero-gauge-cap { font-weight: 900; font-size: 17px; }
-.hero-gauge-n { font-family: var(--font-display); font-size: 84px; line-height: 1; color: var(--accent); }
+/* 水色は白地だと薄くなりやすいので、見出しの水色（--accent-3 #27a3dc）より少しだけ
+   濃いものを使う（この大きさの文字で 3:1 以上を確保するため）。 */
+.hero-gauge-n { font-family: var(--font-display); font-size: 42px; line-height: 1.1; color: #1b8ec2; }
 .hero-gauge-bar {
   width: 196px; height: 17px; margin-top: 12px;
   border: 3px solid var(--ink); border-radius: var(--radius-pill);
@@ -557,7 +561,7 @@ button:disabled { opacity: .45; cursor: not-allowed; transform: none; box-shadow
   /* 幅を固定するとコマとの余白の取り方が PC と変わってしまうので、PC と同じ
      「コマ幅 - 余白」のままにして、中の字だけ小さくする。 */
   .hero-gauge-balloon { padding: 16px 20px 18px; }
-  .hero-gauge-n { font-size: 72px; }
+  .hero-gauge-n { font-size: 38px; }
   .hero-gauge-bar { width: 168px; }
 }
 
@@ -566,11 +570,12 @@ button:disabled { opacity: .45; cursor: not-allowed; transform: none; box-shadow
   display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between;
   gap: 12px; margin: 0 0 18px;
 }
-/* PC では 100 枠ぶんスクロールしても操作（公開・表紙取得）に手が届くよう貼り付ける。
-   モーダル（z-index 50）より下、カードより上。 */
-@media (min-width: 768px) {
-  .shelf-head { position: sticky; top: 0; z-index: 12; padding: 10px 0; background: var(--bg); }
-}
+/* 100 枠ぶんスクロールしても並べ替え・公開に手が届くよう、幅によらず貼り付ける。
+   モーダル（z-index 50）より下、カードより上。表紙の取得は .cover-actions に分けてあり、
+   こちらは追従しない（追従する帯が高くなって画面を食うため）。 */
+.shelf-head { position: sticky; top: 0; z-index: 12; padding: 10px 0; background: var(--bg); }
+/* 表紙の取得の行。見出し行の下に置き、追従はしない。 */
+.cover-actions { display: flex; flex-wrap: wrap; gap: 10px; margin: 0 0 14px; }
 .shelf-title {
   margin: 0;
   font-weight: 900; font-size: 24px; letter-spacing: .02em;
@@ -1580,14 +1585,11 @@ h3.mylists-title { margin-top: 24px; font-size: 14px; }
   font-size: 12px;
   color: #3a6377;
 }
-/* 全部同じ水色だと整いすぎるので、薄いピンクを混ぜる。1 つの周期だけだと列数によっては
-   縦縞に見えるので、列数と互いに素になりやすい 7 / 11 / 13 を重ねて散らす。 */
-.slot.placeholder:nth-child(7n+3),
-.slot.placeholder:nth-child(11n+5),
-.slot.placeholder:nth-child(13n+9) { border-color: #f0a8c8; background: #fdeaf3; }
-.slot.placeholder:nth-child(7n+3) .ph-num,
-.slot.placeholder:nth-child(11n+5) .ph-num,
-.slot.placeholder:nth-child(13n+9) .ph-num { color: #a25077; }
+/* 全部同じ水色だと整いすぎるので、5 の倍数の枠だけ薄いピンクにする。
+   グリッドの n 番目＝枠の番号（1 番目が「作品を追加」＝No.001）なので、
+   :nth-child(5n) がそのまま No.005 / No.010 … になる。 */
+.slot.placeholder:nth-child(5n) { border-color: #f0a8c8; background: #fdeaf3; }
+.slot.placeholder:nth-child(5n) .ph-num { color: #a25077; }
 
 .slot .cover {
   width: 100%;
@@ -2505,6 +2507,14 @@ html:has(.modal-backdrop.open) .to-top { display: none; }
   border-bottom: 3px solid transparent; margin-bottom: -1.5px;
 }
 .rank-switch a.active { color: var(--accent); border-bottom-color: var(--accent); }
+/* 狭い画面では「みんなが / 選んだ」のように 2 行に分けて、3 本を等幅で並べる
+   （1 行のままだと字が溢れるか、タブの幅がばらばらになる）。 */
+@media (max-width: 560px) {
+  .rank-switch a {
+    flex: 1; text-align: center; padding: 7px 4px; font-size: 13px; line-height: 1.35;
+  }
+  .rank-switch .rs-sub { display: block; font-size: 11px; }
+}
 /* ランキング（人気・売上）の表紙グリッド（100 冊の閲覧画面の .slot を流用）。左上の順位は 1〜3 位を金銀銅に。 */
 a.rank-slot { color: inherit; text-decoration: none; }
 .rank-slot .num.top1 { background: linear-gradient(135deg, #f4ce73, #e8a200); font-size: 14px; }

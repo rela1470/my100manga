@@ -115,10 +115,15 @@
       <h2 class="shelf-title">MY本棚 編集中</h2>
       <div class="shelf-actions">
         <button id="reorderToggle" style="display:none">並べ替え</button>
-        <button id="fetchCovers" style="display:none">表紙を取得</button>
-        <button id="fixMissing" style="display:none">表紙がない本を指定</button>
         <button class="primary" id="publish">あと100作品（0 / 100）</button>
       </div>
+    </div>
+
+    <!-- 表紙の取得。見出し行と違って追従させないので別の行に置く（出るのは表紙が
+         欠けているときだけ。表示の出し分けは app.js render）。 -->
+    <div class="cover-actions" id="coverActions" style="display:none">
+      <button id="fetchCovers" style="display:none">表紙を取得</button>
+      <button id="fixMissing" style="display:none">表紙がない本を指定</button>
     </div>
 
     <div class="shelf">

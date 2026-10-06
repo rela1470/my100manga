@@ -6,10 +6,12 @@ import { Env } from "./types";
 //
 // allAges: 中身が全年齢のデータ源によるもの。R18版では出さない（src/site.ts allAgesRankings）。
 // 残りが 1 本になるなら nav ごと出さない（タブ 1 本は意味がないので）。
+// label と sub は続けて 1 つの名前（「みんなが」＋「選んだ」）。狭い画面では sub を
+// 次の行に送りたいので、文字列ではなく要素で分けておく。
 const TABS = [
-  { href: "/ranking", label: "みんなが選んだ" },
-  { href: "/sales-ranking", label: "売上（楽天ブックス）", allAges: true },
-  { href: "/circulation", label: "発行部数（歴代）", allAges: true },
+  { href: "/ranking", label: "みんなが", sub: "選んだ" },
+  { href: "/sales-ranking", label: "売上", sub: "（楽天ブックス）", allAges: true },
+  { href: "/circulation", label: "発行部数", sub: "（歴代）", allAges: true },
 ];
 
 /** `currentPath` は配信中のページのパス。一致するタブに class="active" を付ける。 */
@@ -20,7 +22,11 @@ export function rankSwitchHtml(env: Pick<Env, "SITE_VARIANT">, currentPath: stri
   // /ranking.html のような直指定でも現在地が分かるように拡張子と末尾の / を落とす。
   const current = currentPath.replace(/\.html$/, "").replace(/(.)\/$/, "$1");
   const links = tabs
-    .map((t) => `<a href="${t.href}"${t.href === current ? ` class="active"` : ""}>${t.label}</a>`)
+    .map(
+      (t) =>
+        `<a href="${t.href}"${t.href === current ? ` class="active"` : ""}>` +
+        `${t.label}<span class="rs-sub">${t.sub}</span></a>`
+    )
     .join("\n      ");
   return `<nav class="rank-switch">\n      ${links}\n    </nav>`;
 }

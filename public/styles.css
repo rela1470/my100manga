@@ -410,14 +410,6 @@ button:disabled { opacity: .45; cursor: not-allowed; transform: none; box-shadow
 /* 背景の飾り。コマの白い間（ガター）を斜めに 1 本通し、空の吹き出しをいくつか浮かせる。
    いずれも装飾なので、狭い画面では出さない（中身の邪魔になるため）。 */
 .hero-deco { position: absolute; inset: 0; pointer-events: none; }
-/* 右上のコマ。空の水色を敷いて、上に空の吹き出しを浮かせる。 */
-.hero-sky {
-  position: absolute; right: -6%; top: 0; width: 46%; height: 88%;
-  background: var(--accent-4);
-  border-left: 4px solid var(--ink);
-  border-bottom: 4px solid var(--ink);
-  transform: skewX(-10deg);
-}
 @media (max-width: 900px) { .hero-deco { display: none; } }
 .hero-gutter {
   position: absolute; left: -12%; right: -12%; top: 6%;
@@ -425,35 +417,6 @@ button:disabled { opacity: .45; cursor: not-allowed; transform: none; box-shadow
   border-top: var(--bw) solid var(--ink); border-bottom: var(--bw) solid var(--ink);
   transform: rotate(-5deg);
 }
-.hero-balloon {
-  position: absolute;
-  background: var(--panel); border: var(--bw) solid var(--ink); border-radius: 50%;
-}
-/* しっぽ。三角を 2 枚重ねて枠線だけ残す。 */
-.hero-balloon::before, .hero-balloon::after {
-  content: ""; position: absolute; width: 0; height: 0;
-  border-left: 9px solid transparent; border-right: 15px solid transparent;
-}
-.hero-balloon::before { left: 24%; bottom: -17px; border-top: 18px solid var(--ink); }
-.hero-balloon::after { left: calc(24% + 5px); bottom: -8px; border-top: 12px solid var(--panel); }
-/* 飾りの吹き出しは背景のコマ（.hero-sky）の中に収める。 */
-.hero-balloon.b1 { width: 96px; height: 58px; left: 60%; top: 10%; transform: rotate(-4deg); }
-/* 3 つ目はギザギザの吹き出し。clip-path では枠線が引けないので、黒を一回り大きく敷いて
-   その上に白を少し小さく重ね、縁取りに見せる。 */
-.hero-burst-balloon {
-  position: absolute; left: 64%; top: 44%;
-  width: 98px; height: 72px;
-  transform: rotate(-6deg);
-}
-.hero-burst-balloon::before, .hero-burst-balloon::after {
-  content: ""; position: absolute; inset: 0;
-  clip-path: polygon(
-    50% 0%, 62% 11%, 78% 4%, 80% 18%, 96% 16%, 90% 30%, 100% 44%, 88% 54%,
-    96% 70%, 79% 70%, 76% 86%, 62% 76%, 50% 100%, 39% 77%, 24% 86%, 21% 70%,
-    5% 71%, 12% 55%, 0% 44%, 11% 30%, 4% 15%, 20% 18%, 22% 4%, 38% 11%);
-}
-.hero-burst-balloon::before { background: var(--ink); }
-.hero-burst-balloon::after { background: var(--panel); inset: 5px; }
 
 /* 文字側は伸び、メーターは折り返したら中央に来る。 */
 .hero-copy { flex: 999 1 520px; min-width: 0; display: flex; flex-direction: column; gap: 24px; }
@@ -462,7 +425,6 @@ button:disabled { opacity: .45; cursor: not-allowed; transform: none; box-shadow
   position: relative; align-self: flex-start; margin: 0;
   background: #fff; border: 4px solid var(--ink); border-radius: 28px;
   padding: 10px 22px; font-weight: 900; font-size: 18px;
-  transform: rotate(-2deg);
 }
 /* 吹き出しのしっぽ。黒い三角（::before）の上に、少し小さい白（::after）を重ねて枠線だけ残す。 */
 .hero-bubble::before, .hero-bubble::after { content: ""; position: absolute; width: 0; height: 0; }
@@ -492,7 +454,7 @@ button:disabled { opacity: .45; cursor: not-allowed; transform: none; box-shadow
      （background-clip: text でのグラデーションは試したが、塗りが行ボックスに縛られて
        字の上が欠けるうえ、面が透明になって影の色が透けるのでやめた。） */
   font-size: 1.9em; line-height: 1; color: var(--accent);
-  -webkit-text-stroke: 6px var(--ink);
+  -webkit-text-stroke: .07em var(--ink);
   paint-order: stroke fill;
   /* 側面は 1 色（ブルー）。段階的に色を変えるとグラデーションになって、他の面と合わない。 */
   text-shadow:
@@ -523,13 +485,40 @@ button:disabled { opacity: .45; cursor: not-allowed; transform: none; box-shadow
 .hero-search > button:active { transform: translate(6px, 6px); box-shadow: none; }
 
 /* 進捗メーター。あと何作品かを大きく出し、下の帯で埋まり具合を見せる。 */
-.hero-gauge { flex: 1 1 300px; display: flex; justify-content: center; }
+.hero-gauge { flex: 1 1 340px; display: flex; justify-content: center; }
+/* 右側は漫画の一コマとして組む。黒い枠の中に集中線とアミ点を敷き、その上に吹き出しを
+   置いて、しっぽをコマの内側（左下）へ向ける。枠の外に吹き出しが浮いているより、
+   「このコマの中で誰かが言っている」ように読める。 */
+.hero-panel {
+  position: relative;
+  width: 100%; max-width: 384px; height: 330px;
+  background: var(--accent-4);
+  border: 5px solid var(--ink);
+  box-shadow: var(--shadow-hard);
+  overflow: hidden;
+}
+/* コマの中の集中線。吹き出しの後ろから放射させる。 */
+.hero-panel-tone {
+  position: absolute; inset: 0; pointer-events: none; opacity: .5;
+  background: repeating-conic-gradient(from 0deg at 60% 34%, var(--ink) 0deg 0.3deg, transparent 0.3deg 3.2deg);
+  -webkit-mask-image: radial-gradient(ellipse 54% 52% at 60% 34%, transparent 36%, #000 76%);
+  mask-image: radial-gradient(ellipse 54% 52% at 60% 34%, transparent 36%, #000 76%);
+}
+/* コマの下半分はアミ点で沈めて、奥行きを出す。 */
+.hero-panel::after {
+  content: "";
+  position: absolute; inset: 0; pointer-events: none; opacity: .2;
+  background-image: radial-gradient(var(--ink) 1.5px, transparent 1.8px);
+  background-size: 9px 9px;
+  -webkit-mask-image: linear-gradient(transparent 42%, #000 100%);
+  mask-image: linear-gradient(transparent 42%, #000 100%);
+}
 /* 丸ではなく吹き出しにする。角のある形なので傾きがそのまま伝わるし、漫画の
    「人が言っている」感じが出る。しっぽは左下（見出しの方）へ向ける。 */
 .hero-gauge-balloon {
-  position: relative;
-  width: 296px;
-  padding: 20px 24px 22px;
+  position: absolute; top: 20px; right: 16px; z-index: 1;
+  width: calc(100% - 34px); max-width: 300px;
+  padding: 18px 24px 20px;
   background: var(--panel);
   border: 5px solid var(--ink);
   border-radius: 30px;
@@ -1591,9 +1580,14 @@ h3.mylists-title { margin-top: 24px; font-size: 14px; }
   font-size: 12px;
   color: #4c7a90;
 }
-/* 全部同じ水色だと整いすぎるので、ところどころ薄いピンクを混ぜる。 */
-.slot.placeholder:nth-child(7n+3) { border-color: #f0a8c8; background: #fdeaf3; }
-.slot.placeholder:nth-child(7n+3) .ph-num { color: #a25077; }
+/* 全部同じ水色だと整いすぎるので、薄いピンクを混ぜる。1 つの周期だけだと列数によっては
+   縦縞に見えるので、列数と互いに素になりやすい 7 / 11 / 13 を重ねて散らす。 */
+.slot.placeholder:nth-child(7n+3),
+.slot.placeholder:nth-child(11n+5),
+.slot.placeholder:nth-child(13n+9) { border-color: #f0a8c8; background: #fdeaf3; }
+.slot.placeholder:nth-child(7n+3) .ph-num,
+.slot.placeholder:nth-child(11n+5) .ph-num,
+.slot.placeholder:nth-child(13n+9) .ph-num { color: #a25077; }
 
 .slot .cover {
   width: 100%;
@@ -2620,7 +2614,8 @@ a.bd-series:hover { background: var(--accent-strong-2); }
 /* はじめての人向けの説明（index.html #emptyGuide。リストが空のときだけ出る）。 */
 .empty-guide {
   margin: 0 0 20px; padding: 18px 22px;
-  background: var(--panel-2); border: var(--bw) solid var(--ink); border-radius: var(--radius);
+  /* 地は薄い水色（本棚の空き枠と同じ系統）。クリーム色は他の面と合わなかった。 */
+  background: #eaf5fb; border: var(--bw) solid var(--ink); border-radius: var(--radius);
   box-shadow: var(--shadow-sm);
 }
 .empty-guide[hidden] { display: none; }

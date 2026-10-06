@@ -410,6 +410,14 @@ button:disabled { opacity: .45; cursor: not-allowed; transform: none; box-shadow
 /* 背景の飾り。コマの白い間（ガター）を斜めに 1 本通し、空の吹き出しをいくつか浮かせる。
    いずれも装飾なので、狭い画面では出さない（中身の邪魔になるため）。 */
 .hero-deco { position: absolute; inset: 0; pointer-events: none; }
+/* 右上の背景のコマ。斜めに傾けた水色の面を敷き、この上にメーターの吹き出しを重ねる。 */
+.hero-sky {
+  position: absolute; right: -6%; top: 0; width: 46%; height: 88%;
+  background: var(--accent-4);
+  border-left: 4px solid var(--ink);
+  border-bottom: 4px solid var(--ink);
+  transform: skewX(-10deg);
+}
 @media (max-width: 900px) { .hero-deco { display: none; } }
 .hero-gutter {
   position: absolute; left: -12%; right: -12%; top: 6%;
@@ -487,51 +495,16 @@ button:disabled { opacity: .45; cursor: not-allowed; transform: none; box-shadow
 .hero-search > button:active { transform: translate(6px, 6px); box-shadow: none; }
 
 /* 進捗メーター。あと何作品かを大きく出し、下の帯で埋まり具合を見せる。 */
-.hero-gauge {
-  flex: 1 1 340px; display: flex; justify-content: center;
-  /* box-shadow は切り抜いた形に沿わないので、形に沿う drop-shadow で影を出す。 */
-  filter: drop-shadow(9px 9px 0 var(--ink));
-}
+.hero-gauge { flex: 1 1 340px; display: flex; justify-content: center; }
 /* 右側は漫画の一コマとして組む。黒い枠の中に集中線とアミ点を敷き、その上に吹き出しを
    置いて、しっぽをコマの内側（左下）へ向ける。枠の外に吹き出しが浮いているより、
    「このコマの中で誰かが言っている」ように読める。 */
-/* 四隅をわずかにずらした四角。きっちりした長方形だと「枠」に見えず、コマに見えない。 */
-.hero-panel {
-  position: relative;
-  width: 100%; max-width: 384px; height: 330px;
-  /* 黒い面を切り抜いて枠にする（clip-path では border が引けないため）。 */
-  background: var(--ink);
-  clip-path: polygon(0% 3.5%, 97.5% 0%, 100% 94%, 2.5% 100%);
-}
-/* 枠の内側。少しだけ小さい同じ形にして、黒が縁として残るようにする。 */
-.hero-panel-inner {
-  position: absolute; inset: 5px;
-  background: var(--accent-4);
-  clip-path: polygon(0% 3.5%, 97.5% 0%, 100% 94%, 2.5% 100%);
-  overflow: hidden;
-}
-/* コマの中の集中線。吹き出しの後ろから放射させる。 */
-.hero-panel-tone {
-  position: absolute; inset: 0; pointer-events: none; opacity: .5;
-  background: repeating-conic-gradient(from 0deg at 60% 34%, var(--ink) 0deg 0.3deg, transparent 0.3deg 3.2deg);
-  -webkit-mask-image: radial-gradient(ellipse 54% 52% at 60% 34%, transparent 36%, #000 76%);
-  mask-image: radial-gradient(ellipse 54% 52% at 60% 34%, transparent 36%, #000 76%);
-}
-/* コマの下半分はアミ点で沈めて、奥行きを出す。 */
-.hero-panel-inner::after {
-  content: "";
-  position: absolute; inset: 0; pointer-events: none; opacity: .2;
-  background-image: radial-gradient(var(--ink) 1.5px, transparent 1.8px);
-  background-size: 9px 9px;
-  -webkit-mask-image: linear-gradient(transparent 42%, #000 100%);
-  mask-image: linear-gradient(transparent 42%, #000 100%);
-}
 /* 丸ではなく吹き出しにする。角のある形なので傾きがそのまま伝わるし、漫画の
    「人が言っている」感じが出る。しっぽは左下（見出しの方）へ向ける。 */
 .hero-gauge-balloon {
-  position: absolute; top: 20px; right: 16px; z-index: 1;
-  width: calc(100% - 34px); max-width: 300px;
-  padding: 18px 24px 20px;
+  position: relative;
+  width: 100%; max-width: 300px;
+  padding: 20px 24px 22px;
   background: var(--panel);
   border: 5px solid var(--ink);
   border-radius: 30px;

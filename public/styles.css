@@ -177,6 +177,14 @@ header.site .header-link-icon svg { display: block; }
   header.site .header-link { min-height: 36px; padding: 0 12px; font-size: 13px; }
   header.site .header-link-icon { display: none; }
 }
+/* 1 行に収まらない幅では、右上に残すのはログイン（またはアカウント）。ページへのボタンは
+   2 行目以降へ送る。flex は「ここで改行」を書けないので、幅いっぱいの疑似要素を間に挟んで
+   order で順番を決める。アカウント欄が無い構成（GOOGLE_ENABLED=false）では挟まない。 */
+@media (max-width: 1080px) {
+  header.site .account-bar { order: 1; }
+  header.site:has(.account-bar)::after { content: ""; order: 2; flex-basis: 100%; height: 0; }
+  header.site .header-link { order: 3; }
+}
 /* ヘッダー右上の Google ログイン / アカウント表示（public/account.js が差し込む）。 */
 /* 帯の中の 1 要素として並べる（メニューはこのチップにぶら下げる）。 */
 .account-bar { position: relative; z-index: 20; text-align: left; }
@@ -376,7 +384,7 @@ button:disabled { opacity: .45; cursor: not-allowed; transform: none; box-shadow
   paint-order: stroke fill;
 }
 
-.hero-search { display: flex; flex-wrap: wrap; gap: 12px; max-width: 640px; }
+.hero-search { display: flex; flex-wrap: wrap; justify-content: center; gap: 12px; max-width: 640px; }
 .hero-search .search-box { flex: 1 1 280px; }
 .hero-search input[type="text"] {
   width: 100%; height: 58px; padding: 0 20px;
@@ -1687,7 +1695,9 @@ html:has(.modal-backdrop.open) { overflow: hidden; }
 .switch-row input:checked + .switch::after { transform: translateX(18px); }
 .switch-row input:focus-visible + .switch { outline: 2px solid var(--accent); outline-offset: 2px; }
 
-.sel-cover { display: flex; align-items: center; gap: 10px; margin: 4px 0 10px; }
+/* ボタンの字が途中で折り返さないよう、折り返すならボタンごと次の行へ送る。 */
+.sel-cover { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 10px; margin: 4px 0 10px; }
+.sel-cover .linkbtn { white-space: nowrap; }
 .sel-cover-thumb { width: 44px; height: 62px; flex: none; }
 .sel-cover-thumb img, .sel-cover-thumb .noimg {
   width: 100%; height: 100%; object-fit: cover; border-radius: 4px;
@@ -1909,6 +1919,17 @@ html:has(.modal-backdrop.open) { overflow: hidden; }
 .gap-btn { font-size: 13px; }
 
 .modal-actions { display: flex; justify-content: space-between; gap: 8px; margin-top: 12px; }
+/* スマホでは 3 つ（削除 / キャンセル / 更新する）が 1 行に収まるまで詰める。既定のボタンは
+   太字・広めの余白なので、ここだけ字と余白を落とし、あわせて左右の余白も削って横幅を稼ぐ。
+   画面いっぱいにするモーダル（.modal-full / .modal-sheet）は下で別に指定しているので、
+   詳細度でそちらが勝つ（ここは普通のカード型だけに効く）。 */
+@media (max-width: 560px) {
+  .modal-backdrop { padding: 28px 8px; }
+  .modal { padding: 22px 14px; }
+  .modal-head { margin: -22px -14px 12px; padding: 16px 14px 12px; }
+  .modal-actions { gap: 6px; }
+  .modal-actions button, .modal-actions a.button { padding: 10px 10px; font-size: 13px; }
+}
 
 /* ランキングから開く読み取り専用の巻一覧（public/series-volumes.js）。本の詳細と同じ枠に、
    ページ側のランキングと同じ .slot を並べる。巻数が多いシリーズがあるので一覧だけスクロール

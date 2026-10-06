@@ -28,7 +28,15 @@
 
   const MODAL_HTML = `
     <div class="modal">
-      <h2 id="bdTitle"></h2>
+      <!-- 操作は右上（あらすじ・購入リンクが長くてもスクロールせずに押せるよう、上に貼り付ける）。
+           並びは他のダイアログと同じで、閉じるが一番右。 -->
+      <div class="modal-head">
+        <h2 id="bdTitle"></h2>
+        <div class="modal-head-actions">
+          <button type="button" class="primary" id="bdAdd" style="display:none">リストに追加</button>
+          <button type="button" id="bdClose">閉じる</button>
+        </div>
+      </div>
       <div class="detail-body">
         <div id="bdCoverBox"></div>
         <div class="dinfo">
@@ -55,11 +63,6 @@
         <div class="buy-group" id="bdBuyEbook"></div>
         <div class="buy-group" id="bdBuyUsed"></div>
         <p class="buy-note">[AD]絶版でも電子書籍なら手に入ることがあります。リンクは各社アフィリエイトを含みます。</p>
-      </div>
-      <div class="modal-actions">
-        <div style="flex:1"></div>
-        <button type="button" id="bdClose">閉じる</button>
-        <button type="button" class="primary" id="bdAdd" style="display:none">リストに追加</button>
       </div>
     </div>`;
 

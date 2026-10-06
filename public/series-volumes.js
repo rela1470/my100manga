@@ -22,15 +22,19 @@
 (function () {
   const MODAL_HTML = `
     <div class="modal sv-modal">
-      <h2 id="svTitle"></h2>
+      <!-- 閉じるは右上（他のダイアログと同じ）。 -->
+      <div class="modal-head">
+        <h2 id="svTitle"></h2>
+        <div class="modal-head-actions">
+          <button type="button" id="svClose">閉じる</button>
+        </div>
+      </div>
       <div class="sv-sub" id="svSub"></div>
       <div class="vol-bar search-bar sv-bar" id="svBar" hidden></div>
       <p class="hint" id="svNote"></p>
       <div class="grid sv-grid" id="svGrid"></div>
       <div class="modal-actions">
         <a class="linkbtn sv-edit" id="svEdit" style="display:none"></a>
-        <div style="flex:1"></div>
-        <button type="button" id="svClose">閉じる</button>
       </div>
     </div>`;
 

@@ -28,6 +28,7 @@
 import { initWasm, Resvg } from "@resvg/resvg-wasm";
 // CF Workers can't dynamically import wasm — bundle it explicitly (as covertrim.ts does).
 import RESVG_WASM from "../node_modules/@resvg/resvg-wasm/index_bg.wasm";
+import { BRAND_GLYPHS, BRAND_UNITS_PER_EM } from "./brandGlyphs";
 import { getCoverBytes, sha256Hex } from "./coverBytes";
 import { encodeRgba } from "./covertrim";
 import { escapeHtml } from "./util";
@@ -38,7 +39,7 @@ export type ShareVariant = "og" | "full" | "q1" | "q2" | "q3" | "q4";
 export const SHARE_VARIANTS: readonly ShareVariant[] = ["og", "full", "q1", "q2", "q3", "q4"];
 
 // Bump to regenerate every stored image after a design change.
-const LAYOUT_VERSION = 5;
+const LAYOUT_VERSION = 7;
 const CELLS = 100;
 const COVER_CONCURRENCY = 10;
 const MAX_NAME_CHARS = 16;
@@ -232,7 +233,10 @@ function buildSvg(list: MangaList, variant: ShareVariant, hasCover: boolean[], h
   const url = listUrlLabel(host, list.slug);
   // The URL is drawn at 0.75× the title size; shrink both if a long name would run into it.
   const range = rangeLabel(L);
-  const fit = (L.width - L.pad * 2 - 24) / (emWidth(`${owner}${brand} ${range}`) + emWidth(url) * 0.75);
+  const outlined = brandHasOutlines(brand);
+  // サイト名の幅は、アウトラインなら送り幅の合計、そうでなければ概算で見る。
+  const brandW = outlined ? brandEm(brand) : emWidth(brand);
+  const fit = (L.width - L.pad * 2 - 24) / (emWidth(owner) + brandW + emWidth(` ${range}`) + emWidth(url) * 0.75);
   const size = Math.max(16, Math.min(L.headerSize, Math.floor(fit)));
 
   const parts: string[] = [];
@@ -242,7 +246,7 @@ function buildSvg(list: MangaList, variant: ShareVariant, hasCover: boolean[], h
     `<rect width="100%" height="100%" fill="${COLOR.bg}"/>`,
     // 外枠。画面の本棚と同じく、黒いコマ枠で囲う。
     `<rect x="${FRAME_W / 2}" y="${FRAME_W / 2}" width="${L.width - FRAME_W}" height="${L.height - FRAME_W}" fill="none" stroke="${COLOR.ink}" stroke-width="${FRAME_W}"/>`,
-    `<text x="${L.pad}" y="${L.headerY}" font-size="${size}" fill="${COLOR.text}">${escapeHtml(owner)}${brandSvg(brand, COLOR.accent)}${range ? `<tspan dx="0.4em" fill="${COLOR.muted}">${range}</tspan>` : ""}</text>`,
+    headerSvg(L, size, owner, brand, range, outlined, brandW, COLOR),
     `<text x="${L.width - L.pad}" y="${L.headerY}" font-size="${Math.round(size * 0.75)}" fill="${COLOR.muted}" text-anchor="end">${escapeHtml(url)}</text>`,
     `<text x="${L.width - L.pad}" y="${L.creditY}" font-size="${L.creditSize}" fill="${COLOR.muted}" text-anchor="end">${escapeHtml(creditLine(list, variant))}</text>`
   );
@@ -278,12 +282,82 @@ function buildSvg(list: MangaList, variant: ShareVariant, hasCover: boolean[], h
   return parts.join("");
 }
 
+/** 左上の「◯◯'s My 100 Manga 1–25」の行。サイト名をアウトラインで描くときは、
+ *  作者名をその開始位置に右揃えで置く（文字幅を測れないので、突き合わせはこの向きで取る。
+ *  概算がずれても重なることはなく、左の余白が少し動くだけで済む）。 */
+function headerSvg(
+  L: Layout,
+  size: number,
+  owner: string,
+  brand: string,
+  range: string,
+  outlined: boolean,
+  brandEmW: number,
+  COLOR: { text: string; muted: string; accent: string }
+): string {
+  if (!outlined) {
+    return (
+      `<text x="${L.pad}" y="${L.headerY}" font-size="${size}" fill="${COLOR.text}">` +
+      `${escapeHtml(owner)}${brandSvg(brand, COLOR.accent)}` +
+      `${range ? `<tspan dx="0.4em" fill="${COLOR.muted}">${range}</tspan>` : ""}</text>`
+    );
+  }
+  const brandX = L.pad + emWidth(owner) * size;
+  const after = brandX + brandEmW * size;
+  return (
+    // SVG は末尾の空白を落とすので、「◯◯'s」とサイト名の間は位置で空ける。
+    (owner
+      ? `<text x="${(brandX - size * 0.18).toFixed(1)}" y="${L.headerY}" font-size="${size}" fill="${COLOR.text}" text-anchor="end">${escapeHtml(owner.trimEnd())}</text>`
+      : "") +
+    brandPaths(brand, brandX, L.headerY, size, COLOR.text, COLOR.accent) +
+    (range
+      ? `<text x="${after + size * 0.4}" y="${L.headerY}" font-size="${size}" fill="${COLOR.muted}">${range}</text>`
+      : "")
+  );
+}
+
 /** サイト名のうち数字（「My 100 Manga」の 100）だけアクセント色にした SVG の断片。
- *  数字が無い名前ならそのまま描く。 */
+ *  数字が無い名前ならそのまま描く。アウトラインを持っていない字が混ざるときの受け皿。 */
 function brandSvg(name: string, accent: string): string {
   const m = name.match(/^(.*?)(\d+)(.*)$/);
   if (!m) return escapeHtml(name);
   return `${escapeHtml(m[1])}<tspan fill="${accent}">${m[2]}</tspan>${escapeHtml(m[3])}`;
+}
+
+// サイト名は画面のヘッダーのロゴと同じ見出し書体（Dela Gothic One）で出したいが、
+// resvg に 2 つ目のフォントを読ませられなかったので、その字形だけ src/brandGlyphs.ts に
+// アウトラインで持っている（欧文と数字のみ）。字形を持っていない字が混ざる名前では
+// 使えないので、そのときは今までどおり本文のフォントで描く。
+function brandHasOutlines(name: string): boolean {
+  for (const ch of name) if (!BRAND_GLYPHS[ch]) return false;
+  return true;
+}
+
+/** サイト名の幅（em 単位）。文字の送り幅の合計。 */
+function brandEm(name: string): number {
+  let w = 0;
+  for (const ch of name) w += (BRAND_GLYPHS[ch]?.a ?? 600) / BRAND_UNITS_PER_EM;
+  return w;
+}
+
+/** サイト名をアウトラインで描く。数字だけアクセント色。y はベースライン。 */
+function brandPaths(name: string, x: number, baseline: number, size: number, text: string, accent: string): string {
+  const k = size / BRAND_UNITS_PER_EM;
+  const out: string[] = [];
+  let cx = x;
+  for (const ch of name) {
+    const g = BRAND_GLYPHS[ch];
+    if (!g) continue;
+    if (g.d) {
+      // フォント座標は y が上向きなので、縦を反転して置く。
+      out.push(
+        `<path transform="translate(${cx.toFixed(1)} ${baseline}) scale(${k.toFixed(5)} -${k.toFixed(5)})" ` +
+          `d="${g.d}" fill="${/[0-9]/.test(ch) ? accent : text}"/>`
+      );
+    }
+    cx += g.a * k;
+  }
+  return out.join("");
 }
 
 // Placeholder hrefs; resvg reports them via imagesToResolve() and we hand it the bytes.

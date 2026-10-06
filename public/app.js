@@ -4675,7 +4675,9 @@ async function doPublish() {
       window.Account?.refreshLists();
       ok = true;
       setPublishing(false);
-      $("publishModal").classList.remove("open");
+      // モーダルは閉じずにそのまま遷移する。閉じると ui-dialog が「開いているモーダルが
+      // 0 になった」のを見て、積んでおいた履歴を戻しに行き（history.go）、直後の
+      // location.href の遷移を打ち消してしまう（更新はできているのにページが変わらない）。
       goToPublished(state.editSlug, state.editToken);
     } else {
       const payload = { owner_name: state.owner, bio: state.bio, unlisted: state.unlisted, items };
@@ -4703,8 +4705,11 @@ async function doPublish() {
       window.Account?.refreshLists();
       ok = true;
       setPublishing(false);
+      // 先に共有モーダルを開いてから公開モーダルを閉じる。「どれも開いていない」瞬間を
+      // 作ると、ui-dialog が履歴を戻し、その popstate で開いたばかりの共有モーダルへ
+      // Esc が飛んで閉じてしまう。
+      await showShare(data.slug, data.edit_token);
       $("publishModal").classList.remove("open");
-      showShare(data.slug, data.edit_token);
     }
   } catch (e) {
     uiAlert(apiErrorMessage(e, `${verb}に失敗しました。もう一度お試しください。`));

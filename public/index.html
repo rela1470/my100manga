@@ -44,8 +44,6 @@
       <span class="hero-sky"></span>
       <span class="hero-gutter"></span>
       <span class="hero-balloon b1"></span>
-      <span class="hero-balloon b2"></span>
-      <span class="hero-balloon b3"></span>
       <span class="hero-burst-balloon"></span>
     </div>
     <div class="hero-inner">
@@ -84,7 +82,9 @@
 
     <!-- はじめての人向けの説明。リストが空（0作品）のときだけ app.js render() が出す。 -->
     <section class="empty-guide" id="emptyGuide" hidden>
-      <h2 class="empty-guide-title">はじめかた</h2>
+      <!-- 右上の角からはみ出す飾りの吹き出し（しっぽ付き）。 -->
+      <span class="guide-balloon" aria-hidden="true"></span>
+      <h2 class="empty-guide-title">はじめ方</h2>
       <!-- 3 コマ。各コマは「番号 + 見出し + アイコン + 本文」。番号は CSS の counter で打つ。 -->
       <ol class="empty-guide-steps">
         <li>

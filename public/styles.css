@@ -185,7 +185,12 @@ header.site h1 .owner-line {
 }
 header.site h1 .owner-line[hidden] { display: none; }
 header.site h1 .owner-line .report-flag { vertical-align: middle; margin-left: 4px; }
-header.site h1 .accent { color: var(--accent); }
+/* ロゴの 100 は見出しの「100」と同じ考え方で、面＝マゼンタ・側面＝ブルーのベタ影。
+   黒帯の上なので黒のフチは使わない。傾きは付けない（まっすぐ）。 */
+header.site h1 .accent {
+  color: var(--accent);
+  text-shadow: 2px 2px 0 var(--accent-3);
+}
 /* 説明文はロゴ・ボタンの下（帯の 2 行目）に小さく敷く。 */
 header.site p.tagline {
   order: 9;
@@ -407,7 +412,7 @@ button:disabled { opacity: .45; cursor: not-allowed; transform: none; box-shadow
 .hero-deco { position: absolute; inset: 0; pointer-events: none; }
 /* 右上のコマ。空の水色を敷いて、上に空の吹き出しを浮かせる。 */
 .hero-sky {
-  position: absolute; right: -6%; top: 0; width: 42%; height: 48%;
+  position: absolute; right: -6%; top: 0; width: 46%; height: 88%;
   background: var(--accent-4);
   border-left: 4px solid var(--ink);
   border-bottom: 4px solid var(--ink);
@@ -431,18 +436,13 @@ button:disabled { opacity: .45; cursor: not-allowed; transform: none; box-shadow
 }
 .hero-balloon::before { left: 24%; bottom: -17px; border-top: 18px solid var(--ink); }
 .hero-balloon::after { left: calc(24% + 5px); bottom: -8px; border-top: 12px solid var(--panel); }
-.hero-balloon.b1 { width: 104px; height: 62px; left: 51%; top: 12%; transform: rotate(-4deg); }
-/* 2 つ目は角丸四角（楕円と見分けがつくように）。 */
-.hero-balloon.b2 {
-  width: 82px; height: 48px; left: 57%; top: 40%;
-  border-radius: 14px; transform: rotate(6deg);
-}
-.hero-balloon.b3 { width: 60px; height: 38px; left: 56%; top: 84%; transform: rotate(3deg); }
+/* 飾りの吹き出しは背景のコマ（.hero-sky）の中に収める。 */
+.hero-balloon.b1 { width: 96px; height: 58px; left: 60%; top: 10%; transform: rotate(-4deg); }
 /* 3 つ目はギザギザの吹き出し。clip-path では枠線が引けないので、黒を一回り大きく敷いて
    その上に白を少し小さく重ね、縁取りに見せる。 */
 .hero-burst-balloon {
-  position: absolute; left: 63%; top: 58%;
-  width: 104px; height: 76px;
+  position: absolute; left: 64%; top: 44%;
+  width: 98px; height: 72px;
   transform: rotate(-6deg);
 }
 .hero-burst-balloon::before, .hero-burst-balloon::after {
@@ -494,9 +494,10 @@ button:disabled { opacity: .45; cursor: not-allowed; transform: none; box-shadow
   font-size: 1.9em; line-height: 1; color: var(--accent);
   -webkit-text-stroke: 6px var(--ink);
   paint-order: stroke fill;
+  /* 側面は 1 色（ブルー）。段階的に色を変えるとグラデーションになって、他の面と合わない。 */
   text-shadow:
-    2px 2px 0 #d8277f, 4px 4px 0 #bf2a8e, 6px 6px 0 #9b3fae,
-    8px 8px 0 #7355c6, 10px 10px 0 #4a74cf, 12px 12px 0 #2f93d6,
+    2px 2px 0 var(--accent-3), 4px 4px 0 var(--accent-3), 6px 6px 0 var(--accent-3),
+    8px 8px 0 var(--accent-3), 10px 10px 0 var(--accent-3), 12px 12px 0 var(--accent-3),
     15px 15px 0 var(--ink);
 }
 
@@ -534,7 +535,6 @@ button:disabled { opacity: .45; cursor: not-allowed; transform: none; box-shadow
   border-radius: 30px;
   box-shadow: var(--shadow-hard);
   display: flex; flex-direction: column; align-items: center; gap: 2px;
-  transform: rotate(-3deg);
 }
 /* しっぽ。黒い三角の上に少し小さい白を重ねて、枠線だけ残す。 */
 .hero-gauge-balloon::before, .hero-gauge-balloon::after {
@@ -845,7 +845,13 @@ body.admin header.site h1 { font-size: 22px; }
 @media (hover: hover) {
   .stat-card:hover { transform: translateY(-2px); box-shadow: var(--shadow-pop); }
 }
-.stat-card .n { font-family: var(--font-display); font-size: 26px; font-weight: 400; color: var(--text); }
+/* 数字は見出しの「100」と同じ考え方で、色＋黒のベタ影を 1 段だけ付けて立たせる。 */
+.stat-card .n {
+  font-family: var(--font-display); font-size: 36px; font-weight: 400;
+  color: var(--accent); text-shadow: 3px 3px 0 var(--ink);
+  line-height: 1.15;
+}
+@media (max-width: 560px) { .stat-card .n { font-size: 26px; text-shadow: 2px 2px 0 var(--ink); } }
 .stat-card .k { font-size: 12px; color: var(--muted); margin-top: 2px; }
 a.stat-card.stat-link { display: block; color: inherit; text-decoration: none; }
 a.stat-card.stat-link .k::after { content: " ›"; }
@@ -1544,7 +1550,7 @@ h3.mylists-title { margin-top: 24px; font-size: 14px; }
   position: absolute;
   top: 0; left: 0;
   background: var(--ink);
-  color: var(--pop);
+  color: #fff;
   font-family: var(--font-display);
   font-weight: 400;
   font-size: 11px;
@@ -1557,14 +1563,15 @@ h3.mylists-title { margin-top: 24px; font-size: 14px; }
   box-shadow: 0 0 0 2px var(--accent);
 }
 .slot.over-limit .num { background: var(--accent-strong); }
-/* 次に埋める 1 枠だけ出す「追加」ボタン。黄色く塗って、空き枠との違いを出す。 */
+/* 次に埋める 1 枠だけ出す「追加」ボタン。差し色のピンクで塗って、空き枠との違いを出す。 */
 .slot.empty {
   align-items: center;
   justify-content: center;
-  background: var(--pop);
-  color: var(--ink);
+  background: var(--accent);
+  color: #fff;
   font-weight: 900;
 }
+.slot.empty svg { stroke: #fff; }
 .slot.empty .plus { font-size: 30px; line-height: 1; }
 .slot.empty .label { font-size: 12px; margin-top: 4px; }
 /* その先の空き枠（app.js placeholderSlot）。100 冊ぶんの棚の形を最初から見せるためだけの
@@ -1573,8 +1580,8 @@ h3.mylists-title { margin-top: 24px; font-size: 14px; }
   display: flex;
   flex-direction: column;
   justify-content: flex-end;
-  border: var(--bw) dashed #b4b0a6;
-  background: #f3f2ee;
+  border: var(--bw) dashed #7fc0dd;
+  background: #e6f4fb;
   box-shadow: none;
   cursor: default;
 }
@@ -1582,8 +1589,11 @@ h3.mylists-title { margin-top: 24px; font-size: 14px; }
   margin: 6px 8px;
   font-family: var(--font-display);
   font-size: 12px;
-  color: var(--muted);
+  color: #4c7a90;
 }
+/* 全部同じ水色だと整いすぎるので、ところどころ薄いピンクを混ぜる。 */
+.slot.placeholder:nth-child(7n+3) { border-color: #f0a8c8; background: #fdeaf3; }
+.slot.placeholder:nth-child(7n+3) .ph-num { color: #a25077; }
 
 .slot .cover {
   width: 100%;
@@ -2616,23 +2626,29 @@ a.bd-series:hover { background: var(--accent-strong-2); }
 .empty-guide[hidden] { display: none; }
 /* 右上の角からはみ出す飾りの吹き出し。中身は空（装飾）。 */
 .empty-guide { position: relative; }
-.empty-guide::before, .empty-guide::after {
-  content: ""; position: absolute; pointer-events: none;
-}
-.empty-guide::before {
-  right: 38px; top: -30px; width: 86px; height: 52px;
+.guide-balloon {
+  position: absolute; right: 18px; top: -36px;
+  width: 112px; height: 66px;
   background: var(--panel); border: var(--bw) solid var(--ink); border-radius: 50%;
   transform: rotate(5deg);
+  pointer-events: none;
 }
-/* しっぽ。黒い三角の上に白を重ねて枠線だけ残す。 */
-.empty-guide::after {
-  right: 92px; top: 16px; width: 0; height: 0;
-  border-left: 8px solid transparent; border-right: 14px solid transparent;
-  border-top: 17px solid var(--ink);
-  transform: rotate(5deg);
+/* しっぽ。黒い三角の上に少し小さい白を重ねて、枠線だけ残す（三角のベタ 1 枚だと
+   吹き出しに見えない）。 */
+.guide-balloon::before, .guide-balloon::after { content: ""; position: absolute; width: 0; height: 0; }
+.guide-balloon::before {
+  left: 24px; bottom: -22px;
+  border-left: 10px solid transparent; border-right: 18px solid transparent;
+  border-top: 24px solid var(--ink);
 }
-@media (max-width: 760px) { .empty-guide::before, .empty-guide::after { display: none; } }
-.empty-guide-title { margin: 0 0 14px; font-weight: 900; font-size: 17px; }
+.guide-balloon::after {
+  left: 31px; bottom: -11px;
+  border-left: 7px solid transparent; border-right: 12px solid transparent;
+  border-top: 16px solid var(--panel);
+}
+@media (max-width: 760px) { .guide-balloon { display: none; } }
+.empty-guide-title { margin: 0 0 16px; font-weight: 900; font-size: 24px; letter-spacing: .02em; }
+@media (max-width: 560px) { .empty-guide-title { font-size: 20px; } }
 /* 3 コマ横並び。番号は counter でコマの角に打つ。狭い画面では 1 列に積む。 */
 .empty-guide-steps {
   list-style: none;

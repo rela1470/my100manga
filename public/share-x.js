@@ -259,6 +259,13 @@
     return new Promise((resolve) => (kindResolve = resolve));
   }
 
+  // 取得済みの画像を捨てる。リストを更新したあとに呼ぶ（同じ slug のままなので、
+  // 捨てないと更新前の画像を出し続ける）。public/app.js の公開・更新の後から呼んでいる。
+  const resets = [];
+  function resetImages() {
+    for (const f of resets) f();
+  }
+
   function wireShareX(postBtn, imageBtn, getInfo) {
     postBtn.addEventListener("click", () => {
       const { slug, owner } = getInfo();
@@ -270,6 +277,10 @@
     // （種類を聞き直さずに）共有する。
     const cache = {}; // kind -> { slug, files }
     let retry = null; // { slug, kind }: 画像はできたが共有できなかった
+    resets.push(() => {
+      for (const k of Object.keys(cache)) delete cache[k];
+      retry = null;
+    });
     async function getImages(slug, kind) {
       if (!(cache[kind] && cache[kind].slug === slug)) cache[kind] = { slug, files: await fetchImages(slug, kind) };
       return cache[kind].files;
@@ -323,4 +334,5 @@
   }
 
   window.wireShareX = wireShareX;
+  window.resetShareImages = resetImages;
 })();

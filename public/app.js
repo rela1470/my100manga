@@ -4673,6 +4673,9 @@ async function doPublish() {
       state.published = { owner: state.owner, bio: state.bio, items: items.map(normItem) };
       window.MyLists?.save({ slug: state.editSlug, token: state.editToken, owner: state.owner });
       window.Account?.refreshLists();
+      // 中身が変わったので、取得済みの共有画像は捨てる（同じ slug のままなので、
+      // 捨てないと更新前の画像を出し続ける）。
+      window.resetShareImages?.();
       ok = true;
       setPublishing(false);
       // モーダルは閉じずにそのまま遷移する。閉じると ui-dialog が「開いているモーダルが

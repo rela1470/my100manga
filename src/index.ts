@@ -974,6 +974,15 @@ async function handleShareImage(
 ): Promise<Response> {
   const data = await getListSnapshot(env, ctx, slug);
   if (!data) return new Response("not found", { status: 404 });
+  // URL に内容の hash（?v=）が無い／古いときは、いまの内容の URL へ飛ばす。これをしないと
+  // 編集しても URL が変わらず、ブラウザのキャッシュから古い絵が返る（v 無しは 5 分）。
+  // リンクプレビューの og:image は最初から正しい ?v= 付きなので、ここは素通りする。
+  const canonical = new URL(request.url);
+  const hash = await shareImageHash(data);
+  if (canonical.searchParams.get("v") !== hash) {
+    canonical.searchParams.set("v", hash);
+    return Response.redirect(canonical.toString(), 302);
+  }
   let limited: Response | null = null;
   // リンクプレビューのクローラ（X 等）は投稿直後に一斉に取りに来るので、人のブラウザとは
   // 別 bucket にして互いに干渉させない。素通しにはしない: UA は名乗るだけで詐称できるので、

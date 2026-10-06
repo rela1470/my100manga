@@ -368,10 +368,15 @@
   }
 
   addEventListener("popstate", () => {
+    // syncHistory が自分で戻したぶんの popstate か、人が「戻る」を押したのか。
+    // 自分で戻したぶんは積んだ履歴の後始末でしかないので、モーダルは閉じない。
+    // 閉じると、「モーダルを閉じて、すぐ次のモーダルを開く」流れ（共有画像の種類を選ぶ →
+    // SNS パネル等）で、開いたばかりのほうに Esc が飛んで消えてしまう。
+    const ours = awaitingPop;
     awaitingPop = false;
     clearTimeout(popTimer);
     pushed = markedDepth();
-    while (openCount() > pushed) {
+    while (!ours && openCount() > pushed) {
       const el = topOpen();
       if (!el) break;
       const before = openCount();

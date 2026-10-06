@@ -28,7 +28,7 @@ import {
   adminDismissSplitRequest,
   adminUnlinkVolumes,
 } from "./merge";
-import { handleBook } from "./book";
+import { handleBook, handleSortKeys } from "./book";
 import { readCachedCovers, resolveCovers } from "./covers";
 import { createList, updateList } from "./lists";
 import {
@@ -204,6 +204,11 @@ const worker = {
       if (request.method === "POST" || request.method === "PUT") {
         if (path === "/api/covers") {
           const limited = await rateLimit(request, env.RL_COVERS, "covers");
+          if (limited) return limited;
+        } else if (path === "/api/sort-keys") {
+          // 並べ替えボタンの読み取り専用 POST。公開の書き込み枠（30/分）を食わせたくないので、
+          // 読み取り系と同じ広い binding の別 bucket で縛る。
+          const limited = await rateLimit(request, env.RL_COVERS, "sort-keys");
           if (limited) return limited;
         } else if (path === "/api/me/draft") {
           // 作成中のリストの自動保存。ログイン必須の 1 行 upsert だが、無制限に打てる口を
@@ -440,6 +445,10 @@ const worker = {
       }
       if (path === "/api/covers" && request.method === "POST") {
         return await resolveCoversApi(request, env);
+      }
+      // 編集中リストの並べ替え（出版日順・作者順）が使う ISBN → 発行日/作者。D1 読みだけ。
+      if (path === "/api/sort-keys" && request.method === "POST") {
+        return await handleSortKeys(request, env);
       }
       // --- Google ログイン（任意, src/auth.ts）と /api/me*（src/account.ts）---
       if (path === "/auth/google/login" && request.method === "GET") {

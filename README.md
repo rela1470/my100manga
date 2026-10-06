@@ -201,6 +201,7 @@ npx wrangler secret put AMAZON_ASSOCIATE_TAG --env dev
 
 - `RL_WRITE` — 書き込み系 API 全般（`/api/admin/*` は Cloudflare Access 済みなので対象外）。閲覧ビーコン（`POST /api/lists/:slug/view`）だけは bucket を分け、たくさん閲覧した人や同じ IP を共有する人が直後の公開で `429` にならないようにする。
 - `RL_COVERS` — 外部 API（楽天/Yahoo/Google Books）や重いクエリを叩くもの用の別枠。bucket をエンドポイントごとに分けているので、limit は `/api/covers`・`/cover`・`/api/book`・検索・入力補完・候補・公開リスト一覧・巻一覧にそれぞれ効く。ほかにこの binding を使うもの:
+  - `sort-keys` — 編集中リストの一括並べ替えが使う ISBN → 発行日/作者（`POST /api/sort-keys`）。D1 を読むだけの POST なので、公開の書き込み枠を食わせずこちらで数える。
   - `draft` — 作成中リストの自動保存（`PUT /api/me/draft`）。ログイン必須だが無制限の口は残さない。編集中は 2 秒ごとに保存するので、書き込み枠（30/分）では足りずこちらを使う。
   - `list-404` — 存在しない `/l/:slug`・`/api/lists/:slug`。**見つからなかったときだけ**数えるので、普通の閲覧・共有リンクは何度開いても当たらない（総当たりだけが止まる）。
   - `share` / `share-bot` — 共有画像の生成（R2 ミス時のみ）。リンクプレビューのクローラは投稿直後に一斉に来るので人のブラウザと枠を分ける。UA は詐称できるので素通しにはしない。

@@ -92,7 +92,16 @@
   <div class="reorder-controls" id="reorderControls" style="display:none">
     <span class="reorder-count" id="reorderCount"></span>
     <span class="reorder-spacer"></span>
-    <button id="sortName">名前順 ↓</button>
+    <!-- 一括並べ替え。選んだ時点で（確認のうえ）並べ替え、選択はすぐ見出しに戻す。 -->
+    <select id="sortBy" aria-label="並べ替え">
+      <option value="" selected>並べ替え</option>
+      <option value="title-asc">名前順</option>
+      <option value="title-desc">名前逆順</option>
+      <option value="date-asc">出版日順</option>
+      <option value="date-desc">出版日逆順</option>
+      <option value="author-asc">作者順</option>
+      <option value="author-desc">作者逆順</option>
+    </select>
     <button id="reorderClear" disabled>選択解除</button>
     <button class="primary" id="movePick" disabled>移動先を選ぶ</button>
     <button id="moveStart" style="display:none">先頭へ</button>

@@ -1302,11 +1302,29 @@ h3.mylists-title { margin-top: 24px; font-size: 14px; }
 }
 .reorder-count { font-size: 13px; color: var(--muted); }
 .reorder-spacer { flex: 1; }
+/* 並べ替えのプルダウン。隣のボタンと同じ見た目にする（選ぶと即その順に並ぶので、
+   見出しに戻る＝「いま何順か」は示さない）。 */
+#sortBy {
+  font: inherit;
+  font-weight: 600;
+  color: var(--text);
+  background: var(--panel-2);
+  border: 1.5px solid var(--border);
+  border-radius: var(--radius-pill);
+  padding: 9px 12px;
+  cursor: pointer;
+  touch-action: manipulation;
+}
+#sortBy:focus-visible { outline: 3px solid rgba(var(--accent-rgb),.45); outline-offset: 2px; }
+#sortBy:disabled { opacity: .55; cursor: default; }
 @media (max-width: 560px) {
   .reorder-count { flex-basis: 100%; }
   /* 狭い画面でもボタンが 1 行に収まる大きさ（バーが高くなるとカードが隠れる）。 */
   .reorder-controls { gap: 6px; padding: 8px 10px; }
   .reorder-controls button { padding: 9px 12px; font-size: 13px; }
+  /* 他のボタンより字は大きいまま（iOS が 16px 未満のフォーム部品でページを拡大するため）。
+     見出しが「並べ替え」の 4 文字なので、横幅は従来の「名前順 ↓」ボタンより狭い。 */
+  #sortBy { padding: 9px 6px; }
 }
 /* 固定バーの下にカードや「元に戻す」トーストが潜らないようにする。 */
 body.reordering { padding-bottom: 132px; }

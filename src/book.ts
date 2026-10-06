@@ -1,5 +1,5 @@
 import { Env } from "./types";
-import { badRequest, json } from "./util";
+import { badRequest, json, readJsonObject } from "./util";
 import { rakutenResolveFull, RakutenBookFull } from "./rakuten";
 import { redactedCoverUrls } from "./covers";
 import { resolveBooks } from "./listItems";
@@ -32,6 +32,9 @@ interface BookMetaRow {
 
 // あらすじが空のキャッシュを楽天から取り直す間隔（handleBook）。
 const EMPTY_CAPTION_RETRY_MS = 24 * 60 * 60 * 1000;
+
+// 並べ替え（/api/sort-keys）で一度に引ける ISBN 数。public/app.js MAX_ITEMS と揃える。
+const MAX_SORT_KEY_ISBNS = 1000;
 
 // GET /api/book?isbn=<isbn> — enrich the view-page detail popup with metadata the
 // stored list item doesn't carry. The master (volumes table) is authoritative for
@@ -295,5 +298,90 @@ function formatPubdate(raw?: string | null): string {
   let out = `${m[1]}年`;
   if (m[2]) out += `${Number(m[2])}月`;
   if (m[3]) out += `${Number(m[3])}日`;
+  return out;
+}
+
+// POST /api/sort-keys — 編集中リストの並べ替え（出版日順・作者順）用に、ISBN →
+// {date, author} をまとめて返す。リストの項目は発行日を持たず、古い項目は作者も空なので、
+// 並べ替えが押されたときだけ引く。外部 API は叩かない（D1 読みだけ）ので、分からない本は
+// 分からないまま（＝並べ替えで末尾に回る）。
+// 出所の優先順は /api/book と同じでマスタ（volumes）が先。マスタに無い巻は book_meta の
+// キャッシュ、それも無ければライブ補完（series_supplement, 抜け巻の Yahoo 由来など）。
+// ISBN は RESOLVE_SQL と同じく json_each で 1 パラメータに畳む（100 冊でも 1 往復）。
+export async function handleSortKeys(request: Request, env: Env): Promise<Response> {
+  const body = (await readJsonObject(request)) as { isbns?: unknown };
+  const isbns = Array.isArray(body.isbns)
+    ? [
+        ...new Set(
+          body.isbns
+            .filter((x): x is string => typeof x === "string")
+            .filter((x) => isValidIsbn(x))
+            .map((x) => toIsbn13(x))
+        ),
+      ].slice(0, MAX_SORT_KEY_ISBNS)
+    : [];
+  if (!isbns.length) return json({ keys: {} }, 200, { "cache-control": "no-store" });
+
+  const res = await env.DB.prepare(
+    `WITH want(isbn) AS (SELECT DISTINCT value FROM json_each(?1))
+     SELECT w.isbn,
+            v.pubdate AS v_date, v.creator AS v_author,
+            m.pubdate AS m_date, m.authors AS m_author,
+            -- 補完の巻は 1 件だけ取り出して、発行日と作者は JS 側で読む（同じ相関
+            -- サブクエリを 2 回書かないため）。逆引き（si）は PK、sp は series_id で引く。
+            (SELECT j.value FROM series_supplement_isbn si
+               JOIN series_supplement sp ON sp.series_id = si.series_id
+               JOIN json_each(sp.volumes_json) j
+               JOIN json_each(j.value, '$.isbns') ji ON ji.value = w.isbn
+              WHERE si.isbn = w.isbn LIMIT 1) AS s_vol
+       FROM want w
+       LEFT JOIN volumes v ON v.isbn = w.isbn
+       LEFT JOIN book_meta m ON m.isbn = w.isbn`
+  )
+    .bind(JSON.stringify(isbns))
+    .all<{
+      isbn: string;
+      v_date: string | null;
+      v_author: string | null;
+      m_date: string | null;
+      m_author: string | null;
+      s_vol: string | null;
+    }>();
+
+  const keys: Record<string, { date: string; author: string }> = {};
+  for (const r of res.results ?? []) {
+    const supp = parseSupplementVolume(r.s_vol);
+    const date = isoPubdate(r.v_date) || isoPubdate(r.m_date) || isoPubdate(supp.pubdate);
+    // book_meta.authors は "/" つなぎ。表示（編集ポップアップ）に合わせて読点でつなぐ。
+    const author = (r.v_author || r.m_author?.split("/").filter(Boolean).join("、") || supp.author || "").trim();
+    if (date || author) keys[r.isbn] = { date, author };
+  }
+  return json({ keys }, 200, { "cache-control": "no-store" });
+}
+
+/** 補完（series_supplement.volumes_json）の 1 巻分。中身はサーバが書いた JSON だが、
+ *  形が変わっても並べ替えが落ちないよう緩く読む。 */
+function parseSupplementVolume(raw: string | null): { pubdate: string; author: string } {
+  if (!raw) return { pubdate: "", author: "" };
+  try {
+    const v = JSON.parse(raw) as { pubdate?: unknown; author?: unknown };
+    return {
+      pubdate: typeof v.pubdate === "string" ? v.pubdate : "",
+      author: typeof v.author === "string" ? v.author : "",
+    };
+  } catch {
+    return { pubdate: "", author: "" };
+  }
+}
+
+/** 発行日を比較できる形（"2015-08-04" / "2015-08" / "2015"）に揃える。マスタは ISO だが、
+ *  book_meta は表示用に整形済み（"2015年8月4日"）、補完は出所によってまちまち。分からない
+ *  ものは "" を返す（呼び出し側が末尾に回す）。 */
+export function isoPubdate(raw?: string | null): string {
+  const m = (raw ?? "").trim().match(/^(\d{4})\D{0,2}(\d{1,2})?\D{0,2}(\d{1,2})?/);
+  if (!m) return "";
+  let out = m[1];
+  if (m[2]) out += "-" + m[2].padStart(2, "0");
+  if (m[2] && m[3]) out += "-" + m[3].padStart(2, "0");
   return out;
 }

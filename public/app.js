@@ -35,7 +35,6 @@ const state = {
   reorder: false, // true while in reorder mode (tap = select, not edit)
   placing: false, // reorder mode phase 2: selection is fixed, now tap where it goes
   selected: new Set(), // indices of cards picked to move; valid only between renders
-  sortAsc: true, // direction the "名前順" button will apply next
 };
 
 const $ = (id) => document.getElementById(id);
@@ -929,17 +928,87 @@ function offerUndoMove(prev, label) {
   });
 }
 
-// Bulk sort the whole list by title. Toggles direction each press. Confirms first,
-// since it discards any manual arrangement; the undo toast is the second net.
-async function sortByName() {
-  if (state.items.length < 2) return;
-  if (!(await uiConfirm("現在の並び順を破棄して、作品名で並べ替えます。よろしいですか？"))) return;
-  const dir = state.sortAsc ? 1 : -1;
-  const coll = new Intl.Collator("ja", { numeric: true, sensitivity: "base" });
-  // 元の配列は「元に戻す」用に残すので、コピーを並べ替える。
-  const sorted = state.items.slice().sort((a, b) => dir * coll.compare(a.title || "", b.title || ""));
-  state.sortAsc = !state.sortAsc;
-  finishMove(sorted, "作品名で並べ替えました");
+// 一括並べ替え。value は index.html の <select id="sortBy"> の option と揃える。
+// field: 並べ替えに使う値（title はリスト項目が必ず持つ。date / author はサーバに聞く）。
+const SORTS = {
+  "title-asc": { label: "名前順", field: "title", dir: 1 },
+  "title-desc": { label: "名前逆順", field: "title", dir: -1 },
+  "date-asc": { label: "出版日順", field: "date", dir: 1 },
+  "date-desc": { label: "出版日逆順", field: "date", dir: -1 },
+  "author-asc": { label: "作者順", field: "author", dir: 1 },
+  "author-desc": { label: "作者逆順", field: "author", dir: -1 },
+};
+const FIELD_NAME = { title: "作品名", date: "発行日", author: "作者" };
+
+// ISBN → {date, author}（/api/sort-keys）。リストの項目は発行日を持たないので、押された
+// ときだけ引いてセッション中は覚えておく（同じ本を並べ替え直すたびに往復しない）。
+const sortKeys = new Map();
+let sorting = false;
+
+const sortCollator = new Intl.Collator("ja", { numeric: true, sensitivity: "base" });
+
+// 並べ替えに使う値。分からなければ ""（どちら向きでも末尾に回る）。
+function sortValue(it, field) {
+  if (field === "title") return it.title || "";
+  const extra = (it.isbn && sortKeys.get(it.isbn)) || null;
+  if (field === "author") return it.author || (extra && extra.author) || "";
+  return (extra && extra.date) || "";
+}
+
+// 足りない分だけ /api/sort-keys に聞く。引けなかった本は「分からない」として覚えない
+// （次に押したときに引き直す）。通信そのものが失敗したら false。
+async function loadSortKeys(items) {
+  const need = [...new Set(items.map((it) => it.isbn).filter((isbn) => isbn && !sortKeys.has(isbn)))];
+  if (!need.length) return true;
+  try {
+    const res = await fetch("/api/sort-keys", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ isbns: need }),
+    });
+    if (!res.ok) return false;
+    const data = await res.json();
+    const keys = data.keys || {};
+    for (const isbn of need) sortKeys.set(isbn, keys[isbn] || { date: "", author: "" });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+// 並べ替えを 1 回実行する。並び順を捨てるので先に確認し、「元に戻す」トーストを第 2 の網にする。
+async function applySort(value) {
+  const spec = SORTS[value];
+  if (!spec || sorting || state.items.length < 2) return;
+  if (!(await uiConfirm(`現在の並び順を破棄して、${spec.label}に並べ替えます。よろしいですか？`))) return;
+  sorting = true;
+  $("sortBy").disabled = true;
+  try {
+    // 値を持たない本が 1 冊でもあればサーバに聞く（作者はリスト項目が持っていることも多い）。
+    if (spec.field !== "title" && state.items.some((it) => !sortValue(it, spec.field))) {
+      if (!(await loadSortKeys(state.items))) {
+        uiAlert(`${FIELD_NAME[spec.field]}を取得できませんでした。時間をおいてもう一度お試しください。`);
+        return;
+      }
+    }
+    // 元の配列は「元に戻す」用に残すので、コピーを並べ替える。値が同じときは作品名で、
+    // それも同じなら元の並びのまま（Array.prototype.sort は安定）。
+    const sorted = state.items.slice().sort((a, b) => {
+      const va = sortValue(a, spec.field);
+      const vb = sortValue(b, spec.field);
+      // 分からない本は昇順でも降順でも末尾へ（先頭に並ぶと「壊れている」ように見えるため）。
+      if (!va !== !vb) return va ? -1 : 1;
+      const cmp = spec.field === "date" ? (va < vb ? -1 : va > vb ? 1 : 0) : sortCollator.compare(va, vb);
+      if (cmp) return spec.dir * cmp;
+      return sortCollator.compare(a.title || "", b.title || "");
+    });
+    const unknown = sorted.filter((it) => !sortValue(it, spec.field)).length;
+    const note = unknown ? `（${FIELD_NAME[spec.field]}が分からない${unknown}件は末尾）` : "";
+    finishMove(sorted, `${spec.label}に並べ替えました${note}`);
+  } finally {
+    sorting = false;
+    $("sortBy").disabled = false;
+  }
 }
 
 function renderReorderBar(filled) {
@@ -964,13 +1033,12 @@ function renderReorderBar(filled) {
   // 選択フェーズには移動を実行するボタンを置かない。移動系は移動先フェーズにだけ出す。
   const shown = placing
     ? ["moveStart", "moveEnd", "placeCancel"]
-    : ["sortName", "reorderClear", "movePick", "reorderDone"];
-  for (const id of ["sortName", "reorderClear", "movePick", "reorderDone", "moveStart", "moveEnd", "placeCancel"]) {
+    : ["sortBy", "reorderClear", "movePick", "reorderDone"];
+  for (const id of ["sortBy", "reorderClear", "movePick", "reorderDone", "moveStart", "moveEnd", "placeCancel"]) {
     $(id).style.display = shown.includes(id) ? "" : "none";
   }
   $("reorderClear").disabled = n === 0;
   $("movePick").disabled = n === 0;
-  $("sortName").textContent = state.sortAsc ? "名前順 ↓" : "名前順 ↑";
 }
 
 function numBadge(index) {
@@ -4648,7 +4716,12 @@ function wireEvents() {
   $("moveStart").addEventListener("click", () => moveSelectedToEnd(true));
   $("moveEnd").addEventListener("click", () => moveSelectedToEnd(false));
   $("reorderClear").addEventListener("click", () => { state.selected.clear(); render(); });
-  $("sortName").addEventListener("click", sortByName);
+  $("sortBy").addEventListener("change", (e) => {
+    const value = e.target.value;
+    // 選んだ時点で見出しに戻す（キャンセルしても同じ項目をもう一度選べるように）。
+    e.target.value = "";
+    applySort(value);
+  });
   $("reorderDone").addEventListener("click", toggleReorder);
   $("publish").addEventListener("click", openPublishModal);
   $("confirmPublish").addEventListener("click", confirmPublish);

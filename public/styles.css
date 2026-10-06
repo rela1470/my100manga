@@ -16,20 +16,27 @@
   --text: #111111;
   --muted: #6b665b;       /* 紙地・panel-2 の上でも 4.5:1 を満たす濃さ */
 
-  /* pop accents */
-  --accent: #d7001f;      /* 差し色の赤 */
-  --accent-rgb: 215,0,31; /* --accent の RGB（フォーカス枠用） */
-  --accent-2: #b8001a;    /* 本文中のリンク。白背景で 4.5:1 以上 */
-  --accent-3: #1f4fd7;    /* blue */
-  --accent-4: #ffd400;    /* pop yellow */
-  --pop: #ffd400;         /* ヒーロー・ロゴの 100 に使う黄色 */
+  /* pop accents。黄 × 赤は特定の少年誌を強く連想させるので避け、
+     アクア（地）× インディゴ（差し色）にしている。 */
+  --accent: #1f4fd7;      /* 差し色のインディゴ */
+  --accent-rgb: 31,79,215;/* --accent の RGB（フォーカス枠用） */
+  --accent-2: #1a43b8;    /* 本文中のリンク。白背景で 4.5:1 以上 */
+  --accent-3: #6d28d9;    /* purple */
+  --accent-4: #7fe0d4;    /* aqua */
+  --pop: #7fe0d4;         /* ヒーローの地・ロゴの 100 に使うアクア */
+  --hero-bg: var(--pop);  /* ヒーローの地 */
+  --d3-face: var(--accent);  /* 立体の「100」の面 */
+  --d3-side: #0e2a82;        /* 立体の「100」の側面（面より暗く） */
+  /* 集中線の集まる先。見出し「自分を構成する100の漫画」を狙う。 */
+  --shuchu-x: 30%;
+  --shuchu-y: 46%;
   --ok: #0a6e4b;          /* green。白文字を載せるので 4.5:1 以上を保つ */
   --warn: #c77700;
-  --danger: #d7001f;
+  --danger: #d7001f;      /* 削除・警告の赤だけは配色に関係なく残す */
   /* 白文字を載せる塗り用（WCAG AA 4.5:1 以上）。 */
-  --accent-strong: #d7001f;
-  --accent-strong-2: #a80018;
-  --accent-3-strong: #1b3fae;
+  --accent-strong: #1f4fd7;
+  --accent-strong-2: #163aa8;
+  --accent-3-strong: #5b21b6;
   --ok-strong: #0a6e4b;   /* 白文字で 6.3:1 */
   --ok-strong-2: #07543a;
   --warn-text: #8a5300;
@@ -332,15 +339,23 @@ button:disabled { opacity: .45; cursor: not-allowed; transform: none; box-shadow
 .hero {
   position: relative;
   overflow: hidden;
-  background: var(--pop);
+  background: var(--hero-bg);
   border-bottom: 6px solid var(--ink);
 }
-/* 集中線。円錐グラデーションを細い放射状の線にして、中心だけマスクで抜く。 */
+/* 地のアミ点（トーン）。集中線と重ねて紙に刷った感じを出す。 */
+.hero::before {
+  content: "";
+  position: absolute; inset: 0; pointer-events: none; opacity: .1;
+  background-image: radial-gradient(var(--ink) 1.4px, transparent 1.6px);
+  background-size: 10px 10px;
+}
+/* 集中線。円錐グラデーションを細い放射状の線にして、中心だけマスクで抜く。
+   集まる先（--shuchu-x/y）は見出しの「100 の漫画」。線の無い中心が見出しに重なる。 */
 .hero-tone {
-  position: absolute; inset: 0; pointer-events: none; opacity: .5;
-  background: repeating-conic-gradient(from 0deg at 50% 55%, var(--ink) 0deg 0.7deg, transparent 0.7deg 5deg);
-  -webkit-mask-image: radial-gradient(ellipse 60% 55% at 50% 55%, transparent 45%, #000 80%);
-  mask-image: radial-gradient(ellipse 60% 55% at 50% 55%, transparent 45%, #000 80%);
+  position: absolute; inset: 0; pointer-events: none; opacity: .55;
+  background: repeating-conic-gradient(from 0deg at var(--shuchu-x) var(--shuchu-y), var(--ink) 0deg 0.7deg, transparent 0.7deg 5deg);
+  -webkit-mask-image: radial-gradient(ellipse 46% 50% at var(--shuchu-x) var(--shuchu-y), transparent 42%, #000 78%);
+  mask-image: radial-gradient(ellipse 46% 50% at var(--shuchu-x) var(--shuchu-y), transparent 42%, #000 78%);
 }
 .hero-inner {
   position: relative;
@@ -377,11 +392,16 @@ button:disabled { opacity: .45; cursor: not-allowed; transform: none; box-shadow
 }
 .hero-title > span { display: block; }
 .hero-title-row { display: flex; align-items: baseline; flex-wrap: wrap; gap: 0 12px; }
-/* 100 だけ一回り大きく、黒フチの赤で抜く。 */
+/* 100 だけ一回り大きく、黒フチ＋右下へ押し出した立体にする。影を 2px ずつ重ねて
+   側面を作り、いちばん奥に黒を一枚置いて輪郭を締める。 */
 .hero-100 {
-  font-size: 1.9em; line-height: 1; color: var(--accent);
+  font-size: 1.9em; line-height: 1; color: var(--d3-face);
   -webkit-text-stroke: 6px var(--ink);
   paint-order: stroke fill;
+  text-shadow:
+    2px 2px 0 var(--d3-side), 4px 4px 0 var(--d3-side), 6px 6px 0 var(--d3-side),
+    8px 8px 0 var(--d3-side), 10px 10px 0 var(--d3-side), 12px 12px 0 var(--d3-side),
+    14px 14px 0 var(--ink);
 }
 
 .hero-search { display: flex; flex-wrap: wrap; justify-content: center; gap: 12px; max-width: 640px; }
@@ -407,15 +427,31 @@ button:disabled { opacity: .45; cursor: not-allowed; transform: none; box-shadow
 
 /* 進捗メーター。あと何作品かを大きく出し、下の帯で埋まり具合を見せる。 */
 .hero-gauge { flex: 1 1 300px; display: flex; justify-content: center; }
+/* 丸は回しても傾いて見えないので、コマ（四角い枠）ごと傾ける。中の目盛りは枠に対して
+   まっすぐなので、貼り付けたコマが斜めに乗っているように読める。 */
+.hero-gauge-panel {
+  position: relative;
+  padding: 16px;
+  background: var(--panel);
+  border: 5px solid var(--ink);
+  box-shadow: var(--shadow-hard);
+  transform: rotate(-4deg);
+}
+/* コマの地にもトーンを敷く。 */
+.hero-gauge-panel::before {
+  content: "";
+  position: absolute; inset: 0; pointer-events: none; opacity: .1;
+  background-image: radial-gradient(var(--ink) 1.3px, transparent 1.5px);
+  background-size: 9px 9px;
+}
 .hero-gauge-dial {
   position: relative;
-  width: 280px; height: 280px; border-radius: 50%;
-  background: #fff; border: 5px solid var(--ink); box-shadow: var(--shadow-hard);
+  width: 252px; height: 252px; border-radius: 50%;
+  background: #fff; border: var(--bw) solid var(--ink);
   display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 2px;
-  transform: rotate(4deg);
 }
 .hero-gauge-cap { font-weight: 900; font-size: 17px; }
-.hero-gauge-n { font-family: var(--font-display); font-size: 104px; line-height: 1; color: var(--accent); }
+.hero-gauge-n { font-family: var(--font-display); font-size: 96px; line-height: 1; color: var(--accent); }
 .hero-gauge-bar {
   width: 180px; height: 18px; margin-top: 10px;
   border: 3px solid var(--ink); border-radius: var(--radius-pill);
@@ -427,10 +463,13 @@ button:disabled { opacity: .45; cursor: not-allowed; transform: none; box-shadow
 .hero-gauge-dial.ready .hero-gauge-n { color: var(--ok-strong); }
 .hero-gauge-dial.ready .hero-gauge-fill { background: var(--ok-strong); }
 @media (max-width: 560px) {
+  /* 縦積みになるので、集中線の集まる先も見出しの位置（上寄り）へ移す。 */
+  :root { --shuchu-x: 50%; --shuchu-y: 32%; }
   .hero-inner { padding: 36px 16px 44px; gap: 28px; }
   .hero-bubble { font-size: 16px; }
-  .hero-gauge-dial { width: 228px; height: 228px; }
-  .hero-gauge-n { font-size: 84px; }
+  .hero-gauge-panel { padding: 12px; }
+  .hero-gauge-dial { width: 212px; height: 212px; }
+  .hero-gauge-n { font-size: 80px; }
 }
 
 /* ── 本棚（トップのグリッドの枠）──────────────────────────────────── */
@@ -451,6 +490,26 @@ button:disabled { opacity: .45; cursor: not-allowed; transform: none; box-shadow
   display: inline-block; background: var(--ink); color: var(--pop);
   padding: 4px 14px; transform: skewX(-10deg);
 }
+/* 「編集中」は左のタグから言っているように、しっぽ付きの吹き出しで出す。 */
+.shelf-title-say {
+  position: relative;
+  padding: 4px 16px;
+  background: var(--panel);
+  border: var(--bw) solid var(--ink);
+  border-radius: 999px;
+  font-size: .72em;
+}
+.shelf-title-say::before, .shelf-title-say::after {
+  content: ""; position: absolute; top: 50%; width: 0; height: 0;
+  border-top: 7px solid transparent; border-bottom: 7px solid transparent;
+}
+.shelf-title-say::before {
+  left: -16px; margin-top: -7px; border-right: 14px solid var(--ink);
+}
+.shelf-title-say::after {
+  left: -10px; margin-top: -5px; border-top-width: 5px; border-bottom-width: 5px;
+  border-right: 10px solid var(--panel);
+}
 .shelf-actions { display: flex; flex-wrap: wrap; gap: 10px; }
 @media (max-width: 560px) { .shelf-title { font-size: 22px; } }
 
@@ -458,8 +517,13 @@ button:disabled { opacity: .45; cursor: not-allowed; transform: none; box-shadow
   position: relative;
   background: var(--panel);
   border: 5px solid var(--ink);
-  padding: 20px;
-  box-shadow: var(--shadow-hard);
+  padding: 26px;
+  /* 太い外枠の内側に、少し間を空けてもう 1 本細い罫を入れる（コマらしい二重枠）。
+     内罫は inset の影で描くので、レイアウトには影響しない。 */
+  box-shadow:
+    inset 0 0 0 7px var(--panel),
+    inset 0 0 0 10px var(--ink),
+    var(--shadow-hard);
 }
 /* 本棚の地のアミ点（網点）。中身の邪魔をしないよう薄く敷くだけ。 */
 .shelf-tone {
@@ -468,7 +532,10 @@ button:disabled { opacity: .45; cursor: not-allowed; transform: none; box-shadow
   background-size: 11px 11px;
 }
 .shelf > .grid { position: relative; }
-@media (max-width: 560px) { .shelf { padding: 12px; border-width: 4px; } }
+@media (max-width: 560px) {
+  .shelf { padding: 16px; border-width: 4px; }
+  .shelf { box-shadow: inset 0 0 0 5px var(--panel), inset 0 0 0 7px var(--ink), var(--shadow-md); }
+}
 
 .grid {
   display: grid;
@@ -653,7 +720,34 @@ body.admin header.site h1 { font-size: 22px; }
 }
 @media (max-width: 640px) { .stat-grid { grid-template-columns: repeat(2, 1fr); } }
 /* トップの収録数（3 枚固定）。読み込み前は hidden で枠ごと出さない。 */
-.stat-grid.site-stats { grid-template-columns: repeat(3, 1fr); margin: 0 0 16px; }
+/* トップの収録数は 1 本の帯を 3 コマに割ったように見せる（枠を共有し、間は黒い罫で仕切る）。 */
+.stat-grid.site-stats {
+  grid-template-columns: repeat(3, 1fr);
+  gap: 0;
+  margin: 0 0 20px;
+  border: var(--bw) solid var(--ink);
+  border-radius: var(--radius);
+  overflow: hidden;
+  box-shadow: var(--shadow-sm);
+}
+.stat-grid.site-stats .stat-card {
+  position: relative;
+  border: 0;
+  border-right: var(--bw) solid var(--ink);
+  border-radius: 0;
+  box-shadow: none;
+}
+.stat-grid.site-stats .stat-card:last-child { border-right: 0; }
+/* コマの地のトーン。 */
+.stat-grid.site-stats .stat-card::before {
+  content: "";
+  position: absolute; inset: 0; pointer-events: none; opacity: .07;
+  background-image: radial-gradient(var(--ink) 1.2px, transparent 1.4px);
+  background-size: 9px 9px;
+}
+@media (hover: hover) {
+  .stat-grid.site-stats .stat-card:hover { transform: none; box-shadow: none; background: var(--panel-2); }
+}
 .stat-grid.site-stats[hidden] { display: none; }
 @media (max-width: 640px) {
   .stat-grid.site-stats { gap: 8px; }
@@ -2441,7 +2535,23 @@ a.bd-series:hover { background: var(--accent-strong-2); }
   box-shadow: var(--shadow-sm);
 }
 .empty-guide[hidden] { display: none; }
-.empty-guide-title { margin: 0 0 10px; font-family: var(--font-display); font-weight: 400; font-size: 17px; }
+/* 見出しは吹き出し。下向きのしっぽで本文を指す。 */
+.empty-guide-title {
+  position: relative;
+  display: inline-block;
+  margin: 0 0 18px;
+  padding: 6px 18px;
+  background: var(--panel);
+  border: var(--bw) solid var(--ink);
+  border-radius: 999px;
+  font-family: var(--font-display); font-weight: 400; font-size: 17px;
+}
+.empty-guide-title::before, .empty-guide-title::after {
+  content: ""; position: absolute; left: 24px; width: 0; height: 0;
+  border-left: 7px solid transparent; border-right: 11px solid transparent;
+}
+.empty-guide-title::before { bottom: -15px; border-top: 15px solid var(--ink); }
+.empty-guide-title::after { bottom: -9px; border-top: 11px solid var(--panel); }
 .empty-guide-steps { margin: 0 0 10px; padding-left: 1.4em; font-size: 14px; }
 .empty-guide-steps li { margin: 4px 0; }
 .empty-guide-steps b { display: block; }

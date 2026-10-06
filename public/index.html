@@ -57,12 +57,14 @@
         </div>
       </div>
       <div class="hero-gauge">
+        <div class="hero-gauge-panel">
         <div class="hero-gauge-dial" id="heroGauge">
           <span class="hero-gauge-cap">あと</span>
           <span class="hero-gauge-n" id="heroRemaining">100</span>
           <span class="hero-gauge-cap">作品</span>
           <div class="hero-gauge-bar"><div class="hero-gauge-fill" id="heroProgress"></div></div>
           <span class="hero-gauge-sub" id="heroCount">0 / 100</span>
+        </div>
         </div>
       </div>
     </div>
@@ -86,7 +88,7 @@
 
     <!-- 本棚の見出し行。並べ替え・表紙の取得・公開はここに集める（PC では上に貼り付く）。 -->
     <div class="shelf-head">
-      <h2 class="shelf-title"><span class="shelf-title-tag">MY本棚</span>編集中</h2>
+      <h2 class="shelf-title"><span class="shelf-title-tag">MY本棚</span><span class="shelf-title-say">編集中</span></h2>
       <div class="shelf-actions">
         <button id="reorderToggle" style="display:none">並べ替え</button>
         <button id="fetchCovers" style="display:none">表紙を取得</button>
@@ -349,7 +351,6 @@
   <script src="/author-link.js"></script>
   <script src="/affiliate.js"></script>
   <script src="/mylists.js"></script>
-  <script src="/account.js"></script>
   <script src="/share-x.js"></script>
   <script src="/app.js"></script>
 </body>

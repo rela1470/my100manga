@@ -60,6 +60,12 @@ const TO_TOP =
   `b.addEventListener("click",function(){var r=matchMedia("(prefers-reduced-motion: reduce)").matches;` +
   `window.scrollTo({top:0,behavior:r?"auto":"smooth"});});})();</script>`;
 
+// ヘッダー右上の Google ログイン / アカウント表示（public/account.js）。ヘッダーを持つ
+// ページ全部で同じように出したいので、各 HTML に書かずフッターと同じ場所で差し込む
+// （ページ自身の <script> より前に入るので、window.Account を使う app.js / account-page.js
+// から見えている）。admin.html はフッターのプレースホルダを持たないので読まれない。
+const ACCOUNT_SCRIPT = `<script src="/account.js"></script>`;
+
 export function footerHtml(env: Env, withAff = false): string {
   const s = site(env);
   const name = escapeHtml(s.name);
@@ -87,6 +93,7 @@ export function footerHtml(env: Env, withAff = false): string {
     `<button type="button" id="reset-local-data">この端末のデータを初期化</button></p>` +
     `<p class="foot-copy">© 2026 ${name} @rela1470</p>` +
     `</footer>` +
+    ACCOUNT_SCRIPT +
     TO_TOP +
     resetScript(name)
   );

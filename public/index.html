@@ -262,6 +262,18 @@
           </div>
         </div>
       </div>
+      <!-- コメントと操作は本の情報のすぐ下。あらすじ・購入リンクは読み物なので後ろに回す
+           （長いあらすじの下まで行かないと保存できない、という形を避ける）。 -->
+      <textarea id="comment" placeholder="ひとことコメント（任意・200文字まで／URLは入力できません）" maxlength="200"></textarea>
+      <label class="check"><input type="checkbox" id="spoiler"> ネタバレを含む（閲覧時に伏せる）</label>
+
+      <div class="modal-actions">
+        <button id="removeSlot">この作品を削除</button>
+        <div style="flex:1"></div>
+        <button id="cancelEdit">キャンセル</button>
+        <button class="primary" id="saveSlot">更新する</button>
+      </div>
+
       <div class="dsynopsis" id="eSynopsisBox" style="display:none">
         <div class="dsynopsis-title">あらすじ</div>
         <p class="dsynopsis-text" id="eSynopsis"></p>
@@ -273,15 +285,6 @@
         <div class="buy-group" id="eBuyEbook"></div>
         <div class="buy-group" id="eBuyUsed"></div>
         <p class="buy-note">[AD]絶版でも電子書籍なら手に入ることがあります。リンクは各社アフィリエイトを含みます。</p>
-      </div>
-      <textarea id="comment" placeholder="ひとことコメント（任意・200文字まで／URLは入力できません）" maxlength="200"></textarea>
-      <label class="check"><input type="checkbox" id="spoiler"> ネタバレを含む（閲覧時に伏せる）</label>
-
-      <div class="modal-actions">
-        <button id="removeSlot">この作品を削除</button>
-        <div style="flex:1"></div>
-        <button id="cancelEdit">キャンセル</button>
-        <button class="primary" id="saveSlot">更新する</button>
       </div>
     </div>
   </div>
@@ -318,7 +321,12 @@
   <!-- share modal -->
   <div class="modal-backdrop" id="shareModal">
     <div class="modal">
-      <h2>公開しました！</h2>
+      <div class="modal-head">
+        <h2>公開しました！</h2>
+        <div class="modal-head-actions">
+          <button id="closeShare">閉じる</button>
+        </div>
+      </div>
       <p class="hint">共有用URL（このリストを見てもらう）</p>
       <div class="share-url">
         <input type="text" id="shareUrl" readonly>
@@ -338,7 +346,6 @@
       <div class="modal-actions">
         <div style="flex:1"></div>
         <a id="openShare" class="button primary" href="#" target="_blank" rel="noopener">開いて確認</a>
-        <button id="closeShare">閉じる</button>
       </div>
     </div>
   </div>
@@ -346,7 +353,12 @@
   <!-- cover picker modal (used from the edit modal, pre-publish) -->
   <div class="modal-backdrop" id="pickModal">
     <div class="modal">
-      <h2>表紙を選ぶ</h2>
+      <div class="modal-head">
+        <h2>表紙を選ぶ</h2>
+        <div class="modal-head-actions">
+          <button type="button" id="cancelPick">閉じる</button>
+        </div>
+      </div>
       <p class="hint" id="pickTitle"></p>
       <div class="share-url">
         <input type="text" id="coverSearch" placeholder="キーワードで表紙を検索（例: 作品名 巻数）">
@@ -362,8 +374,6 @@
       <div class="modal-actions">
         <button type="button" id="clearCover">表紙をクリア</button>
         <button type="button" id="skipFix" style="display:none">スキップ</button>
-        <div style="flex:1"></div>
-        <button type="button" id="cancelPick">閉じる</button>
       </div>
     </div>
   </div>
@@ -374,6 +384,7 @@
   <script src="/turnstile.js"></script>
   <script src="/suggest.js"></script>
   <script src="/cover-fit.js"></script>
+  <script src="/cover-zoom.js"></script>
   <script src="/author-link.js"></script>
   <script src="/affiliate.js"></script>
   <script src="/mylists.js"></script>

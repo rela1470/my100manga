@@ -1302,6 +1302,17 @@ function renderCoverInto(box, book) {
       img.replaceWith(d);
     };
     applyCover(img, book.cover_url);
+    // 表紙は枠に合わせて切り抜いているので、押したら切れていない全体を拡大で出す
+    // （public/cover-zoom.js。出典と著作権表示つき）。meta は /api/book が返ったあとに
+    // 埋まることがあるので、開くたびに読み直せるよう関数で渡す。
+    if (window.attachCoverZoom) {
+      window.attachCoverZoom(img, {
+        coverUrl: book.cover_url,
+        isbn: book.isbn,
+        title: book.title,
+        meta: () => ({ pubdate: book.pubdate, author: book.author, publisher: book.publisher }),
+      });
+    }
     box.appendChild(img);
   } else {
     const d = document.createElement("div");

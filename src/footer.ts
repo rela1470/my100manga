@@ -41,11 +41,11 @@ const resetScript = (name: string) =>
 
 // 並び: ページへのリンク → 出典（MADB・書影の取得元）→ API の公式クレジットと端末データの初期化。
 // 下 2 段は小さく薄く出す（必要な表記だが目立たせない）。
+// 運営者のページへは、リンク一覧ではなく下のコピーライトの行から辿る。
 const FOOT_LINKS = [
   { href: "/books-guide", label: "追加できる本" },
   { href: "/terms", label: "利用規約" },
   { href: "/privacy", label: "プライバシーポリシー" },
-  { href: "/operator", label: "運営者" },
 ];
 
 // 右下の「ページの先頭へ」ボタン（PC のみ。表示条件は styles.css の .to-top）。少しスクロール
@@ -91,7 +91,7 @@ export function footerHtml(env: Env, withAff = false): string {
     `<p class="foot-source"><a href="/about">${source}</a></p>` +
     `<p class="foot-credits">${credits}` +
     `<button type="button" id="reset-local-data">この端末のデータを初期化</button></p>` +
-    `<p class="foot-copy">© 2026 ${name} @rela1470</p>` +
+    `<p class="foot-copy"><a href="/operator">© 2026 ${name} @rela1470</a></p>` +
     `</footer>` +
     ACCOUNT_SCRIPT +
     TO_TOP +

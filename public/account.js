@@ -293,7 +293,13 @@
       const a = document.createElement("a");
       a.className = "account-login";
       a.href = loginUrl();
-      a.textContent = "Googleでログイン";
+      // 狭い画面では「Googleで」を畳んで「ログイン」だけにする（1 行目の右端に収めるため。
+      // 畳む指定は public/styles.css の .account-login-long）。
+      a.setAttribute("aria-label", "Googleでログイン");
+      const long = document.createElement("span");
+      long.className = "account-login-long";
+      long.textContent = "Googleで";
+      a.append(long, "ログイン");
       bar.appendChild(a);
     } else {
       const btn = document.createElement("button");

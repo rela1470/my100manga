@@ -445,7 +445,9 @@ button:disabled { opacity: .45; cursor: not-allowed; transform: none; box-shadow
   line-height: 1.05; font-size: clamp(34px, 6vw, 80px);
 }
 .hero-title > span { display: block; }
-.hero-title-row { display: flex; align-items: baseline; flex-wrap: wrap; gap: 0 12px; }
+.hero-title-row { display: flex; align-items: baseline; flex-wrap: wrap; gap: 0 10px; }
+/* 押し出した影が右下へ伸びるので、その分だけ右に余白を足して「の」と重ならないようにする。 */
+.hero-100 { margin-right: .14em; }
 /* 100 だけ一回り大きく、黒フチ＋右下へ押し出した立体にする。影を 2px ずつ重ねて
    側面を作り、いちばん奥に黒を一枚置いて輪郭を締める。 */
 .hero-100 {
@@ -454,7 +456,7 @@ button:disabled { opacity: .45; cursor: not-allowed; transform: none; box-shadow
      （background-clip: text でのグラデーションは試したが、塗りが行ボックスに縛られて
        字の上が欠けるうえ、面が透明になって影の色が透けるのでやめた。） */
   font-size: 1.9em; line-height: 1; color: var(--accent);
-  -webkit-text-stroke: .07em var(--ink);
+  -webkit-text-stroke: 6px var(--ink);
   paint-order: stroke fill;
   /* 側面は 1 色（ブルー）。段階的に色を変えるとグラデーションになって、他の面と合わない。 */
   text-shadow:
@@ -485,16 +487,27 @@ button:disabled { opacity: .45; cursor: not-allowed; transform: none; box-shadow
 .hero-search > button:active { transform: translate(6px, 6px); box-shadow: none; }
 
 /* 進捗メーター。あと何作品かを大きく出し、下の帯で埋まり具合を見せる。 */
-.hero-gauge { flex: 1 1 340px; display: flex; justify-content: center; }
+.hero-gauge {
+  flex: 1 1 340px; display: flex; justify-content: center;
+  /* box-shadow は切り抜いた形に沿わないので、形に沿う drop-shadow で影を出す。 */
+  filter: drop-shadow(9px 9px 0 var(--ink));
+}
 /* 右側は漫画の一コマとして組む。黒い枠の中に集中線とアミ点を敷き、その上に吹き出しを
    置いて、しっぽをコマの内側（左下）へ向ける。枠の外に吹き出しが浮いているより、
    「このコマの中で誰かが言っている」ように読める。 */
+/* 四隅をわずかにずらした四角。きっちりした長方形だと「枠」に見えず、コマに見えない。 */
 .hero-panel {
   position: relative;
   width: 100%; max-width: 384px; height: 330px;
+  /* 黒い面を切り抜いて枠にする（clip-path では border が引けないため）。 */
+  background: var(--ink);
+  clip-path: polygon(0% 3.5%, 97.5% 0%, 100% 94%, 2.5% 100%);
+}
+/* 枠の内側。少しだけ小さい同じ形にして、黒が縁として残るようにする。 */
+.hero-panel-inner {
+  position: absolute; inset: 5px;
   background: var(--accent-4);
-  border: 5px solid var(--ink);
-  box-shadow: var(--shadow-hard);
+  clip-path: polygon(0% 3.5%, 97.5% 0%, 100% 94%, 2.5% 100%);
   overflow: hidden;
 }
 /* コマの中の集中線。吹き出しの後ろから放射させる。 */
@@ -505,7 +518,7 @@ button:disabled { opacity: .45; cursor: not-allowed; transform: none; box-shadow
   mask-image: radial-gradient(ellipse 54% 52% at 60% 34%, transparent 36%, #000 76%);
 }
 /* コマの下半分はアミ点で沈めて、奥行きを出す。 */
-.hero-panel::after {
+.hero-panel-inner::after {
   content: "";
   position: absolute; inset: 0; pointer-events: none; opacity: .2;
   background-image: radial-gradient(var(--ink) 1.5px, transparent 1.8px);
@@ -556,7 +569,9 @@ button:disabled { opacity: .45; cursor: not-allowed; transform: none; box-shadow
   :root { --shuchu-x: 50%; --shuchu-y: 32%; }
   .hero-inner { padding: 36px 16px 44px; gap: 28px; }
   .hero-bubble { font-size: 16px; }
-  .hero-gauge-balloon { width: 262px; padding: 16px 20px 18px; }
+  /* 幅を固定するとコマとの余白の取り方が PC と変わってしまうので、PC と同じ
+     「コマ幅 - 余白」のままにして、中の字だけ小さくする。 */
+  .hero-gauge-balloon { padding: 16px 20px 18px; }
   .hero-gauge-n { font-size: 72px; }
   .hero-gauge-bar { width: 168px; }
 }

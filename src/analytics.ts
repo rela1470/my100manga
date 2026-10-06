@@ -101,6 +101,15 @@ export function injectVersion(html: string, v: string): string {
 export function applySiteIdentity(html: string, env: Env, origin: string): string {
   const s = site(env);
   let out = html.replace(/<html\b(?![^>]*\bdata-site=)/, `<html data-site="${s.variant}"`);
+  // 配信オリジンが本家ドメインと違うとき（dev 等）は、リンクプレビューの画像だけ配信側へ
+  // 向ける。そうしないと dev を見ていても本番の画像が出て、変更の確認ができない。
+  // canonical / og:url は本家のまま（検索の正規化先を動かさないため）。
+  if (origin !== GENERAL_ORIGIN) {
+    out = out.replace(
+      /(<meta (?:property="og:image"|name="twitter:image") content=")([^"]*)(")/g,
+      (_m, head, url, tail) => head + url.replace(GENERAL_ORIGIN, origin) + tail
+    );
+  }
   if (s.variant !== "general") {
     out = out
       // <h1>My <span class="accent">100</span> Manga</h1> のように要素で割れている表記は

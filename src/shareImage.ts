@@ -38,7 +38,7 @@ export type ShareVariant = "og" | "full" | "q1" | "q2" | "q3" | "q4";
 export const SHARE_VARIANTS: readonly ShareVariant[] = ["og", "full", "q1", "q2", "q3", "q4"];
 
 // Bump to regenerate every stored image after a design change.
-const LAYOUT_VERSION = 4;
+const LAYOUT_VERSION = 5;
 const CELLS = 100;
 const COVER_CONCURRENCY = 10;
 const MAX_NAME_CHARS = 16;

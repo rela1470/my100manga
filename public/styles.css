@@ -8,9 +8,10 @@
 :root {
   /* surfaces */
   --bg: #ffffff;
-  --bg-tint: var(--bg);
   --panel: #ffffff;
-  --panel-2: #fdf6e3;     /* クリーム色の面（はじめかたの地・押した状態） */
+  /* 少し沈んだ面（ボタンのホバー・候補・表紙の下地）。はじめ方の地を水色にしたので
+     クリーム色はここだけ浮いていた。配色に合わせた灰みの水色にする。 */
+  --panel-2: #f1f6f9;
   --border: #e2ded2;      /* 表や区切りの細い罫線。コマ枠の黒は --ink を使う */
   --ink: #111111;         /* コマ枠・ベタ・本文の黒 */
   --text: #111111;
@@ -22,14 +23,12 @@
   --accent-rgb: 232,48,138;/* --accent の RGB（フォーカス枠用） */
   --accent-2: #c01a6e;    /* 本文中のリンク。白背景で 4.5:1 以上 */
   --accent-3: #27a3dc;    /* ブルー（爆発・アイコン） */
-  --accent-4: #bfe6f7;    /* 空の水色（ヒーローの飾り） */
-  --pop: #ffd93b;         /* 黄。追加タイル・ホバーの地 */
+  --accent-4: #bfe6f7;    /* 空の水色（ヒーローの飾り・コマの地） */
   --hero-bg: #ffffff;     /* ヒーローの地（白。集中線とトーンは黒で刷る） */
-  --d3-side: #2b2b6e;        /* 立体の「100」の側面 */
   /* 集中線の集まる先。見出し「自分を構成する100の漫画」を狙う。 */
   --shuchu-x: 30%;
   --shuchu-y: 46%;
-  --ok: #0a6e4b;          /* green。白文字を載せるので 4.5:1 以上を保つ */
+  /* green。白文字を載せるので 4.5:1 以上を保つ */
   --warn: #c77700;
   --danger: #d7001f;      /* 削除・警告の赤だけは配色に関係なく残す */
   /* 白文字を載せる塗り用（WCAG AA 4.5:1 以上）。 */
@@ -79,7 +78,6 @@
    TODO(R18): 仮の配色。デザインが決まったら詰める（白文字を載せる *-strong は 4.5:1 以上を保つ）。 */
 :root[data-site="adult"] {
   --bg: #fff5f9;
-  --bg-tint: radial-gradient(1200px 600px at 50% -200px, #ffe0ef 0%, rgba(255,224,239,0) 60%), var(--bg);
   --panel-2: #fdeef5;
   --border: #f5dbe7;
   --text: #2a1620;
@@ -90,8 +88,6 @@
   --accent-2: #a21caf;    /* fuchsia (links)。白背景で 4.5:1 以上 */
   --accent-strong: #be185d;
   --accent-strong-2: #9d174d;
-  /* ヒーローの地とロゴの 100。本家の黄色はピンクの地に合わないので淡いピンクにしてある。 */
-  --pop: #ffc9de;
 }
 
 * { box-sizing: border-box; }
@@ -106,12 +102,12 @@ body {
 /* 地のトーン。マスクで数か所だけに出す。::before は細かいアミ点、::after は斜線。
    模様ごとに疑似要素を分けているのは、1 つにまとめると全部のパッチに全部の模様が
    重なってしまうため。パネルは不透明なので、見えるのは主に本文の外側の余白。 */
-body::before, body::after {
+body:not(.admin)::before, body:not(.admin)::after {
   content: "";
   position: fixed; inset: 0;
   pointer-events: none; z-index: -1;
 }
-body::before {
+body:not(.admin)::before {
   background-image: radial-gradient(var(--ink) 1.4px, transparent 1.7px);
   background-size: 10px 10px;
   opacity: .2;
@@ -122,7 +118,7 @@ body::before {
     radial-gradient(ellipse 230px 190px at 2% 26%, #000 40%, transparent 74%),
     radial-gradient(ellipse 190px 240px at 99% 70%, #000 40%, transparent 74%);
 }
-body::after {
+body:not(.admin)::after {
   background-image: repeating-linear-gradient(-38deg, var(--ink) 0 2px, transparent 2px 11px);
   opacity: .14;
   -webkit-mask-image:
@@ -211,7 +207,7 @@ header.site .header-link {
   color: #fff; font-size: 14px; font-weight: 700; text-decoration: none;
   transition: background var(--dur) var(--ease), border-color var(--dur) var(--ease), color var(--dur) var(--ease);
 }
-header.site .header-link:hover { background: var(--pop); border-color: var(--pop); color: var(--ink); }
+header.site .header-link:hover { background: var(--panel); border-color: var(--panel); color: var(--ink); }
 header.site .header-link-icon { display: inline-flex; line-height: 1; }
 header.site .header-link-icon svg { display: block; }
 /* 狭い幅では 2 列の格子にして、ボタンの幅と行数をそろえる（字数任せに折り返すと
@@ -239,7 +235,7 @@ header.site .header-link-icon svg { display: block; }
   color: #fff; font-size: 12px; font-weight: 700; text-decoration: none;
   cursor: pointer;
 }
-.account-login:hover, .account-chip:hover { background: var(--pop); border-color: var(--pop); color: var(--ink); }
+.account-login:hover, .account-chip:hover { background: var(--panel); border-color: var(--panel); color: var(--ink); }
 .account-chip img { width: 22px; height: 22px; border-radius: 50%; margin-left: -6px; }
 .account-chip span { max-width: 9em; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .account-menu {
@@ -423,16 +419,6 @@ button:disabled { opacity: .45; cursor: not-allowed; transform: none; box-shadow
   transform: skewX(-10deg);
 }
 @media (max-width: 900px) { .hero-deco { display: none; } }
-/* 縦積みになる幅では、横に並ぶ相棒（メーターのコマ）が無くなるので、見出しまわりを
-   中央にそろえて一回り大きく出す。左寄せのままだと右側が間延びして見える。
-   幅を直接いじるとヒーロー内の検索欄が縮むので、そろえるのは文字の寄せだけにする。 */
-@media (max-width: 900px) {
-  .hero-copy { text-align: center; }
-  .hero-bubble { align-self: center; }
-  /* 「100の漫画」が 1 行に収まる範囲でいっぱいに大きくする（およそ 8em 必要）。 */
-  .hero-title { font-size: clamp(32px, 10.5vw, 54px); }
-  .hero-title-row { justify-content: center; }
-}
 .hero-gutter {
   position: absolute; left: -12%; right: -12%; top: 6%;
   height: 18px; background: var(--panel);
@@ -468,8 +454,6 @@ button:disabled { opacity: .45; cursor: not-allowed; transform: none; box-shadow
 }
 .hero-title > span { display: block; }
 .hero-title-row { display: flex; align-items: baseline; flex-wrap: wrap; gap: 0 10px; }
-/* 押し出した影が右下へ伸びるので、その分だけ右に余白を足して「の」と重ならないようにする。 */
-.hero-100 { margin-right: .14em; }
 /* 100 だけ一回り大きく、黒フチ＋右下へ押し出した立体にする。影を 2px ずつ重ねて
    側面を作り、いちばん奥に黒を一枚置いて輪郭を締める。 */
 .hero-100 {
@@ -478,6 +462,8 @@ button:disabled { opacity: .45; cursor: not-allowed; transform: none; box-shadow
      （background-clip: text でのグラデーションは試したが、塗りが行ボックスに縛られて
        字の上が欠けるうえ、面が透明になって影の色が透けるのでやめた。） */
   font-size: 1.9em; line-height: 1; color: var(--accent);
+  /* 押し出した影が右下へ伸びるので、その分だけ右に余白を足して「の」と重ならないようにする。 */
+  margin-right: .14em;
   -webkit-text-stroke: 6px var(--ink);
   paint-order: stroke fill;
   /* 側面は 1 色（ブルー）。段階的に色を変えるとグラデーションになって、他の面と合わない。 */
@@ -551,6 +537,18 @@ button:disabled { opacity: .45; cursor: not-allowed; transform: none; box-shadow
 /* 100 作品そろったら緑にして、公開できることを一目で分かるようにする（公開ボタンと同じ色）。 */
 .hero-gauge-balloon.ready .hero-gauge-n { color: var(--ok-strong); }
 .hero-gauge-balloon.ready .hero-gauge-fill { background: var(--ok-strong); }
+/* 縦積みになる幅では、横に並ぶ相棒（メーターのコマ）が無くなるので、見出しまわりを
+   中央にそろえて一回り大きく出す。左寄せのままだと右側が間延びして見える。
+   幅を直接いじるとヒーロー内の検索欄が縮むので、そろえるのは文字の寄せだけにする。 */
+@media (max-width: 900px) {
+  .hero-copy { text-align: center; }
+  .hero-bubble { align-self: center; }
+  /* 「100の漫画」が 1 行に収まる範囲でいっぱいに大きくする（およそ 8em 必要）。 */
+  .hero-title { font-size: clamp(32px, 10.5vw, 54px); }
+  .hero-title-row { justify-content: center; }
+  /* 見出しだけ中央だと、下の検索欄が左に残って揃って見えない。 */
+  .hero-search { margin-inline: auto; }
+}
 @media (max-width: 560px) {
   /* 縦積みになるので、集中線の集まる先も見出しの位置（上寄り）へ移す。 */
   :root { --shuchu-x: 50%; --shuchu-y: 32%; }
@@ -897,7 +895,7 @@ a.stat-card.stat-link .k::after { content: " ›"; }
 .admin-table td.label-tag-cell select {
   font-weight: 700;
   color: var(--muted);
-  border: 1.5px solid var(--line);
+  border: 1.5px solid var(--border);
   border-radius: 8px;
   padding: 2px 6px;
   background: var(--panel);
@@ -1580,7 +1578,7 @@ h3.mylists-title { margin-top: 24px; font-size: 14px; }
   margin: 6px 8px;
   font-family: var(--font-display);
   font-size: 12px;
-  color: #4c7a90;
+  color: #3a6377;
 }
 /* 全部同じ水色だと整いすぎるので、薄いピンクを混ぜる。1 つの周期だけだと列数によっては
    縦縞に見えるので、列数と互いに素になりやすい 7 / 11 / 13 を重ねて散らす。 */
@@ -2045,7 +2043,7 @@ html:has(.modal-backdrop.open) { overflow: hidden; }
 .search-subtitle .tag-pick {
   display: flex; flex-wrap: wrap; align-items: center; gap: 8px;
   margin: 6px 0 0; padding: 8px 10px;
-  background: var(--panel-2); border: 1px solid var(--line); border-radius: var(--radius-sm);
+  background: var(--panel-2); border: 1px solid var(--border); border-radius: var(--radius-sm);
 }
 .search-subtitle .tag-pick .hint { margin: 0; }
 .search-subtitle .tag-pick button { font-weight: 700; }
@@ -2243,11 +2241,11 @@ footer.site .foot-links {
   font-size: 14px; font-weight: 700;
 }
 footer.site .foot-links a { color: #fff; text-decoration: none; }
-footer.site .foot-links a:hover { color: var(--pop); text-decoration: underline; }
+footer.site .foot-links a:hover { color: var(--accent-4); text-decoration: underline; }
 footer.site .aff-disclosure { margin-top: 12px; font-size: 12px; }
 footer.site .foot-source { margin-top: 12px; font-size: 12px; }
 footer.site .foot-source a { color: inherit; text-decoration: none; }
-footer.site .foot-source a:hover { color: var(--pop); text-decoration: underline; }
+footer.site .foot-source a:hover { color: var(--accent-4); text-decoration: underline; }
 /* 楽天・Yahoo! の公式クレジット（src/footer.ts。中身の HTML は規定のまま変えないので外側から整える）。 */
 footer.site .foot-credits { font-size: 12px; }
 footer.site .foot-credits a { color: #d9d6cc; }
@@ -2256,7 +2254,7 @@ footer.site .foot-credits button {
   background: none; border: none; padding: 0; margin: 0;
   color: #d9d6cc; font: inherit; text-decoration: underline; cursor: pointer;
 }
-footer.site .foot-credits button:hover { color: var(--pop); }
+footer.site .foot-credits button:hover { color: var(--accent-4); }
 footer.site .foot-copy {
   margin-top: 18px;
   font-family: var(--font-display); font-size: 16px; color: #fff;
@@ -2269,13 +2267,13 @@ footer.site .foot-copy {
     display: flex; align-items: center; justify-content: center;
     position: fixed; right: 24px; bottom: 24px; z-index: 30;
     width: 46px; height: 46px; padding: 0; border-radius: 50%;
-    border: var(--bw) solid var(--ink); background: var(--pop); color: var(--ink);
+    border: var(--bw) solid var(--ink); background: var(--accent); color: #fff;
     box-shadow: var(--shadow-sm);
     cursor: pointer; opacity: 0; visibility: hidden; transform: translateY(8px);
     transition: opacity .2s, transform .2s, visibility .2s;
   }
   .to-top.show { opacity: 1; visibility: visible; transform: none; }
-  .to-top:hover { background: var(--accent); color: #fff; }
+  .to-top:hover { background: var(--accent-strong-2); color: #fff; }
   .to-top:focus-visible { outline: 3px solid rgba(37, 99, 235, .4); outline-offset: 2px; }
 }
 html:has(.modal-backdrop.open) .to-top { display: none; }

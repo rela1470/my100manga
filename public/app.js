@@ -116,14 +116,17 @@ function openSeriesFromUrl(params) {
 function openSearchFromUrl(params) {
   const q = (params.get("q") || "").trim();
   if (!q) return;
+  // by=creator = 作者名検索（詳細ポップアップの作者リンク。public/author-link.js）。
+  const by = params.get("by") === "creator" ? "creator" : "title";
   params.delete("q");
+  params.delete("by");
   const qs = params.toString();
   history.replaceState(null, "", location.pathname + (qs ? `?${qs}` : "") + location.hash);
   if (q.length < 2) return;
   $("topSearch").value = q;
   syncTopSearchClear();
   openAdd();
-  doSearch(q);
+  doSearch(q, by);
 }
 
 /* ---------- site stats (収録シリーズ / 巻 / 公開リスト数) ---------- */
@@ -784,8 +787,8 @@ function filledSlot(it, i) {
   return cell;
 }
 
-// Cover, spoiler/comment badges and title/comment meta — shared by the normal and
-// reorder renderings of a filled slot.
+// Cover, spoiler/comment badges and title — shared by the normal and reorder
+// renderings of a filled slot.
 function appendCoverMeta(slot, it) {
   const badges = document.createElement("div");
   badges.className = "badges";
@@ -809,12 +812,7 @@ function appendCoverMeta(slot, it) {
   t.className = "t";
   t.textContent = it.title;
   meta.appendChild(t);
-  if (it.comment) {
-    const c = document.createElement("div");
-    c.className = "c";
-    c.textContent = it.comment;
-    meta.appendChild(c);
-  }
+  // コメントはカードには出さない（タップで出る詳細に入っている）。有無は上のバッジで示す。
   slot.appendChild(meta);
 }
 
@@ -942,6 +940,7 @@ const FIELD_NAME = { title: "作品名", date: "発行日", author: "作者" };
 
 // ISBN → {date, author}（/api/sort-keys）。リストの項目は発行日を持たないので、押された
 // ときだけ引いてセッション中は覚えておく（同じ本を並べ替え直すたびに往復しない）。
+// 引けなかった値は覚えない（詳細ポップアップを開くなどで後から引けるようになることがある）。
 const sortKeys = new Map();
 let sorting = false;
 
@@ -955,21 +954,28 @@ function sortValue(it, field) {
   return (extra && extra.date) || "";
 }
 
-// 足りない分だけ /api/sort-keys に聞く。引けなかった本は「分からない」として覚えない
-// （次に押したときに引き直す）。通信そのものが失敗したら false。
-async function loadSortKeys(items) {
-  const need = [...new Set(items.map((it) => it.isbn).filter((isbn) => isbn && !sortKeys.has(isbn)))];
+// その並べ替えに要る値（field）が埋まらない本だけ /api/sort-keys に聞く。引けた値だけを
+// 覚え、引けなかった本は「分からない」として覚えないので、次に押したときに引き直す
+// （サーバ側も分からない巻をそのとき楽天に引きに行く）。通信そのものが失敗したら false。
+async function loadSortKeys(items, field) {
+  const need = [...new Set(items.filter((it) => it.isbn && !sortValue(it, field)).map((it) => it.isbn))];
   if (!need.length) return true;
   try {
     const res = await fetch("/api/sort-keys", {
       method: "POST",
       headers: { "content-type": "application/json" },
-      body: JSON.stringify({ isbns: need }),
+      body: JSON.stringify({ isbns: need, field }),
     });
     if (!res.ok) return false;
     const data = await res.json();
     const keys = data.keys || {};
-    for (const isbn of need) sortKeys.set(isbn, keys[isbn] || { date: "", author: "" });
+    // 発行日順で引いた作者（その逆も）も覚えるので、もう一方で並べ替え直すときに往復しない。
+    for (const isbn of need) {
+      const got = keys[isbn];
+      if (!got) continue;
+      const cur = sortKeys.get(isbn) || { date: "", author: "" };
+      sortKeys.set(isbn, { date: got.date || cur.date, author: got.author || cur.author });
+    }
     return true;
   } catch {
     return false;
@@ -986,7 +992,12 @@ async function applySort(value) {
   try {
     // 値を持たない本が 1 冊でもあればサーバに聞く（作者はリスト項目が持っていることも多い）。
     if (spec.field !== "title" && state.items.some((it) => !sortValue(it, spec.field))) {
-      if (!(await loadSortKeys(state.items))) {
+      // マスタに無い巻はサーバが楽天まで引きに行くので数秒かかることがある。待たせている
+      // 間、押したのに何も起きていないように見せない（並べ替えのトーストで置き換わる）。
+      const hide = uiToast(`${FIELD_NAME[spec.field]}を調べています…`, { duration: 30000 });
+      const ok = await loadSortKeys(state.items, spec.field);
+      hide();
+      if (!ok) {
         uiAlert(`${FIELD_NAME[spec.field]}を取得できませんでした。時間をおいてもう一度お試しください。`);
         return;
       }
@@ -1135,6 +1146,28 @@ function closeSearch() {
   state.pending = null;
 }
 
+/* ---------- 詳細ポップアップの作者欄 ---------- */
+// 作者名ごとに「その作者の作品を探す」リンクにする（public/author-link.js）。トップには
+// 検索フォームがあるので遷移せず、その場で作者名検索（by=creator）に差し替える。
+function setDetailAuthor(id, text) {
+  const el = $(id);
+  const shown = window.renderAuthorLinks
+    ? window.renderAuthorLinks(el, text, { onPick: searchCreator })
+    : ((el.textContent = text), !!text);
+  el.style.display = shown ? "" : "none";
+}
+
+// 作者名で引き直す。結果は検索モーダルに出すので、上に開いている詳細（巻詳細・編集）は
+// 場所を譲って閉じる（どちらも閉じるだけの操作なので、キャンセルと同じ扱い）。
+function searchCreator(name) {
+  closeVolumeDetail();
+  closeEdit();
+  $("topSearch").value = name;
+  syncTopSearchClear();
+  openAdd();
+  doSearch(name, "creator");
+}
+
 /* ---------- edit slot modal (閲覧画面と同じ表示) ---------- */
 // Bumped on every open so a slow /api/book response for a previously-opened book
 // can't overwrite the metadata of the one now showing.
@@ -1148,8 +1181,7 @@ function openEdit(index) {
   const seq = ++editSeq;
 
   $("eTitle").textContent = it.title || "";
-  $("eAuthor").textContent = it.author || "";
-  $("eAuthor").style.display = it.author ? "" : "none";
+  setDetailAuthor("eAuthor", it.author || "");
   setMetaRow("eIsbnRow", "eIsbn", it.isbn || "");
   setMetaRow("ePublisherRow", "ePublisher", "");
   setMetaRow("ePubdateRow", "ePubdate", "");
@@ -1273,8 +1305,7 @@ async function loadEditMeta(it, seq) {
 // opts.keepAuthor: 役割付きの全作者（巻一覧の creators）を出していれば上書きしない。
 function applyBookMeta(data, p = "e", opts = {}) {
   if (!opts.keepAuthor && Array.isArray(data.authors) && data.authors.length) {
-    $(p + "Author").textContent = data.authors.join("、");
-    $(p + "Author").style.display = "";
+    setDetailAuthor(p + "Author", data.authors.join("、"));
   }
   // 巻一覧のマスタ値を先に出している（巻詳細）ので、空の応答では消さない。
   if (data.publisher || p !== "v") setMetaRow(p + "PublisherRow", p + "Publisher", data.publisher || "");
@@ -4179,9 +4210,7 @@ function openVolumeDetail(v, opts) {
   const seq = ++volSeq;
   $("vTitle").textContent = volLabel(v);
   // creators = 役割付きの全作者（"原作：A、作画：B"）。巻一覧の行と同じ表記にする。
-  const author = v.creators || v.author || "";
-  $("vAuthor").textContent = author;
-  $("vAuthor").style.display = author ? "" : "none";
+  setDetailAuthor("vAuthor", v.creators || v.author || "");
   setMetaRow("vVolRow", "vVol", withSubtitle(v.volume_number || "", v.subtitle));
   setMetaRow("vPublisherRow", "vPublisher", v.publisher || "");
   setMetaRow("vLabelRow", "vLabel", v.label || "");
@@ -4605,7 +4634,7 @@ async function doPublish() {
       ok = true;
       setPublishing(false);
       $("publishModal").classList.remove("open");
-      showShare(state.editSlug, state.editToken);
+      goToPublished(state.editSlug, state.editToken);
     } else {
       const payload = { owner_name: state.owner, bio: state.bio, unlisted: state.unlisted, items };
       if (state.customSlug) payload.slug = state.customSlug;
@@ -4644,11 +4673,32 @@ async function doPublish() {
   }
 }
 
+// 更新した後は編集画面に留めず、公開ページ（/l/<slug>）へ送る。編集画面と公開ページは
+// 見た目が近く、更新できたのかどうかが分かりづらかったため。「更新しました」の通知は
+// 遷移先で出す（sessionStorage に印を置いて public/view.js が拾う）。編集トークンも
+// 一緒に渡して、公開ページに「編集する」が出る状態にしておく。
+const UPDATED_KEY = "my100manga_updated"; // sessionStorage。public/view.js と共通
+
+function goToPublished(slug, token) {
+  const url = `/l/${encodeURIComponent(slug)}`;
+  try {
+    sessionStorage.setItem(UPDATED_KEY, slug);
+    sessionStorage.setItem(EDIT_TOKEN_KEY, JSON.stringify({ slug, t: token }));
+    location.href = url;
+  } catch (e) {
+    // sessionStorage が使えない環境。トークンは URL で渡す（遷移先の <head> ですぐ消える）。
+    location.href = `${url}?t=${encodeURIComponent(token)}&updated=1`;
+  }
+}
+
 /* ---------- 公開後の共有モーダル ---------- */
 // 編集用URLは失くすと別の端末から編集できなくなるので、背景クリックでは閉じない。
 // 編集用URLを一度もコピーしないまま閉じようとしたら確認する（Esc も同じ）。
+// ただしログイン中はアカウント側にリストが保存されていて、どの端末からでも
+// 「あなたのリスト」から編集に戻れる。控えを取る必要が無いので確認は出さない。
 let shareSlug = null;
 let editUrlCopied = false;
+let shareEditOptional = false;
 
 async function showShare(slug, token) {
   shareSlug = slug;
@@ -4661,21 +4711,26 @@ async function showShare(slug, token) {
   for (const id of ["copyShare", "copyEdit"]) resetCopyButton($(id));
   // 注意書き: ログイン中はアカウントに保存されるので、警告色ではなく案内にする。
   const warn = $("editUrlWarn");
+  const hint = $("editUrlHint");
   if (warn._orig == null) warn._orig = warn.innerHTML; // 未ログイン時の文面（index.html）
+  if (hint._orig == null) hint._orig = hint.textContent;
   const me = window.Account ? await window.Account.ready.catch(() => null) : null;
-  if (me && me.user) {
+  shareEditOptional = !!(me && me.user);
+  if (shareEditOptional) {
     warn.classList.add("safe");
-    warn.textContent = "ログイン中のGoogleアカウントに保存されました。どの端末からでもトップの「あなたのリスト」から編集できます。念のためこのリンクも控えておくと安心です。";
+    warn.textContent = "ログイン中のGoogleアカウントに保存されました。どの端末からでもトップの「あなたのリスト」から編集できます。";
+    hint.textContent = "編集用URL（あなただけが編集できます。ログアウト中の端末から編集したいときに使えます）";
   } else {
     warn.classList.remove("safe");
     warn.innerHTML = warn._orig;
+    hint.textContent = hint._orig;
     $("editUrlWarnLogin").hidden = !(me && me.enabled);
   }
   $("shareModal").classList.add("open");
 }
 
 async function requestCloseShare() {
-  if (!editUrlCopied) {
+  if (!editUrlCopied && !shareEditOptional) {
     const ok = await uiConfirm(
       "編集用URLをまだコピーしていません。\n失くすと、ほかの端末からはこのリストを編集できなくなります（この端末ではトップから編集に戻れます）。\n閉じてもよいですか？",
       { okLabel: "閉じる", cancelLabel: "戻ってコピーする" }

@@ -129,7 +129,7 @@ header.site .header-link {
   transition: transform var(--dur) var(--ease-bounce), box-shadow var(--dur) var(--ease), background var(--dur) var(--ease);
 }
 header.site .header-link:hover {
-  transform: translateY(-1px); box-shadow: var(--shadow-pop);
+  box-shadow: var(--shadow-pop);
   background: linear-gradient(135deg, var(--accent-strong), var(--accent-3-strong)); border-color: transparent; color: #fff;
 }
 header.site .header-link-icon { font-size: 14px; line-height: 1; }
@@ -226,8 +226,10 @@ button {
   padding: 9px 16px;
   transition: transform var(--dur) var(--ease-bounce), box-shadow var(--dur) var(--ease), filter var(--dur) var(--ease), background var(--dur) var(--ease);
 }
-button:hover { filter: brightness(1.04); transform: translateY(-1px); box-shadow: var(--shadow-sm); }
-button:active { transform: translateY(1px) scale(.97); box-shadow: none; }
+/* ボタンはホバーでも押しているときも動かさない（当たり判定が動くと、狙った端で外れたり、
+   境目でホバーが入り切りを繰り返してちらつく）。手応えは影と明るさだけで出す。 */
+button:hover { filter: brightness(1.04); box-shadow: var(--shadow-sm); }
+button:active { filter: brightness(.92); box-shadow: none; }
 button:focus-visible { outline: 3px solid rgba(var(--accent-rgb),.45); outline-offset: 2px; }
 button.primary, a.button.primary {
   background: linear-gradient(135deg, var(--accent-strong), var(--accent-strong-2));
@@ -236,7 +238,7 @@ button.primary, a.button.primary {
   font-weight: 800;
   box-shadow: var(--shadow-sm);
 }
-button.primary:hover, a.button.primary:hover { filter: brightness(1.08); transform: translateY(-1px); box-shadow: var(--shadow-pop); }
+button.primary:hover, a.button.primary:hover { filter: brightness(1.08); box-shadow: var(--shadow-pop); }
 /* ボタンの見た目のリンク（<a><button> の入れ子をやめて <a class="button"> にしたもの）。 */
 a.button {
   display: inline-flex; align-items: center; justify-content: center;
@@ -249,8 +251,8 @@ a.button {
   touch-action: manipulation;
   transition: transform var(--dur) var(--ease-bounce), box-shadow var(--dur) var(--ease), filter var(--dur) var(--ease), background var(--dur) var(--ease);
 }
-a.button:hover { filter: brightness(1.04); transform: translateY(-1px); box-shadow: var(--shadow-sm); }
-a.button:active { transform: translateY(1px) scale(.97); box-shadow: none; }
+a.button:hover { filter: brightness(1.04); box-shadow: var(--shadow-sm); }
+a.button:active { filter: brightness(.92); box-shadow: none; }
 a.button:focus-visible { outline: 3px solid rgba(var(--accent-rgb),.45); outline-offset: 2px; }
 a.button.primary { border-color: transparent; color: #fff; font-weight: 800; box-shadow: var(--shadow-sm); }
 .publish-bar a.button.primary { padding: 12px 48px; font-size: 16px; }
@@ -261,7 +263,9 @@ button.ok {
   font-weight: 800;
   box-shadow: var(--shadow-sm);
 }
-button.ok:hover { filter: brightness(1.03); transform: translateY(-1px); box-shadow: 0 10px 24px rgba(25,195,125,.22); }
+button.ok:hover { filter: brightness(1.03); box-shadow: 0 10px 24px rgba(25,195,125,.22); }
+/* 色の濃いボタンは :hover の明るさ指定（詳細度が同じ）に負けないよう、後ろで押下を上書きする。 */
+button.primary:active, a.button.primary:active, button.ok:active { filter: brightness(.92); box-shadow: none; }
 button:disabled { opacity: .5; cursor: not-allowed; transform: none; box-shadow: none; filter: none; }
 
 .grid {
@@ -373,7 +377,7 @@ button.danger:hover { background: rgba(239, 68, 68, .12); filter: none; }
   white-space: nowrap;
   transition: transform var(--dur) var(--ease-bounce), box-shadow var(--dur) var(--ease);
 }
-.admin-todo a:hover { transform: translateY(-1px); box-shadow: var(--shadow-sm); }
+.admin-todo a:hover { box-shadow: var(--shadow-sm); }
 .admin-todo-n {
   min-width: 22px;
   padding: 1px 8px;
@@ -405,7 +409,7 @@ button.danger:hover { background: rgba(239, 68, 68, .12); filter: none; }
   white-space: nowrap;
   transition: transform var(--dur) var(--ease-bounce), box-shadow var(--dur) var(--ease), background var(--dur) var(--ease);
 }
-.admin-nav a:hover { background: var(--panel-2); transform: translateY(-1px); box-shadow: var(--shadow-sm); }
+.admin-nav a:hover { background: var(--panel-2); box-shadow: var(--shadow-sm); }
 .admin-nav a.active {
   background: linear-gradient(135deg, var(--accent), var(--accent-3));
   border-color: transparent;
@@ -983,6 +987,54 @@ a.stat-card.stat-link .k::after { content: " ›"; }
    で開き、対象（表紙・コメント）ごとの項目を .report-pop に出す。 */
 #detailModal .modal { position: relative; transition: transform .2s ease; touch-action: pan-y; }
 #editModal .modal { transition: transform .2s ease; touch-action: pan-y; }
+
+/* 本の詳細の「前の本 / 次の本」（public/view.js）。スマホのフリックと同じ移動を、矢印の
+   クリックと ←→ キーでもできるようにする。カード（.modal）の外＝背景（.modal-backdrop）の
+   直下に置き、画面に固定する。中は長くスクロールするので、カードに入れると流れていく。
+   常に見えるが、中身を邪魔しないよう薄く置き、ホバー・フォーカスでだけはっきりさせる。 */
+.detail-nav {
+  position: fixed;
+  top: 50%;
+  transform: translateY(-50%);
+  width: 44px;
+  height: 44px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  border: 1px solid var(--border);
+  border-radius: 50%;
+  background: var(--panel);
+  background: color-mix(in srgb, var(--panel) 84%, transparent);
+  -webkit-backdrop-filter: blur(6px);
+  backdrop-filter: blur(6px);
+  color: var(--muted);
+  box-shadow: var(--shadow-pop);
+  cursor: pointer;
+  opacity: .5;
+  z-index: 3;
+  transition: opacity .15s ease, color .15s ease, border-color .15s ease;
+}
+/* PC では左右の外側（カード幅 560 の外）に、狭い画面ではカードの端に重ねて置く。 */
+.detail-nav.prev { left: max(8px, calc(50% - 338px)); }
+.detail-nav.next { right: max(8px, calc(50% - 338px)); }
+.detail-nav svg {
+  width: 22px; height: 22px;
+  fill: none; stroke: currentColor; stroke-width: 2;
+  stroke-linecap: round; stroke-linejoin: round;
+}
+.detail-nav:hover { opacity: 1; color: var(--text); border-color: var(--accent); }
+.detail-nav:focus-visible { opacity: 1; color: var(--text); outline: 2px solid var(--accent); outline-offset: 2px; }
+/* 端（最初・最後の本）では押せないことだけ示して、位置は動かさない。 */
+.detail-nav:disabled { opacity: .15; cursor: default; box-shadow: none; }
+.detail-nav[hidden] { display: none; }
+/* スマホでは詳細が全画面なので、矢印は中身に重なる。小さめ・薄めにして邪魔をしない。 */
+@media (max-width: 560px) {
+  .detail-nav { width: 38px; height: 38px; opacity: .42; }
+  .detail-nav svg { width: 19px; height: 19px; }
+  .detail-nav.prev { left: 6px; }
+  .detail-nav.next { right: 6px; }
+}
 #detailModal h2 { padding-right: 40px; }
 .report-menu { position: absolute; top: 14px; right: 14px; z-index: 2; }
 .report-toggle {
@@ -1147,12 +1199,15 @@ h3.mylists-title { margin-top: 24px; font-size: 14px; }
   padding: 6px 8px;
   background: var(--panel);
 }
+/* 長いタイトルでも必ず 1 行。行数で meta の高さが変わると、同じ幅でもカードの表紙の
+   大きさがトップ（/）と公開ページ（/l/…）で食い違うので、高さを固定する。 */
 .slot .meta .t {
   font-size: 12px;
   font-weight: 600;
   line-height: 1.3;
-  max-height: 2.6em;
+  white-space: nowrap;
   overflow: hidden;
+  text-overflow: ellipsis;
 }
 .slot .meta .c {
   font-size: 11px;
@@ -1456,6 +1511,50 @@ html:has(.modal-backdrop.open) { overflow: hidden; }
     padding: 16px 14px calc(14px + env(safe-area-inset-bottom));
   }
 }
+
+/* 表紙の拡大表示（public/cover-zoom.js）。本の詳細（z-index 50）の上に、暗い背景で表紙だけを
+   出す。パネルの枠・余白は消して、画像とクレジットだけが浮いて見えるようにする。 */
+#coverZoomModal {
+  z-index: 51;
+  background: rgba(10,12,16,.86);
+  align-items: center;
+  padding: 20px 12px;
+  cursor: zoom-out; /* 暗いところを押しても閉じる（data-backdrop-close） */
+}
+#coverZoomModal .modal {
+  background: none; border: none; box-shadow: none;
+  width: 100%; max-width: min(92vw, 640px); padding: 0;
+}
+.cz-figure { margin: 0; width: 100%; display: flex; flex-direction: column; align-items: center; gap: 10px; }
+/* 画面の幅いっぱいに伸ばす（元が小さい表紙でも拡大する）。縦が溢れるときは max-height が
+   効いて枠が余るので、object-fit: contain で中の絵は歪ませずに収める。 */
+.cz-img {
+  display: block;
+  width: 100%;
+  height: auto;
+  max-height: 78dvh;
+  object-fit: contain;
+  border-radius: 6px;
+  /* 影は付けない。縦長の表紙は object-fit で枠の中に収まる（枠の左右が余る）ので、
+     影を付けると絵から離れたところに長方形が浮いてしまう。 */
+}
+/* 表紙のクレジット。暗い背景の上に出すので配色変数は使わない。 */
+.cz-caption { display: flex; flex-direction: column; align-items: center; gap: 2px; text-align: center; }
+.cz-credit { font-size: 13px; color: rgba(255,255,255,.9); }
+.cz-source { font-size: 11px; color: rgba(255,255,255,.62); }
+.cz-close {
+  position: fixed; top: 10px; right: 12px;
+  width: 40px; height: 40px; padding: 0;
+  font-size: 22px; line-height: 1;
+  color: #fff; background: rgba(255,255,255,.16);
+  border: none; border-radius: 50%;
+  cursor: pointer;
+}
+.cz-close:hover { background: rgba(255,255,255,.28); }
+.cz-close:focus-visible { outline: 3px solid rgba(255,255,255,.7); outline-offset: 2px; }
+/* 押せる表紙（詳細の表紙は切り抜き表示なので、拡大すると切れていない全体が見られる）。 */
+.cz-zoomable { cursor: zoom-in; }
+.cz-zoomable:focus-visible { outline: 3px solid rgba(var(--accent-rgb),.6); outline-offset: 2px; }
 .result {
   display: flex;
   gap: 10px;
@@ -1633,7 +1732,7 @@ html:has(.modal-backdrop.open) { overflow: hidden; }
   background: var(--panel); color: var(--muted); font-size: 13px; font-weight: 600; cursor: pointer;
   transition: transform var(--dur) var(--ease-bounce), box-shadow var(--dur) var(--ease), background var(--dur) var(--ease);
 }
-.search-mode-btn:hover { transform: translateY(-1px); box-shadow: var(--shadow-sm); }
+.search-mode-btn:hover { box-shadow: var(--shadow-sm); }
 .search-mode-btn.active {
   background: linear-gradient(135deg, var(--accent-strong), var(--accent-3-strong));
   border-color: transparent; color: #fff; box-shadow: var(--shadow-pop);
@@ -1825,12 +1924,6 @@ html:has(.modal-backdrop.open) .to-top { display: none; }
 
 /* view page: read-only */
 .slot.view { cursor: pointer; }
-.slot.view .meta .c.spoiler {
-  filter: blur(5px);
-  cursor: pointer;
-  user-select: none;
-}
-.slot.view .meta .c.spoiler.revealed { filter: none; cursor: default; }
 
 /* view detail modal */
 .detail-body { display: flex; gap: 14px; }
@@ -1841,6 +1934,13 @@ html:has(.modal-backdrop.open) .to-top { display: none; }
 }
 .detail-body .dinfo { flex: 1; min-width: 0; }
 .detail-body .dauthor { color: var(--muted); font-size: 13px; margin-bottom: 8px; }
+/* 作者名のリンク（public/author-link.js）。作者名検索へ飛ぶ。周りの作者表記から浮かないよう
+   色は据え置きで、下線だけで押せると分かるようにする。 */
+.detail-body .dauthor .author-link {
+  color: inherit; text-decoration: underline; text-decoration-style: dotted;
+  text-underline-offset: 2px; cursor: pointer;
+}
+.detail-body .dauthor .author-link:hover { color: var(--accent-2); text-decoration-style: solid; }
 .detail-body .dcomment { white-space: pre-wrap; word-break: break-word; }
 .detail-body .dcomment.spoiler {
   filter: blur(5px); cursor: pointer; user-select: none;
@@ -1875,8 +1975,8 @@ html:has(.modal-backdrop.open) .to-top { display: none; }
   color: #fff; box-shadow: var(--shadow-sm);
   transition: transform var(--dur) var(--ease-bounce), filter var(--dur) var(--ease), box-shadow var(--dur) var(--ease);
 }
-.buy-btn:hover { filter: brightness(1.08); transform: translateY(-1px); box-shadow: var(--shadow-md); }
-.buy-btn:active { transform: translateY(1px) scale(.97); }
+.buy-btn:hover { filter: brightness(1.08); box-shadow: var(--shadow-md); }
+.buy-btn:active { filter: brightness(.92); box-shadow: var(--shadow-sm); }
 .buy-btn.amazon { background: #ff9900; color: #1a1015; border-color: #e88a00; }
 .buy-btn.rakuten { background: #bf0000; border-color: #a30000; }
 .buy-btn.mercari { background: #ff0211; border-color: #d80010; }
@@ -1942,7 +2042,7 @@ html:has(.modal-backdrop.open) .to-top { display: none; }
   background: var(--panel); color: var(--muted); font-size: 13px; font-weight: 600; cursor: pointer;
   transition: transform var(--dur) var(--ease-bounce), box-shadow var(--dur) var(--ease), background var(--dur) var(--ease);
 }
-.rank-tab:hover { transform: translateY(-1px); box-shadow: var(--shadow-sm); }
+.rank-tab:hover { box-shadow: var(--shadow-sm); }
 .rank-tab.active {
   background: linear-gradient(135deg, var(--accent-strong), var(--accent-3-strong));
   border-color: transparent; color: #fff; box-shadow: var(--shadow-pop);

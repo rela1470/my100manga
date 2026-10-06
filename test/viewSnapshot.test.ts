@@ -70,6 +70,42 @@ describe("閲覧スナップショット（R2 view/<slug>.json）", () => {
     expect(((await (await getJson(slug)).json()) as MangaList).owner_name).toBe("新しい名前");
   });
 
+  // colo キャッシュ（Cache API）から読み戻した応答の cache-control には、ゾーンの
+  // Browser Cache TTL（本家は 4 時間）が被さってくる。そのまま返すと、リストを直した後も
+  // 一度開いたブラウザが古い HTML を使い続けるので、返す前に付け直している（src/index.ts
+  // restoreViewCacheControl）。ここでは被せられた状態を手で作って、戻すことを見る。
+  it("colo キャッシュから返すときに cache-control を付け直す", async () => {
+    const { slug } = await createList({ owner_name: "キャッシュ確認" });
+    const first = await view(slug);
+    expect(first.status).toBe(200);
+    expect(first.headers.get("cache-control")).toBe("public, max-age=0, s-maxage=300");
+
+    const keys = await viewCacheKeys(env, "https://example.com", slug);
+    const cached = await poll(async () => (await caches.default.match(keys.page)) ?? null);
+    expect(cached).not.toBeNull();
+    // ゾーン設定で max-age が書き換わった写しに差し替える
+    const headers = new Headers(cached!.headers);
+    headers.set("cache-control", "public, max-age=14400, s-maxage=300");
+    await caches.default.put(keys.page, new Response(await cached!.arrayBuffer(), { status: 200, headers }));
+
+    const again = await view(slug);
+    expect(again.status).toBe(200);
+    expect(await again.text()).toContain("キャッシュ確認");
+    expect(again.headers.get("cache-control")).toBe("public, max-age=0, s-maxage=300");
+
+    // 公開 JSON（/api/lists/:slug）も同じ
+    const firstJson = await getJson(slug);
+    expect(firstJson.headers.get("cache-control")).toBe("public, max-age=0, s-maxage=300");
+    const cachedJson = await poll(async () => (await caches.default.match(keys.json)) ?? null);
+    expect(cachedJson).not.toBeNull();
+    const jsonHeaders = new Headers(cachedJson!.headers);
+    jsonHeaders.set("cache-control", "public, max-age=14400, s-maxage=300");
+    await caches.default.put(keys.json, new Response(await cachedJson!.arrayBuffer(), { status: 200, headers: jsonHeaders }));
+    const againJson = await getJson(slug);
+    expect(againJson.status).toBe(200);
+    expect(againJson.headers.get("cache-control")).toBe("public, max-age=0, s-maxage=300");
+  });
+
   it("スナップショットが無ければ D1 から作り直して置く", async () => {
     const { slug } = await createList({ owner_name: "再作成" });
     await bucket().delete(snapshotKey(slug));

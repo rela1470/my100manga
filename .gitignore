@@ -10,3 +10,6 @@ worker-configuration.d.ts
 wrangler.test.jsonc
 # wrangler d1 export の出力（個人情報を含む。db/MIGRATIONS.md 参照）
 backups/
+
+# Claude Code の個人設定（デプロイ許可など）
+.claude/settings.local.json

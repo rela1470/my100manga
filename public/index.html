@@ -266,7 +266,7 @@
         <input type="text" id="shareUrl" readonly>
         <button id="copyShare">コピー</button>
       </div>
-      <p class="hint">編集用URL（あなただけが編集できます。ブックマーク推奨）</p>
+      <p class="hint" id="editUrlHint">編集用URL（あなただけが編集できます。ブックマーク推奨）</p>
       <p class="edit-url-warn" id="editUrlWarn">このリンクを失くすと、ほかの端末からは編集できなくなります。この端末のブラウザには保存済みなので、トップの「このブラウザで公開したリスト」から編集に戻れます。<span id="editUrlWarnLogin">別の端末からも編集するには、Googleでログインしてリストをアカウントに保存してください。</span></p>
       <div class="share-url">
         <input type="text" id="editUrl" readonly>
@@ -316,6 +316,7 @@
   <script src="/turnstile.js"></script>
   <script src="/suggest.js"></script>
   <script src="/cover-fit.js"></script>
+  <script src="/author-link.js"></script>
   <script src="/affiliate.js"></script>
   <script src="/mylists.js"></script>
   <script src="/account.js"></script>

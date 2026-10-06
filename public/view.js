@@ -224,29 +224,60 @@ function render(data) {
     t.className = "t";
     t.textContent = it.title;
     meta.appendChild(t);
-
-    if (it.comment) {
-      const c = document.createElement("div");
-      c.className = "c" + (it.spoiler ? " spoiler" : "");
-      c.textContent = it.comment;
-      meta.appendChild(c);
-    }
+    // コメントはカードには出さない（タップで開く詳細に入っている）。有無は上のバッジで示す。
     slot.appendChild(meta);
     slot.addEventListener("click", () => openDetail(it, idx));
     grid.appendChild(slot);
   });
+
+  noteJustUpdated(data.slug);
+}
+
+// 編集画面で「更新する」を押した直後はこのページへ送られてくる（public/app.js goToPublished）。
+// 更新できたことが分かるように通知を出す。印は一度拾ったら消して、再読み込みで再び出ないようにする。
+const UPDATED_KEY = "my100manga_updated"; // sessionStorage。public/app.js と共通
+
+function noteJustUpdated(slug) {
+  let updated = false;
+  try {
+    updated = sessionStorage.getItem(UPDATED_KEY) === slug;
+    if (updated) sessionStorage.removeItem(UPDATED_KEY);
+  } catch (e) {}
+  // sessionStorage が使えない端末向けのフォールバック（?updated=1）。URL からは消しておく。
+  const url = new URL(location.href);
+  if (url.searchParams.get("updated")) {
+    updated = true;
+    url.searchParams.delete("updated");
+    try {
+      history.replaceState(history.state, "", url.pathname + url.search + url.hash);
+    } catch (e) {}
+  }
+  // 通知は 1 行で省略されるので短く（.ui-toast-msg は nowrap + ellipsis）。
+  if (updated) uiToast("更新しました。これが公開ページです。");
 }
 
 // Bumped on every open so a slow /api/book response for a previously-opened book
 // can't overwrite the metadata of the one now showing.
 let detailSeq = 0;
 
+// 作者欄。名前ごとに作者名検索へのリンクにする（public/author-link.js）。閲覧画面には検索
+// フォームが無いので、リンクはトップ（/?q=…&by=creator）へ遷移する。
+function setDetailAuthor(text) {
+  const el = $("dAuthor");
+  const shown = window.renderAuthorLinks ? window.renderAuthorLinks(el, text) : ((el.textContent = text), !!text);
+  el.style.display = shown ? "" : "none";
+}
+
+// 表紙の拡大表示に出す著作権表示（発行年・作者・出版社）。/api/book が返るまでは、リストの
+// 項目が持っているぶん（作者）だけ。拡大を開いてから返ってきたときは書き直す。
+let detailMeta = { pubdate: "", author: "", publisher: "" };
+
 function openDetail(it, index) {
   const seq = ++detailSeq;
+  detailMeta = { pubdate: "", author: it.author || "", publisher: "" };
   currentIndex = typeof index === "number" ? index : viewItems.indexOf(it);
   $("dTitle").textContent = it.title || "";
-  $("dAuthor").textContent = it.author || "";
-  $("dAuthor").style.display = it.author ? "" : "none";
+  setDetailAuthor(it.author || "");
 
   // Fill what the stored item already knows; /api/book upgrades these below.
   setMetaRow("dIsbnRow", "dIsbn", it.isbn || "");
@@ -273,6 +304,16 @@ function openDetail(it, index) {
       img.replaceWith(d);
     };
     applyCover(img, it.cover_url);
+    // 表紙は枠に合わせて切り抜いているので、押したら切れていない全体を拡大で出す
+    // （public/cover-zoom.js。出典と著作権表示つき）。
+    if (window.attachCoverZoom) {
+      window.attachCoverZoom(img, {
+        coverUrl: it.cover_url,
+        isbn: it.isbn,
+        title: it.title,
+        meta: () => detailMeta,
+      });
+    }
     box.appendChild(img);
   } else {
     const d = document.createElement("div");
@@ -304,8 +345,24 @@ function openDetail(it, index) {
 
   wireReportMenu(it);
   renderBuy(it);
+  syncDetailNav();
 
+  // 前の本の位置まで送られた状態で次の本が出ないように、背景（スクロールしているのは
+  // .modal-backdrop）を先頭へ戻す。
+  $("detailModal").scrollTop = 0;
   $("detailModal").classList.add("open");
+}
+
+// 「前の本 / 次の本」の矢印（view.html .detail-nav）。1 冊だけのリストでは出さず、
+// 端では押せなくする。
+function syncDetailNav() {
+  const prev = $("dPrev");
+  const next = $("dNext");
+  if (!prev || !next) return;
+  const many = viewItems.length > 1;
+  prev.hidden = next.hidden = !many;
+  prev.disabled = currentIndex <= 0;
+  next.disabled = currentIndex < 0 || currentIndex >= viewItems.length - 1;
 }
 
 
@@ -327,10 +384,13 @@ async function loadBookMeta(it, seq) {
   if (seq !== detailSeq) return;
 
   if (Array.isArray(data.authors) && data.authors.length) {
-    const authors = data.authors.join("、");
-    $("dAuthor").textContent = authors;
-    $("dAuthor").style.display = "";
+    setDetailAuthor(data.authors.join("、"));
+    detailMeta.author = data.authors.join("、");
   }
+  detailMeta.publisher = data.publisher || "";
+  detailMeta.pubdate = data.pubdate || "";
+  // 先に表紙を拡大していたら、そちらのクレジットも書き直す。
+  if (window.refreshCoverZoomCredit) window.refreshCoverZoomCredit();
   setMetaRow("dPublisherRow", "dPublisher", data.publisher || "");
   setMetaRow("dPubdateRow", "dPubdate", data.pubdate || "");
   setMetaRow("dVolRow", "dVol", withSubtitle(data.volume_number || "", data.subtitle));
@@ -493,6 +553,20 @@ function wireDetailModal() {
   $("dClose").addEventListener("click", close);
   modal.addEventListener("click", (e) => { if (e.target === modal) close(); });
   wireDetailSwipe(modal.querySelector(".modal"));
+
+  $("dPrev").addEventListener("click", () => navigateDetail(-1));
+  $("dNext").addEventListener("click", () => navigateDetail(1));
+  // ←→ でも前後の本へ。上に別のダイアログ（表紙の拡大・uiConfirm 等）が開いているときは
+  // そちらの操作なので何もしない。Esc と Tab は public/ui-dialog.js が共通で見ている。
+  document.addEventListener("keydown", (e) => {
+    if (!modal.classList.contains("open")) return;
+    if (e.key !== "ArrowLeft" && e.key !== "ArrowRight") return;
+    if (e.altKey || e.ctrlKey || e.metaKey || e.shiftKey || e.isComposing) return;
+    const t = e.target;
+    if (t && (t.isContentEditable || (t.matches && t.matches("input, textarea, select")))) return;
+    if (document.querySelector(".modal-backdrop.open:not(#detailModal), .ui-dialog-backdrop.open")) return;
+    if (navigateDetail(e.key === "ArrowRight" ? 1 : -1)) e.preventDefault();
+  });
 
   const toggle = $("reportToggle");
   toggle.addEventListener("click", (e) => {

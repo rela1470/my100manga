@@ -1,6 +1,6 @@
 import { Env } from "./types";
 import { badRequest, json, readJsonObject } from "./util";
-import { rakutenResolveFull, RakutenBookFull } from "./rakuten";
+import { rakutenReady, rakutenResolveFull, RakutenBookFull } from "./rakuten";
 import { redactedCoverUrls } from "./covers";
 import { resolveBooks } from "./listItems";
 import { isValidIsbn, toIsbn13, workKeySql, seriesNameSql } from "./util";
@@ -303,13 +303,18 @@ function formatPubdate(raw?: string | null): string {
 
 // POST /api/sort-keys — 編集中リストの並べ替え（出版日順・作者順）用に、ISBN →
 // {date, author} をまとめて返す。リストの項目は発行日を持たず、古い項目は作者も空なので、
-// 並べ替えが押されたときだけ引く。外部 API は叩かない（D1 読みだけ）ので、分からない本は
-// 分からないまま（＝並べ替えで末尾に回る）。
+// 並べ替えが押されたときだけ引く。
 // 出所の優先順は /api/book と同じでマスタ（volumes）が先。マスタに無い巻は book_meta の
 // キャッシュ、それも無ければライブ補完（series_supplement, 抜け巻の Yahoo 由来など）。
 // ISBN は RESOLVE_SQL と同じく json_each で 1 パラメータに畳む（100 冊でも 1 往復）。
+// D1 のどこにも無かった巻（ISBN 検索から足した本など、マスタにも book_meta にも行が無い）は
+// 詳細ポップアップ（/api/book）と同じ楽天の exact-ISBN で引き直す。ポップアップには出るのに
+// 並べ替えだけ「分からない」になるのを無くすため。結果は book_meta に残すので、次からは
+// D1 読みだけで済む。body.field は並べ替えに使う値（既定は発行日）で、その値が埋まらない
+// 巻だけを楽天に回す。
 export async function handleSortKeys(request: Request, env: Env): Promise<Response> {
-  const body = (await readJsonObject(request)) as { isbns?: unknown };
+  const body = (await readJsonObject(request)) as { isbns?: unknown; field?: unknown };
+  const field = body.field === "author" ? "author" : "date";
   const isbns = Array.isArray(body.isbns)
     ? [
         ...new Set(
@@ -353,10 +358,59 @@ export async function handleSortKeys(request: Request, env: Env): Promise<Respon
     const supp = parseSupplementVolume(r.s_vol);
     const date = isoPubdate(r.v_date) || isoPubdate(r.m_date) || isoPubdate(supp.pubdate);
     // book_meta.authors は "/" つなぎ。表示（編集ポップアップ）に合わせて読点でつなぐ。
-    const author = (r.v_author || r.m_author?.split("/").filter(Boolean).join("、") || supp.author || "").trim();
+    const author = (r.v_author || splitAuthors(r.m_author) || supp.author || "").trim();
     if (date || author) keys[r.isbn] = { date, author };
   }
+
+  await fillSortKeysFromRakuten(env, isbns, field, keys);
   return json({ keys }, 200, { "cache-control": "no-store" });
+}
+
+// 楽天を引くのは 1 度に 1 秒 1 件（サイト全体の枠）なので、1 回の並べ替えで待たせる上限を
+// 決めておく。resolveCovers と同じ考え方で、間に合わなかった巻は分からないまま末尾へ回り、
+// 次に並べ替えを押したときに続きを引く。
+const SORT_KEY_LIVE_BUDGET_MS = 6000;
+// 枠の消化速度は同時数を上げても変わらない（covers.ts の実測）が、往復の待ちは重ねられる。
+const SORT_KEY_LIVE_CONCURRENCY = 2;
+
+/** D1 のどこにも無かった巻を楽天の exact-ISBN で引き、keys を埋めつつ book_meta に残す。
+ *  楽天の鍵が無い環境・枠が取れなかった巻では何もしない（分からないまま）。 */
+async function fillSortKeysFromRakuten(
+  env: Env,
+  isbns: string[],
+  field: "date" | "author",
+  keys: Record<string, { date: string; author: string }>
+): Promise<void> {
+  const missing = isbns.filter((isbn) => !keys[isbn]?.[field]);
+  if (!missing.length || !rakutenReady(env)) return;
+
+  const deadline = Date.now() + SORT_KEY_LIVE_BUDGET_MS;
+  const metaWrites: D1PreparedStatement[] = [];
+  for (let i = 0; i < missing.length; i += SORT_KEY_LIVE_CONCURRENCY) {
+    const remaining = deadline - Date.now();
+    if (remaining <= 0) break; // 時間切れ — 残りは次に押したときに引く
+    const batch = missing.slice(i, i + SORT_KEY_LIVE_CONCURRENCY);
+    const got = await Promise.all(batch.map((isbn) => rakutenResolveFull(env, isbn, "low", remaining)));
+    batch.forEach((isbn, j) => {
+      const meta = got[j].meta;
+      if (!meta?.title) return; // 枠が取れなかった（null）か、楽天にも無い巻
+      const stmt = bookMetaInsertFromRakuten(env, meta);
+      if (stmt) metaWrites.push(stmt);
+      const cur = keys[isbn] ?? { date: "", author: "" };
+      // マスタ由来の値の方が確かなので、空いているところだけ埋める。
+      keys[isbn] = {
+        date: cur.date || isoPubdate(meta.pubdate),
+        author: cur.author || splitAuthors(meta.author),
+      };
+      if (!keys[isbn].date && !keys[isbn].author) delete keys[isbn];
+    });
+  }
+  if (metaWrites.length) await env.DB.batch(metaWrites);
+}
+
+/** "/" つなぎの著者（book_meta.authors / 楽天の author）を表示と同じ読点つなぎにする。 */
+function splitAuthors(raw: string | null | undefined): string {
+  return (raw ?? "").split("/").filter(Boolean).join("、");
 }
 
 /** 補完（series_supplement.volumes_json）の 1 巻分。中身はサーバが書いた JSON だが、

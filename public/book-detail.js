@@ -65,6 +65,9 @@
 
   let modal = null;
   let seq = 0; // 遅れて返った /api/book が別の本の表示を上書きしないように
+  // 表紙の拡大表示（public/cover-zoom.js）に出す著作権表示。/api/book が返るまでは、
+  // 呼び出し側が渡したぶんだけ。先に拡大を開いていたら、返ってきた時点で書き直す。
+  let coverMeta = { pubdate: "", author: "", publisher: "" };
   let current = null; // 表示中の本（「リストに追加」が渡す）
   let onAdd = null; // opts.onAdd（無ければ追加ボタンを出さない）
 
@@ -110,6 +113,14 @@
     if (modal) modal.classList.remove("open");
   }
 
+  // 作者欄。名前ごとに作者名検索へのリンクにする（public/author-link.js）。このページには
+  // 検索フォームが無いので、リンクはトップ（/?q=…&by=creator）へ遷移する。
+  function setAuthor(text) {
+    const el = $("bdAuthor");
+    const shown = window.renderAuthorLinks ? window.renderAuthorLinks(el, text) : ((el.textContent = text), !!text);
+    el.style.display = shown ? "" : "none";
+  }
+
   function setRow(rowId, valueId, text) {
     $(rowId).style.display = text ? "" : "none";
     if (text) $(valueId).textContent = text;
@@ -152,6 +163,15 @@
     img.alt = book.title || "";
     img.onerror = () => img.replaceWith(noimg());
     applyCover(img, book.cover_url);
+    // 表紙は枠に合わせて切り抜いているので、押したら切れていない全体を拡大で出す。
+    if (window.attachCoverZoom) {
+      window.attachCoverZoom(img, {
+        coverUrl: book.cover_url,
+        isbn: book.isbn,
+        title: book.title,
+        meta: () => coverMeta,
+      });
+    }
     box.appendChild(img);
   }
 
@@ -198,12 +218,19 @@
     if (mySeq !== seq) return;
     // 役割付きの全作者（book.creators: "原作：A、作画：B"）を渡されていればそちらを残す。
     if (!book.creators && Array.isArray(data.authors) && data.authors.length) {
-      $("bdAuthor").textContent = data.authors.join("、");
-      $("bdAuthor").style.display = "";
+      setAuthor(data.authors.join("、"));
+      coverMeta.author = data.authors.join("、");
     }
     // 渡された値（巻一覧のマスタ）を空の応答で消さない。
-    if (data.publisher) setRow("bdPublisherRow", "bdPublisher", data.publisher);
-    if (data.pubdate) setRow("bdPubdateRow", "bdPubdate", data.pubdate);
+    if (data.publisher) {
+      setRow("bdPublisherRow", "bdPublisher", data.publisher);
+      coverMeta.publisher = data.publisher;
+    }
+    if (data.pubdate) {
+      setRow("bdPubdateRow", "bdPubdate", data.pubdate);
+      coverMeta.pubdate = data.pubdate;
+    }
+    if (window.refreshCoverZoomCredit) window.refreshCoverZoomCredit();
     if (data.label) setRow("bdLabelRow", "bdLabel", data.label);
     if (data.volume_number) setRow("bdVolRow", "bdVol", withSubtitle(data.volume_number, data.subtitle));
     if (Array.isArray(data.editions) && data.editions.length) {
@@ -226,15 +253,18 @@
     ensureModal();
     const mySeq = ++seq;
     current = book;
+    coverMeta = {
+      pubdate: book.pubdate || "",
+      author: book.creators || book.author || "",
+      publisher: book.publisher || "",
+    };
     onAdd = typeof opts.onAdd === "function" ? opts.onAdd : null;
     const add = $("bdAdd");
     add.style.display = onAdd ? "" : "none";
     add.disabled = !!opts.added;
     add.textContent = opts.added ? "追加済み" : opts.addLabel || "リストに追加";
     $("bdTitle").textContent = book.title || "";
-    const author = book.creators || book.author || "";
-    $("bdAuthor").textContent = author;
-    $("bdAuthor").style.display = author ? "" : "none";
+    setAuthor(book.creators || book.author || "");
     setRow("bdVolRow", "bdVol", withSubtitle(book.volume_number || "", book.subtitle));
     setRow("bdPublisherRow", "bdPublisher", book.publisher || "");
     setRow("bdLabelRow", "bdLabel", book.label || "");

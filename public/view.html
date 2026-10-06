@@ -84,6 +84,9 @@
         <button id="dClose">閉じる</button>
       </div>
     </div>
+    <!-- 前後の本へ（フリックと同じ移動を、クリックと ←→ キーでも。public/view.js） -->
+    <button type="button" class="detail-nav prev" id="dPrev" aria-label="前の本" title="前の本（←）" hidden><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M15 5 8 12l7 7"/></svg></button>
+    <button type="button" class="detail-nav next" id="dNext" aria-label="次の本" title="次の本（→）" hidden><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m9 5 7 7-7 7"/></svg></button>
   </div>
 
   <!--LIST_DATA-->
@@ -91,6 +94,8 @@
   <script src="/api.js"></script>
   <script src="/turnstile.js"></script>
   <script src="/cover-fit.js"></script>
+  <script src="/cover-zoom.js"></script>
+  <script src="/author-link.js"></script>
   <script src="/affiliate.js"></script>
   <script src="/mylists.js"></script>
   <script src="/account.js"></script>

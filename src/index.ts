@@ -206,8 +206,8 @@ const worker = {
           const limited = await rateLimit(request, env.RL_COVERS, "covers");
           if (limited) return limited;
         } else if (path === "/api/sort-keys") {
-          // 並べ替えボタンの読み取り専用 POST。公開の書き込み枠（30/分）を食わせたくないので、
-          // 読み取り系と同じ広い binding の別 bucket で縛る。
+          // 並べ替えボタンの POST。書き込むのは book_meta のキャッシュだけなので、公開の
+          // 書き込み枠（30/分）は食わせず、外部 API を叩く読み取り系と同じ binding の別 bucket。
           const limited = await rateLimit(request, env.RL_COVERS, "sort-keys");
           if (limited) return limited;
         } else if (path === "/api/me/draft") {
@@ -446,7 +446,8 @@ const worker = {
       if (path === "/api/covers" && request.method === "POST") {
         return await resolveCoversApi(request, env);
       }
-      // 編集中リストの並べ替え（出版日順・作者順）が使う ISBN → 発行日/作者。D1 読みだけ。
+      // 編集中リストの並べ替え（出版日順・作者順）が使う ISBN → 発行日/作者。D1 を読み、
+      // どこにも無かった巻だけ楽天を引く（src/book.ts handleSortKeys）。
       if (path === "/api/sort-keys" && request.method === "POST") {
         return await handleSortKeys(request, env);
       }
@@ -1025,6 +1026,17 @@ async function renderAllShareImages(env: Env, ctx: ExecutionContext, job: ShareJ
 // 閲覧レスポンスの cache-control。ブラウザは毎回取り直し（編集直後に古い版を見せない）、
 // colo キャッシュ（Cache API）には VIEW_CACHE_TTL 秒置く。
 const VIEW_CACHE_CONTROL = `public, max-age=0, s-maxage=${VIEW_CACHE_TTL}`;
+
+/** colo キャッシュ（Cache API）から出した応答に、上の cache-control を付け直す。
+ *  Cache API に入れた写しを読み戻すと、cache-control にゾーンの Browser Cache TTL
+ *  （本家・R18 版とも 4 時間）が被さって返る（実測: MISS は `max-age=0`、HIT は
+ *  `max-age=14400`）。そのまま返すと、リストを直した後やデプロイの後も、一度開いた
+ *  ブラウザが最大 4 時間だけ古い HTML を使い続ける。公開 API 側の withEdgeCache
+ *  （src/edgeCache.ts）が x-client-cache-control でやっているのと同じ戻し。 */
+function restoreViewCacheControl(headers: Headers): Headers {
+  headers.set("cache-control", VIEW_CACHE_CONTROL);
+  return headers;
+}
 // キャッシュに置いたレスポンスに持たせる表示名（人気計測用）。返す前に外す。
 const OWNER_HEADER = "x-my100manga-owner";
 
@@ -1040,7 +1052,12 @@ async function handleListJson(
   const key = (await viewCacheKeys(env, origin, slug)).json;
   const cached = await readViewCache(key);
   if (cached) {
-    if (cached.status !== 404) return cached;
+    if (cached.status !== 404) {
+      return new Response(cached.body, {
+        status: cached.status,
+        headers: restoreViewCacheControl(new Headers(cached.headers)),
+      });
+    }
     // 404 の写しは colo の中だけで使う。ブラウザに持たせると、作成直後に同じ slug を開いた
     // 端末が「見つかりません」を抱えたままになる。
     const headers = new Headers(cached.headers);
@@ -1137,7 +1154,7 @@ async function renderViewPage(
     const owner = cached.headers.get(OWNER_HEADER);
     bumpPopularity(env, "list", slug, owner ? decodeURIComponent(owner) : "");
     headers.delete(OWNER_HEADER);
-    return new Response(cached.body, { status: cached.status, headers });
+    return new Response(cached.body, { status: cached.status, headers: restoreViewCacheControl(headers) });
   }
 
   const data = await getListSnapshot(env, ctx, slug);

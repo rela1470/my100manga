@@ -170,8 +170,10 @@
 //   パネル自体。開く側がすでに入力欄などへ移していればそのまま）。
 // - 開いている間: Tab / Shift+Tab を最前面のダイアログ内で循環させる。
 // - Esc: 最前面の .modal-backdrop に "modal-escape" イベント（cancelable）を投げ、誰も
-//   preventDefault しなければ背景クリックと同じ扱いにする（各モーダルの既存の閉じ処理に乗る）。
-//   背景クリックで閉じないモーダル（公開後の共有モーダル等）は modal-escape を受けて自前で処理する。
+//   preventDefault しなければ、各モーダルが持つ閉じ処理（backdrop 自身への click を合図に
+//   しているもの）に乗せる。Esc で閉じたくないモーダル（公開後の共有モーダル等）は
+//   modal-escape を受けて自前で処理する。
+// - 背景クリック: 閉じない（サイト全体。下の capture の click で人のクリックだけ止めている）。
 // - 閉じたとき: 開く前にフォーカスがあった要素へ戻す。
 // - ブラウザバック: 開いている間だけ履歴を積み、戻る操作で最前面から閉じる（下の syncHistory）。
 // ui-dialog（uiAlert 等）や share-x.js のパネル（.ui-dialog-backdrop）も重なり順と Tab の
@@ -239,6 +241,30 @@
     }
   }
 
+  // 背景（モーダルの外）のクリックでは閉じない。サイト全体でこの扱いにそろえる（押し間違いで
+  // 書きかけの入力ごと閉じてしまうのを防ぐ）。閉じ処理そのものは各モーダルが backdrop 自身への
+  // click を合図に持っているので、ここでは人のクリックだけを止める。Esc とブラウザバックは
+  // el.click() でその合図を作って同じ閉じ処理に乗せており、そちらは isTrusted が false なので通す。
+  // mousedown も既定の動作を止める: 背景を押すとフォーカスが <body> へ抜けてしまい、自前の
+  // keydown で Esc を見ているダイアログ（uiAlert 等・share-x）が Esc で閉じられなくなるため。
+  // 例外: backdrop に data-backdrop-close が付いているものは今までどおり背景クリックで閉じる。
+  // 失うものが無く、暗いところを押して閉じるのが当たり前の表示（表紙の拡大。cover-zoom.js）用。
+  const onBackdrop = (e) =>
+    e.isTrusted &&
+    e.target instanceof Element &&
+    e.target.matches(ANY) &&
+    !e.target.hasAttribute("data-backdrop-close");
+  document.addEventListener("mousedown", (e) => { if (onBackdrop(e)) e.preventDefault(); }, true);
+  document.addEventListener(
+    "click",
+    (e) => {
+      if (!onBackdrop(e)) return;
+      e.stopPropagation();
+      e.stopImmediatePropagation();
+    },
+    true
+  );
+
   document.addEventListener("keydown", (e) => {
     const top = stack[stack.length - 1];
     if (!top || !top.el.classList.contains("open")) return;
@@ -248,7 +274,7 @@
       e.preventDefault();
       const ev = new CustomEvent("modal-escape", { cancelable: true });
       top.el.dispatchEvent(ev);
-      if (!ev.defaultPrevented) top.el.click(); // 背景クリック扱い（target が backdrop 自身）
+      if (!ev.defaultPrevented) top.el.click(); // 各モーダルの閉じ処理の合図（target が backdrop 自身）
     }
   });
 
@@ -256,12 +282,42 @@
   // 積み、その深さを state の __modal に書いておく。戻る操作ではその深さまで最前面から順に
   // 閉じ、画面内のボタンで閉じたときは積んだぶんを history.go で戻して履歴に残さない。
   // 閉じ方はモーダルごとに違うので、Esc を投げて各自の閉じ処理（上の keydown 経由の
-  // modal-escape / 背景クリック扱い、ui-dialog や share-x の自前 keydown）に乗せる。共有
+  // modal-escape / backdrop への click、ui-dialog や share-x の自前 keydown）に乗せる。共有
   // モーダルのように確認を挟んですぐ閉じないものは開いたままになるので、履歴を積み直す。
   const OPEN = ".modal-backdrop.open, .ui-dialog-backdrop.open";
   let pushed = 0; // 自分が積んだ履歴の数
   let awaitingPop = false; // history.go を頼んで popstate 待ち
   let popTimer = 0;
+
+  // 積んでいる間だけスクロール位置の復元を手動にする。背面スクロールのロック（上）は
+  // <body> を position:fixed にするので、履歴を積む時点のスクロール位置は 0。auto のままだと、
+  // 閉じたときの history.go（と「戻る」操作）でブラウザがその 0 を復元し、ロック解除時の
+  // scrollTo を上書きして一番上へ飛ぶ。位置の戻しはロック側に任せる。
+  // 復元モードは履歴項目ごとなので、最初に積む前（＝元の項目にいるうち）に manual にする。
+  let savedRestoration = null;
+  function holdScrollRestoration() {
+    if (savedRestoration !== null) return;
+    try {
+      savedRestoration = history.scrollRestoration;
+      history.scrollRestoration = "manual";
+    } catch (e) {
+      savedRestoration = null;
+    }
+  }
+  function releaseScrollRestoration() {
+    if (savedRestoration === null) return;
+    const prev = savedRestoration;
+    savedRestoration = null;
+    // 戻り着いた直後（popstate と同じタスク）に戻すと、そのままブラウザが復元してしまうので
+    // 次のタスクで戻す。以後はページ間の「戻る」で元どおり位置が復元される。
+    setTimeout(() => {
+      try {
+        history.scrollRestoration = prev;
+      } catch (e) {
+        /* 無視 */
+      }
+    }, 0);
+  }
 
   const openCount = () => document.querySelectorAll(OPEN).length;
   const markedDepth = () => (history.state && history.state.__modal) || 0;
@@ -285,6 +341,7 @@
   function syncHistory() {
     if (awaitingPop) return;
     const open = openCount();
+    if (pushed < open) holdScrollRestoration();
     while (pushed < open) {
       const next = pushed + 1;
       try {
@@ -305,7 +362,9 @@
         syncHistory();
       }, 500);
       history.go(-back);
+      return;
     }
+    if (!open) releaseScrollRestoration();
   }
 
   addEventListener("popstate", () => {

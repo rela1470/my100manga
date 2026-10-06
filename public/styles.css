@@ -23,15 +23,15 @@
   --accent-3: #1f4fd7;    /* blue */
   --accent-4: #ffd400;    /* pop yellow */
   --pop: #ffd400;         /* ヒーロー・ロゴの 100 に使う黄色 */
-  --ok: #0e8a5f;          /* green */
+  --ok: #0a6e4b;          /* green。白文字を載せるので 4.5:1 以上を保つ */
   --warn: #c77700;
   --danger: #d7001f;
   /* 白文字を載せる塗り用（WCAG AA 4.5:1 以上）。 */
   --accent-strong: #d7001f;
   --accent-strong-2: #a80018;
   --accent-3-strong: #1b3fae;
-  --ok-strong: #0e8a5f;
-  --ok-strong-2: #0a6e4b;
+  --ok-strong: #0a6e4b;   /* 白文字で 6.3:1 */
+  --ok-strong-2: #07543a;
   --warn-text: #8a5300;
 
   /* type */
@@ -486,8 +486,8 @@ button:disabled { opacity: .45; cursor: not-allowed; transform: none; box-shadow
   animation: publishReady 1.6s ease-out 2;
 }
 @keyframes publishReady {
-  0% { box-shadow: var(--shadow-sm), 0 0 0 0 rgba(14, 138, 95, .55); }
-  100% { box-shadow: var(--shadow-sm), 0 0 0 16px rgba(14, 138, 95, 0); }
+  0% { box-shadow: var(--shadow-sm), 0 0 0 0 rgba(10, 110, 75, .55); }
+  100% { box-shadow: var(--shadow-sm), 0 0 0 16px rgba(10, 110, 75, 0); }
 }
 
 /* Unsaved-changes indicator vs the published (公開) state, shown only while editing. */
@@ -1585,11 +1585,12 @@ h3.mylists-title { margin-top: 24px; font-size: 14px; }
    見出しに戻る＝「いま何順か」は示さない）。 */
 #sortBy {
   font: inherit;
-  font-weight: 600;
+  font-weight: 900;
   color: var(--text);
-  background: var(--panel-2);
-  border: 1.5px solid var(--border);
-  border-radius: var(--radius-pill);
+  background: var(--panel);
+  border: var(--bw) solid var(--ink);
+  border-radius: var(--radius-sm);
+  box-shadow: var(--shadow-sm);
   padding: 9px 12px;
   cursor: pointer;
   touch-action: manipulation;
@@ -2252,7 +2253,7 @@ html:has(.modal-backdrop.open) .to-top { display: none; }
 .pick-stage.fail { color: var(--muted); font-size: 13px; padding: 3px 0 3px 24px; }
 .cand {
   display: flex; flex-direction: column; gap: 4px; padding: 6px;
-  background: var(--panel-2); border: 1.5px solid var(--border); border-radius: var(--radius-sm);
+  background: var(--panel-2); border: 2px solid var(--ink); border-radius: var(--radius-sm);
   cursor: pointer; text-align: center;
   transition: transform var(--dur) var(--ease-bounce), box-shadow var(--dur) var(--ease), border-color var(--dur) var(--ease);
 }

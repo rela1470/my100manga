@@ -728,7 +728,8 @@ function renderHeroGauge(filled) {
   $("heroRemaining").textContent = String(remaining);
   $("heroCount").textContent = `${filled} / ${TARGET}`;
   $("heroProgress").style.width = `${Math.min(100, (filled / TARGET) * 100)}%`;
-  dial.classList.toggle("ready", filled >= TARGET);
+  // ちょうど TARGET のときだけ。超過分があると公開できない（updatePublishButton と同じ条件）。
+  dial.classList.toggle("ready", filled === TARGET);
 }
 
 function placeholderSlot(index) {

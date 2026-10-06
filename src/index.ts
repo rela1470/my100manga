@@ -1174,7 +1174,15 @@ async function renderViewPage(
   const templateRes = await fetchSiteAsset(new Request(`${origin}/view.html`), env, "/view.html");
   // script/stylesheet の ?v= と <meta app-version>、サイト種別の表記は、ユーザ入力を差し込む前の
   // テンプレートに付ける。
-  let html = injectVersion(applySiteIdentity(await templateRes.text(), env, origin), appVersion(env));
+  // フッターが差し込む <script src="/account.js"> にも ?v= を付けたいので、先に
+  // フッターとヘッダーのリンクを差してからバージョン印を付ける。ユーザ入力が入る
+  // 置換（OGP・リストのデータ）は、下の fill でそのあとに行う。
+  let html = injectVersion(
+    applySiteIdentity(await templateRes.text(), env, origin)
+      .replace("<!--HEADER_LINKS-->", headerLinksHtml(env))
+      .replace("<!--FOOTER_AFF-->", footerHtml(env, true)),
+    appVersion(env)
+  );
 
   const pageUrl = `${origin}/l/${slug}`;
   const meta = buildOgp(site(env).name, data, pageUrl, `${origin}/share/${slug}/og.jpg?v=${await shareImageHash(data)}`, noCard);
@@ -1190,8 +1198,6 @@ async function renderViewPage(
     ["<!--ANALYTICS-->", analyticsTags(env)],
     ["<!--GTM_BODY-->", gtmBody(env)],
     ["<!--LIST_DATA-->", injected],
-    ["<!--HEADER_LINKS-->", headerLinksHtml(env)],
-    ["<!--FOOTER_AFF-->", footerHtml(env, true)],
   ];
   for (const [ph, value] of fill) html = replaceLiteral(html, ph, value);
 

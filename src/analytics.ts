@@ -120,14 +120,19 @@ export async function injectAnalytics(res: Response, env: Env, origin: string, p
   const ct = res.headers.get("content-type") ?? "";
   if (!ct.includes("text/html")) return res;
   const html = applySiteIdentity(await res.text(), env, origin);
-  const replaced = injectVersion(html, appVersion(env))
-    .replace("<!--ANALYTICS-->", analyticsTags(env))
-    .replace("<!--GTM_BODY-->", gtmBody(env))
-    .replace("<!--AFF_DATA-->", affData(env))
-    .replace("<!--HEADER_LINKS-->", headerLinksHtml(env))
-    .replace("<!--RANK_SWITCH-->", rankSwitchHtml(env, path))
-    .replace("<!--FOOTER_AFF-->", footerHtml(env, true))
-    .replace("<!--FOOTER-->", footerHtml(env));
+  // バージョン印は差し込みのあとに付ける。フッターが差し込む <script src="/account.js">
+  // にも ?v= を付けたいため（先に付けると、差し込んだぶんが素通りして古いまま残る）。
+  const replaced = injectVersion(
+    html
+      .replace("<!--ANALYTICS-->", analyticsTags(env))
+      .replace("<!--GTM_BODY-->", gtmBody(env))
+      .replace("<!--AFF_DATA-->", affData(env))
+      .replace("<!--HEADER_LINKS-->", headerLinksHtml(env))
+      .replace("<!--RANK_SWITCH-->", rankSwitchHtml(env, path))
+      .replace("<!--FOOTER_AFF-->", footerHtml(env, true))
+      .replace("<!--FOOTER-->", footerHtml(env)),
+    appVersion(env)
+  );
   const headers = new Headers(res.headers);
   headers.delete("content-length");
   // 本文を書き換えたので、資産の強い ETag は本文と一致しなくなる。残すと再検証で

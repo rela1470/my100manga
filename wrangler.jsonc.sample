@@ -5,6 +5,8 @@
   //   - "name" / "database_name" … 任意のプロジェクト名
   //   - "database_id" … `wrangler d1 create` で発行された ID（REPLACE_WITH_...）
   //   - "RAKUTEN_REFERER" と "routes" の "pattern" … 自分のドメイン（example.com を置換）
+  //   - env.r18 / env.r18dev の "name" とリソース名（my100r18*）・ドメイン（r18.example.com）
+  //     … R18版を出すなら自分の値へ。閲覧ビーコン側のキュー名の "-views" だけは残すこと
   // 個人設定（アフィリ ID / ACCESS_* / ADMIN_EMAILS / 楽天 API キー）は vars ではなく
   // `wrangler secret put <NAME>`（dev は --env dev）で注入する。未設定でも起動はする。
   "$schema": "./node_modules/wrangler/config-schema.json",
@@ -230,9 +232,9 @@
     // 閲覧ビーコンの consumer 振り分けは src/index.ts の VIEW_QUEUE_MARK（"-views"）で見ている
     // ので、閲覧ビーコン側のキュー名には "-views" を含めること。
     "r18": {
-      "name": "my100shunga",
+      "name": "my100r18",
       "vars": {
-        "RAKUTEN_REFERER": "https://my100shunga.com/",
+        "RAKUTEN_REFERER": "https://r18.example.com/",
         "GOOGLE_ENABLED": "false",
         "COVER_SUGGESTIONS_ENABLED": "false",
         // AdSense は成人向けコンテンツ不可。R18版では必ず空のままにする（docs/r18.md）。
@@ -248,15 +250,15 @@
       "d1_databases": [
         {
           "binding": "DB",
-          "database_name": "my100shunga",
+          "database_name": "my100r18",
           "database_id": "REPLACE_WITH_R18_DATABASE_ID"
         }
       ],
       "r2_buckets": [
-        { "binding": "COVERS", "bucket_name": "my100shunga-covers" }
+        { "binding": "COVERS", "bucket_name": "my100r18-covers" }
       ],
       "analytics_engine_datasets": [
-        { "binding": "POPULARITY", "dataset": "my100shunga_popularity" }
+        { "binding": "POPULARITY", "dataset": "my100r18_popularity" }
       ],
       "durable_objects": {
         "bindings": [
@@ -274,19 +276,19 @@
       ],
       "queues": {
         "producers": [
-          { "binding": "SHARE_QUEUE", "queue": "my100shunga-share" },
-          { "binding": "VIEW_QUEUE", "queue": "my100shunga-views" }
+          { "binding": "SHARE_QUEUE", "queue": "my100r18-share" },
+          { "binding": "VIEW_QUEUE", "queue": "my100r18-views" }
         ],
         "consumers": [
           {
-            "queue": "my100shunga-share",
+            "queue": "my100r18-share",
             "max_batch_size": 1,
             "max_batch_timeout": 1,
             "max_concurrency": 1,
             "max_retries": 3
           },
           {
-            "queue": "my100shunga-views",
+            "queue": "my100r18-views",
             "max_batch_size": 100,
             "max_batch_timeout": 10,
             "max_concurrency": 1,
@@ -295,13 +297,13 @@
         ]
       },
       "routes": [
-        { "pattern": "my100shunga.com", "custom_domain": true }
+        { "pattern": "r18.example.com", "custom_domain": true }
       ]
     },
     "r18dev": {
-      "name": "my100shunga-dev",
+      "name": "my100r18-dev",
       "vars": {
-        "RAKUTEN_REFERER": "https://dev.my100shunga.com/",
+        "RAKUTEN_REFERER": "https://dev.r18.example.com/",
         "GOOGLE_ENABLED": "false",
         "COVER_SUGGESTIONS_ENABLED": "false",
         "ADSENSE_CLIENT": "",
@@ -315,15 +317,15 @@
       "d1_databases": [
         {
           "binding": "DB",
-          "database_name": "my100shunga-dev",
+          "database_name": "my100r18-dev",
           "database_id": "REPLACE_WITH_R18_DEV_DATABASE_ID"
         }
       ],
       "r2_buckets": [
-        { "binding": "COVERS", "bucket_name": "my100shunga-covers-dev" }
+        { "binding": "COVERS", "bucket_name": "my100r18-covers-dev" }
       ],
       "analytics_engine_datasets": [
-        { "binding": "POPULARITY", "dataset": "my100shunga_popularity_dev" }
+        { "binding": "POPULARITY", "dataset": "my100r18_popularity_dev" }
       ],
       "durable_objects": {
         "bindings": [
@@ -340,19 +342,19 @@
       ],
       "queues": {
         "producers": [
-          { "binding": "SHARE_QUEUE", "queue": "my100shunga-share-dev" },
-          { "binding": "VIEW_QUEUE", "queue": "my100shunga-views-dev" }
+          { "binding": "SHARE_QUEUE", "queue": "my100r18-share-dev" },
+          { "binding": "VIEW_QUEUE", "queue": "my100r18-views-dev" }
         ],
         "consumers": [
           {
-            "queue": "my100shunga-share-dev",
+            "queue": "my100r18-share-dev",
             "max_batch_size": 1,
             "max_batch_timeout": 1,
             "max_concurrency": 1,
             "max_retries": 3
           },
           {
-            "queue": "my100shunga-views-dev",
+            "queue": "my100r18-views-dev",
             "max_batch_size": 100,
             "max_batch_timeout": 10,
             "max_concurrency": 1,
@@ -361,7 +363,7 @@
         ]
       },
       "routes": [
-        { "pattern": "dev.my100shunga.com", "custom_domain": true }
+        { "pattern": "dev.r18.example.com", "custom_domain": true }
       ]
     }
   }

@@ -39,7 +39,7 @@ import { plainVolumeNumber, volSort } from "./util";
 //   - 巻数の多いシリーズ。1req/s の枠内に収めるためページ送りを MAX_PAGES で、Yahoo の
 //     1 巻 1 リクエストを MAX_YAHOO_PROBES で打ち切るので、1 回の押下では埋まりきらない。
 //     押すたびに少しずつ積み上がる（合流は src/series.ts 側）。
-//   - R18 版（my100shunga）は外部ストアの API を使わない方針なので rakutenReady() /
+//   - R18 版は外部ストアの API を使わない方針なので rakutenReady() /
 //     yahooReady() が false になり、引き当て（2〜4）は行わない。MADB だけで分かる
 //     「ISBN が無い巻」の一覧（1）はそのまま返すので、抜け巻の説明は R18 版でも出る。
 

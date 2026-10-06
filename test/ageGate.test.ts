@@ -8,7 +8,7 @@ import type { Env } from "../src/types";
 
 const general = env as unknown as Env;
 const adult = { ...general, SITE_VARIANT: "adult" } as Env;
-const ORIGIN = "https://my100shunga.test";
+const ORIGIN = "https://r18.example.com";
 const BROWSER = {
   "user-agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 Chrome/130 Safari/537.36",
   accept: "text/html,application/xhtml+xml",

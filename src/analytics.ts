@@ -97,7 +97,7 @@ export function injectVersion(html: string, v: string): string {
 // テンプレートにだけ使うこと（表示名などに「My 100 Manga」と書かれていても書き換えないように）。
 //
 // mailto は canonical と別扱いで、配信オリジンではなく site(env).mailDomain を使う。dev
-// （dev.my100shunga.com）には受信箱が無く、メールは本番ドメインで受けるため。see docs/r18.md 3 節
+// （R18版の dev ホスト）には受信箱が無く、メールは本番ドメインで受けるため。see docs/r18.md 3 節
 export function applySiteIdentity(html: string, env: Env, origin: string): string {
   const s = site(env);
   let out = html.replace(/<html\b(?![^>]*\bdata-site=)/, `<html data-site="${s.variant}"`);

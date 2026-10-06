@@ -280,7 +280,7 @@ DB 側に記録されないので、この表で管理する。
   | `GET /api/admin/labels`（未認証） | 401 |
   | `GET /admin`（未認証） | 302（Access のログインへ） |
 
-### `add-label-tag.sql` の R18版（my100shunga）への適用
+### `add-label-tag.sql` の R18版への適用
 
 **dev / 本番とも 2026-10-05 適用済み（表だけ先に作った。デプロイはまだ）。**
 R18版は本家と同じコードで動くので、表が無いまま新しいコードを出すと検索と巻一覧が
@@ -297,7 +297,7 @@ R18版は本家と同じコードで動くので、表が無いまま新しい�
   394ms / 415ms）。適用後はどちらも `label_tag` 0 行・`idx_series_label` あり、
   `series` 139,130 / `volumes` 356,644 / `lists` 0 / `users` 0 で適用前と同じ。
   レーベルは 7,992 種（本家より多いのは成年向けを収録しているため）。
-- 適用の時点ではデプロイせず、`https://my100shunga.com/api/version` が `50592d71` のまま
+- 適用の時点ではデプロイせず、R18版 本番の `/api/version` が `50592d71` のまま
   （＝旧コードで動いたまま）であることを確認した。デプロイは下の「傑作選タグの追加」で
   まとめて行った。R18版の ingest は不要（マスタの列は増えていない）。
 
@@ -571,7 +571,7 @@ MADB の `schema:version`（版表示）の取り込み。横山光輝「三国�
   `q=ドラゴンボール` が「ドラゴンボール / ドラゴンボール（完全版）」と版ごとに分かれ、二重表記が無い。
   `/api/lists/:slug` が 100 件を正常に返す（`RESOLVE_SQL` に足した `s.version` が本番で解決できている）。
 
-### R18版（my100shunga）への適用記録
+### R18版への適用記録
 
 **dev（2026-10-04）**
 
@@ -1062,8 +1062,7 @@ ingest は不要（マスタの列は増えていない）。次の月次取り�
 | R18 本番 | `a50fc304-81fa-424c-9954-02ce47f020d7` | `00000025-00000000-000050fb-39052ee0dbdd6aa896029dd54ed30fe4` |
 
 デプロイ後の確認: 4 ドメインとも `/api/series/C325142/volumes` が 35 巻を返し、9 巻が
-`9784063129502` で出る（`my100manga.com` / `dev.my100manga.com` / `my100shunga.com` /
-`dev.my100shunga.com`）。`/api/admin/master-fixes` は Cloudflare Access のガードで 401
+`9784063129502` で出る（本家・R18版の 4 環境）。`/api/admin/master-fixes` は Cloudflare Access のガードで 401
 （ルートは通っている）。
 
 デプロイ中に並行セッション（`my100manga-0f`）から `db/fix-honzuki-part4-volume.sql`

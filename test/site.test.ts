@@ -69,7 +69,7 @@ describe("サイト種別", () => {
   it("配信される全ページの見出しに本家のブランド表記が残らない", async () => {
     for (const path of ["/", "/about", "/books-guide", "/terms", "/privacy", "/operator", "/lists", "/ranking"]) {
       const res = await SELF.fetch(`https://example.com${path}`);
-      const adultHtml = applySiteIdentity(await res.text(), adult, "https://my100shunga.com");
+      const adultHtml = applySiteIdentity(await res.text(), adult, "https://r18.example.com");
       expect(adultHtml, path).not.toContain(brandHtml("My 100 Manga"));
       expect(adultHtml, path).not.toContain("My 100 Manga");
     }
@@ -80,11 +80,11 @@ describe("サイト種別", () => {
       `<html lang="ja"><a href="mailto:info@my100manga.com">info@my100manga.com</a>` +
       `<a href="mailto:abuse@my100manga.com">abuse@my100manga.com</a>`;
     // 窓口は配信オリジンではなく mailDomain（dev でも本番ドメイン）。
-    const out = applySiteIdentity(html, adult, "https://dev.my100shunga.com");
+    const out = applySiteIdentity(html, adult, "https://dev.r18.example.com");
     expect(out).toContain(`href="mailto:info@${site(adult).mailDomain}"`);
     expect(out).toContain(`href="mailto:abuse@${site(adult).mailDomain}"`);
     expect(out).not.toContain("my100manga.com");
-    expect(out).not.toContain("@dev.my100shunga.com");
+    expect(out).not.toContain("@dev.r18.example.com");
     // 本家は素通り。
     expect(applySiteIdentity(html, general, "https://example.com")).toContain("mailto:info@my100manga.com");
   });
@@ -92,7 +92,7 @@ describe("サイト種別", () => {
   it("配信される利用規約・プライバシー・運営者に本家の窓口が残らない", async () => {
     for (const path of ["/terms", "/privacy", "/operator"]) {
       const res = await SELF.fetch(`https://example.com${path}`);
-      const adultHtml = applySiteIdentity(await res.text(), adult, "https://my100shunga.com");
+      const adultHtml = applySiteIdentity(await res.text(), adult, "https://r18.example.com");
       expect(adultHtml, path).not.toContain("my100manga.com");
       expect(adultHtml, path).toContain(`@${site(adult).mailDomain}`);
     }

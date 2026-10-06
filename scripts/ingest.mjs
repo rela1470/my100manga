@@ -9,7 +9,7 @@
 // 成年コミック（schema:contentRating / description）は取り込まない（isAdult, src/adult.ts）。
 // 落とした巻（ISBN あり）は adult_volumes に記録し、検索・追加で「成年向けは追加できない」と
 // 明示するのに使う（src/adult.ts findAdultIsbns）。
-// R18版（my100shunga, SITE_VARIANT="adult"）は成年向けも収録する上位互換なので、--include-adult
+// R18版（SITE_VARIANT="adult"）は成年向けも収録する上位互換なので、--include-adult
 // で同じダンプから別の出力を作る。see docs/r18.md 2 節
 //
 // Usage:

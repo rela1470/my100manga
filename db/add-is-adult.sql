@@ -1,4 +1,4 @@
--- series.is_adult / volumes.is_adult。R18版 (my100shunga) が成年向けを収録するための印。
+-- series.is_adult / volumes.is_adult。R18版 (SITE_VARIANT="adult") が成年向けを収録するための印。
 -- 既定 0 なので、本家の既存データはそのまま「全年齢」として残る（本家の D1 には成年向けの行が
 -- そもそも入らない。ingest が adult_volumes へ落とすため）。
 --

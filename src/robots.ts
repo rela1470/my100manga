@@ -3,7 +3,7 @@ import { site, siteVariant } from "./site";
 import { Env } from "./types";
 
 // robots.txt と sitemap.xml。どちらもドメインを含むので、静的ファイルに置かず配信時の
-// オリジンから組む（本家 my100manga.com と R18版 my100shunga.com で同じコードを使うため。
+// オリジンから組む（本家と R18版で同じコードを使うため。
 // src/analytics.ts の applySiteIdentity は HTML にしか効かない）。see docs/r18.md
 
 /** 全年齢のデータ源によるランキング。R18版では sitemap にもヘッダーにも出さない

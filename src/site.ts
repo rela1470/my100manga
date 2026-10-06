@@ -38,7 +38,7 @@ export interface SiteConfig {
   commerce: boolean;
   /** 問い合わせ窓口（info@ / abuse@）のドメイン。利用規約・プライバシー・運営者の mailto を
    *  applySiteIdentity がこれに差し替える。canonical と違って**配信オリジンから作れない**:
-   *  dev（dev.my100shunga.com）には受信箱が無く、メールは本番ドメインで受けるため。 */
+   *  dev のホストには受信箱が無く、メールは本番ドメインで受けるため。 */
   mailDomain: string;
 }
 
@@ -58,7 +58,7 @@ const SITES: Record<SiteVariant, SiteConfig> = {
     commerce: true,
     mailDomain: GENERAL_MAIL_DOMAIN,
   },
-  // R18版（my100shunga.com / dev.my100shunga.com）。サイトのドメインはここには持たない
+  // R18版（ドメインは wrangler.jsonc の env.r18 / env.r18dev）。サイトのドメインはここには持たない
   // （canonical・og:url は配信時のオリジンから applySiteIdentity が作る）。mailDomain だけは
   // 例外で、dev でも本番ドメインの窓口を出す（上の mailDomain のコメント）。
   adult: {

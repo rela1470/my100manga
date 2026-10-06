@@ -898,7 +898,7 @@ const worker = {
 } satisfies ExportedHandler<Env>;
 
 // 閲覧ビーコンのキューの見分け方。1 つの Worker が閲覧ビーコンと共有画像の 2 本を受けるので、
-// キュー名で振り分ける。名前の頭はデプロイごとに違う（my100manga-views / my100shunga-views-dev
+// キュー名で振り分ける。名前の頭はデプロイごとに違う（本家の my100manga-views、R18版 dev の …-views-dev
 // 等）ので、プロジェクト名ではなく用途の部分だけを見る。wrangler.jsonc のキュー名はこれに
 // 合わせて付けること（閲覧ビーコン側に "-views" を含める）。
 const VIEW_QUEUE_MARK = "-views";

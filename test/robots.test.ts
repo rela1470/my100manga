@@ -3,7 +3,7 @@ import { describe, expect, it } from "vitest";
 import { robotsTxt, sitemapXml, SITEMAP_PATHS } from "../src/robots";
 
 // robots.txt と sitemap.xml は静的ファイルではなく Worker が配信時のオリジンから組む
-// （本家 my100manga.com と R18版 my100shunga.com で同じコードを使うため。src/robots.ts）。
+// （本家と R18版で同じコードを使うため。src/robots.ts）。
 
 describe("robots.txt / sitemap.xml", () => {
   it("robots.txt の Sitemap 行はリクエストのオリジンを指す", async () => {
@@ -29,18 +29,18 @@ describe("robots.txt / sitemap.xml", () => {
 
   it("別のホストで引けばそのホストで返る（R18版は別ドメインの同じコード）", async () => {
     const [robots, sitemap] = await Promise.all([
-      SELF.fetch("https://my100shunga.test/robots.txt").then((r) => r.text()),
-      SELF.fetch("https://my100shunga.test/sitemap.xml").then((r) => r.text()),
+      SELF.fetch("https://r18.example.com/robots.txt").then((r) => r.text()),
+      SELF.fetch("https://r18.example.com/sitemap.xml").then((r) => r.text()),
     ]);
-    expect(robots).toContain("Sitemap: https://my100shunga.test/sitemap.xml");
-    expect(sitemap).toContain("<loc>https://my100shunga.test/</loc>");
+    expect(robots).toContain("Sitemap: https://r18.example.com/sitemap.xml");
+    expect(sitemap).toContain("<loc>https://r18.example.com/</loc>");
   });
 });
 
 describe("R18版の robots.txt", () => {
   it("全年齢のデータ源によるランキングは sitemap に載せない", () => {
-    const xml = sitemapXml("https://my100shunga.test", { SITE_VARIANT: "adult" });
-    expect(xml).toContain("<loc>https://my100shunga.test/lists</loc>");
+    const xml = sitemapXml("https://r18.example.com", { SITE_VARIANT: "adult" });
+    expect(xml).toContain("<loc>https://r18.example.com/lists</loc>");
     expect(xml).not.toContain("/sales-ranking");
     expect(xml).not.toContain("/circulation");
     expect(sitemapXml("https://my100manga.test", { SITE_VARIANT: "general" })).toContain("/circulation");
@@ -48,7 +48,7 @@ describe("R18版の robots.txt", () => {
 
   it("年齢確認ゲートの画面は拾わせない（本家には出ない行）", () => {
     const adult = { SITE_VARIANT: "adult" };
-    expect(robotsTxt("https://my100shunga.test", adult)).toContain("Disallow: /age-gate");
+    expect(robotsTxt("https://r18.example.com", adult)).toContain("Disallow: /age-gate");
     expect(robotsTxt("https://my100manga.test", { SITE_VARIANT: "general" })).not.toContain("/age-gate");
   });
 });

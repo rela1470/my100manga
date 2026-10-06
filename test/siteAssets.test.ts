@@ -35,14 +35,14 @@ describe("R18版の静的ファイル差し替え", () => {
 
   it("public/adult/ に無ければ本家のファイルを返す", async () => {
     // /operator は本文がほぼ同じなので差し替えを置いていない（docs/r18.md 4 節）。
-    const res = await fetchSiteAsset(new Request("https://my100shunga.test/operator"), adult, "/operator");
+    const res = await fetchSiteAsset(new Request("https://r18.example.com/operator"), adult, "/operator");
     expect(res.status).toBe(200);
     expect((await res.text()).toLowerCase()).toContain("<!doctype html>");
   });
 
   it("public/adult/ にあれば R18版の本文を返す", async () => {
     for (const path of ["/about", "/terms", "/privacy", "/books-guide"]) {
-      const res = await fetchSiteAsset(new Request(`https://my100shunga.test${path}`), adult, path);
+      const res = await fetchSiteAsset(new Request(`https://r18.example.com${path}`), adult, path);
       expect(res.status, path).toBe(200);
       const html = await res.text();
       // 購入リンク・アフィリエイト・外部ストアの表紙は R18版には無い（src/site.ts commerce: false）。

@@ -295,16 +295,6 @@ textarea:focus {
   box-shadow: 0 0 0 4px rgba(var(--accent-rgb),.35);
 }
 
-.action-bar {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  justify-content: center;
-  gap: 12px;
-  margin: 24px 0 0;
-}
-.action-bar .cover-status { margin: 0; }
-
 button {
   font: inherit;
   cursor: pointer;
@@ -571,11 +561,15 @@ button:disabled { opacity: .45; cursor: not-allowed; transform: none; box-shadow
   gap: 12px; margin: 0 0 18px;
 }
 /* 100 枠ぶんスクロールしても並べ替え・公開に手が届くよう、幅によらず貼り付ける。
-   モーダル（z-index 50）より下、カードより上。表紙の取得は .cover-actions に分けてあり、
-   こちらは追従しない（追従する帯が高くなって画面を食うため）。 */
+   モーダル（z-index 50）より下、カードより上。表紙の取得は .shelf-cover-actions に分けて
+   あり、こちらは追従しない（追従する帯が高くなって画面を食うため）。 */
 .shelf-head { position: sticky; top: 0; z-index: 12; padding: 10px 0; background: var(--bg); }
-/* 表紙の取得の行。見出し行の下に置き、追従はしない。 */
-.cover-actions { display: flex; flex-wrap: wrap; gap: 10px; margin: 0 0 14px; }
+/* 表紙の取得の行。見出し行の下に置き、追従はしない。取得中の進捗の文言も同じ行に出す
+   （本棚の下に置くと、100 枠ぶんスクロールしないと見えない）。
+   クラス名に shelf- を付けているのは、.cover-actions が管理画面の表紙キャッシュ操作で
+   先に使われていて、枠と地色が付いてしまうため。 */
+.shelf-cover-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; margin: 0 0 14px; }
+.shelf-cover-actions .cover-status { margin: 0; }
 .shelf-title {
   margin: 0;
   font-weight: 900; font-size: 24px; letter-spacing: .02em;

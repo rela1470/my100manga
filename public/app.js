@@ -683,11 +683,9 @@ function render() {
   fetchBtn.style.display = showFetch ? "" : "none";
   fixBtn.textContent = `表紙がない本を指定（${missing}）`;
   fixBtn.style.display = showFix ? "" : "none";
-  // 取得ボタンの行は、どちらかのボタンが出るときだけ場所を取る。
-  $("coverActions").style.display = showFetch || showFix ? "" : "none";
-
-  // 取得ボタンは本棚の見出し行にあるので、この行に残っているのは進捗の文言だけ。
-  $("actionBar").style.display = state.fetchingCovers ? "" : "none";
+  // 取得ボタンの行は、どちらかのボタンが出るときと、取得中（進捗の文言を同じ行に出す）
+  // だけ場所を取る。取得中は上の 2 つのボタンがどちらも隠れる。
+  $("coverActions").style.display = showFetch || showFix || state.fetchingCovers ? "" : "none";
 
   const clearBtn = $("clearAll");
   clearBtn.textContent = `編集中の漫画を全削除（${filled}）`;

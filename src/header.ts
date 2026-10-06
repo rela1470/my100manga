@@ -22,8 +22,11 @@ const LINKS = [
 
 export function headerLinksHtml(env: Pick<Env, "SITE_VARIANT">): string {
   const showAllAges = site(env).allAgesRankings;
-  return LINKS.filter((l) => showAllAges || !l.allAges).map(
+  const links = LINKS.filter((l) => showAllAges || !l.allAges).map(
     (l) =>
       `<a class="header-link" href="${l.href}"><span class="header-link-icon" aria-hidden="true">${l.icon}</span>${l.label}</a>`
-  ).join("\n    ");
+  ).join("\n      ");
+  // <nav> でまとめるのは、狭い幅でボタンを格子に並べて幅をそろえるため（兄弟のまま
+  // 置くと、折り返しの位置が字数任せになって 3 個 + 1 個のような不揃いになる）。
+  return `<nav class="header-nav" aria-label="メインメニュー">\n      ${links}\n    </nav>`;
 }

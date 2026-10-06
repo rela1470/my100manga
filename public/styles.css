@@ -202,8 +202,9 @@ header.site p.tagline {
 /* トップはヒーロー（.hero）が同じことを大きく言うので、帯の説明文は出さない。 */
 body.page-top header.site p.tagline { display: none; }
 /* ヘッダーのみんなのリスト・売上ランキングへのボタン（src/header.ts が各ページに差し込む）。 */
+header.site .header-nav { display: flex; flex-wrap: wrap; gap: 8px; }
 header.site .header-link {
-  display: inline-flex; align-items: center; gap: 8px;
+  display: inline-flex; align-items: center; justify-content: center; gap: 8px;
   min-height: 40px; padding: 0 16px;
   border-radius: var(--radius-pill);
   background: transparent; border: 2px solid #fff;
@@ -213,17 +214,20 @@ header.site .header-link {
 header.site .header-link:hover { background: var(--pop); border-color: var(--pop); color: var(--ink); }
 header.site .header-link-icon { display: inline-flex; line-height: 1; }
 header.site .header-link-icon svg { display: block; }
+/* 狭い幅では 2 列の格子にして、ボタンの幅と行数をそろえる（字数任せに折り返すと
+   3 個 + 1 個のような不揃いになる）。 */
+@media (max-width: 760px) {
+  header.site .header-nav { display: grid; grid-template-columns: 1fr 1fr; }
+}
 @media (max-width: 560px) {
-  header.site .header-link { min-height: 36px; padding: 0 12px; font-size: 13px; }
+  header.site .header-link { min-height: 36px; padding: 0 10px; font-size: 13px; }
   header.site .header-link-icon { display: none; }
 }
 /* 1 行に収まらない幅では、右上に残すのはログイン（またはアカウント）。ページへのボタンは
-   2 行目以降へ送る。flex は「ここで改行」を書けないので、幅いっぱいの疑似要素を間に挟んで
-   order で順番を決める。アカウント欄が無い構成（GOOGLE_ENABLED=false）では挟まない。 */
+   <nav> ごと 2 行目へ送る。 */
 @media (max-width: 1080px) {
   header.site .account-bar { order: 1; }
-  header.site:has(.account-bar)::after { content: ""; order: 2; flex-basis: 100%; height: 0; }
-  header.site .header-link { order: 3; }
+  header.site .header-nav { order: 2; flex-basis: 100%; }
 }
 /* ヘッダー右上の Google ログイン / アカウント表示（public/account.js が差し込む）。 */
 /* 帯の中の 1 要素として並べる（メニューはこのチップにぶら下げる）。 */
@@ -419,6 +423,16 @@ button:disabled { opacity: .45; cursor: not-allowed; transform: none; box-shadow
   transform: skewX(-10deg);
 }
 @media (max-width: 900px) { .hero-deco { display: none; } }
+/* 縦積みになる幅では、横に並ぶ相棒（メーターのコマ）が無くなるので、見出しまわりを
+   中央にそろえて一回り大きく出す。左寄せのままだと右側が間延びして見える。
+   幅を直接いじるとヒーロー内の検索欄が縮むので、そろえるのは文字の寄せだけにする。 */
+@media (max-width: 900px) {
+  .hero-copy { text-align: center; }
+  .hero-bubble { align-self: center; }
+  /* 「100の漫画」が 1 行に収まる範囲でいっぱいに大きくする（およそ 8em 必要）。 */
+  .hero-title { font-size: clamp(32px, 10.5vw, 54px); }
+  .hero-title-row { justify-content: center; }
+}
 .hero-gutter {
   position: absolute; left: -12%; right: -12%; top: 6%;
   height: 18px; background: var(--panel);

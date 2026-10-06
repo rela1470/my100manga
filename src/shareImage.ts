@@ -52,13 +52,17 @@ const FONT_PATH = "/fonts/NotoSansJP-Bold-subset.otf";
 
 // 配色はサイト種別ごと（src/site.ts）。public/styles.css の :root / :root[data-site="adult"] と
 // 揃えること（画面と共有画像で色が食い違わないように）。
-const PALETTE: Record<SiteVariant, { bg: string; text: string; muted: string; accent: string; empty: string }> = {
+const PALETTE: Record<
+  SiteVariant,
+  { bg: string; text: string; muted: string; accent: string; empty: string; ink: string }
+> = {
   general: {
-    bg: "#f4f8ff",
-    text: "#16202e",
-    muted: "#6b7684",
-    accent: "#3b82f6",
-    empty: "#dde7f5",
+    bg: "#ffffff",
+    text: "#111111",
+    muted: "#6b665b",
+    accent: "#e8308a",
+    empty: "#e6f4fb",
+    ink: "#111111",
   },
   adult: {
     bg: "#fff5f9",
@@ -66,8 +70,13 @@ const PALETTE: Record<SiteVariant, { bg: string; text: string; muted: string; ac
     muted: "#6e5562",
     accent: "#ec4899",
     empty: "#f6dbe7",
+    ink: "#111111",
   },
 };
+// コマ枠の太さ。画面側（public/styles.css の --bw / .shelf の枠）に合わせて、
+// 外枠は太く、1 枚ずつの枠は細く引く。
+const FRAME_W = 8;
+const CELL_STROKE = 3;
 
 interface Layout {
   width: number;
@@ -231,6 +240,8 @@ function buildSvg(list: MangaList, variant: ShareVariant, hasCover: boolean[], h
     `<svg xmlns="http://www.w3.org/2000/svg" width="${L.width}" height="${L.height}" viewBox="0 0 ${L.width} ${L.height}" font-family="${FONT_FAMILY}" font-weight="700">`,
     `<defs><clipPath id="r" clipPathUnits="objectBoundingBox"><rect width="1" height="1" rx="0.07" ry="0.0525"/></clipPath></defs>`,
     `<rect width="100%" height="100%" fill="${COLOR.bg}"/>`,
+    // 外枠。画面の本棚と同じく、黒いコマ枠で囲う。
+    `<rect x="${FRAME_W / 2}" y="${FRAME_W / 2}" width="${L.width - FRAME_W}" height="${L.height - FRAME_W}" fill="none" stroke="${COLOR.ink}" stroke-width="${FRAME_W}"/>`,
     `<text x="${L.pad}" y="${L.headerY}" font-size="${size}" fill="${COLOR.text}">${escapeHtml(owner)}${brandSvg(brand, COLOR.accent)}${range ? `<tspan dx="0.4em" fill="${COLOR.muted}">${range}</tspan>` : ""}</text>`,
     `<text x="${L.width - L.pad}" y="${L.headerY}" font-size="${Math.round(size * 0.75)}" fill="${COLOR.muted}" text-anchor="end">${escapeHtml(url)}</text>`,
     `<text x="${L.width - L.pad}" y="${L.creditY}" font-size="${L.creditSize}" fill="${COLOR.muted}" text-anchor="end">${escapeHtml(creditLine(list, variant))}</text>`
@@ -244,13 +255,16 @@ function buildSvg(list: MangaList, variant: ShareVariant, hasCover: boolean[], h
     const y = (L.gridTop + Math.floor(k / L.cols) * (L.cellH + L.gap)).toFixed(1);
     const w = L.cellW.toFixed(1);
     const h = L.cellH.toFixed(1);
+    // 枠は表紙の上から引く（先に引くと画像で隠れる）。
+    const frame = `<rect x="${x}" y="${y}" width="${w}" height="${h}" rx="${r}" fill="none" stroke="${COLOR.ink}" stroke-width="${CELL_STROKE}"/>`;
     if (i < list.items.length && hasCover[i]) {
       parts.push(
         `<rect x="${x}" y="${y}" width="${w}" height="${h}" rx="${r}" fill="${COLOR.empty}"/>`,
-        `<image href="${coverHref(i)}" x="${x}" y="${y}" width="${w}" height="${h}" preserveAspectRatio="xMidYMid slice" clip-path="url(#r)"/>`
+        `<image href="${coverHref(i)}" x="${x}" y="${y}" width="${w}" height="${h}" preserveAspectRatio="xMidYMid slice" clip-path="url(#r)"/>`,
+        frame
       );
     } else {
-      parts.push(`<rect x="${x}" y="${y}" width="${w}" height="${h}" rx="${r}" fill="${COLOR.empty}"/>`);
+      parts.push(`<rect x="${x}" y="${y}" width="${w}" height="${h}" rx="${r}" fill="${COLOR.empty}"/>`, frame);
       if (i < list.items.length) {
         const cx = (Number(x) + L.cellW / 2).toFixed(1);
         const cy = (Number(y) + L.cellH / 2 + numSize * 0.35).toFixed(1);

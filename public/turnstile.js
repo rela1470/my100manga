@@ -39,17 +39,21 @@
     return apiPromise;
   }
 
-  // チェックが必要になったときだけ見せる、画面下中央の小さな枠。
+  // チェックが必要になったときだけ見せる、画面下中央の枠。公開ダイアログの上に出るので、
+  // サイトと同じ黒枠＋ベタ影にして「ここで止まっている」ことが分かるようにする
+  // （見落とすと、ボタンが「確認中…」のまま進まないように見える）。
   function ensureHost() {
     if (host) return host;
     host = document.createElement("div");
     host.setAttribute("role", "dialog");
     host.setAttribute("aria-label", "ボット確認");
     host.style.cssText =
-      "position:fixed;left:50%;bottom:16px;transform:translateX(-50%);z-index:10000;" +
-      "background:#fff;border-radius:12px;box-shadow:0 4px 24px rgba(0,0,0,.2);padding:12px;" +
-      "display:none;text-align:center;font-size:14px";
-    host.innerHTML = '<p style="margin:0 0 8px">送信の前に確認をお願いします</p><div></div>';
+      "position:fixed;left:50%;bottom:24px;transform:translateX(-50%);z-index:10000;" +
+      "background:#fff;border:4px solid #111;border-radius:14px;box-shadow:8px 8px 0 #111;" +
+      "padding:14px 16px;display:none;text-align:center;font-size:15px;font-weight:900;" +
+      "max-width:92vw;color:#111";
+    host.innerHTML =
+      '<p style="margin:0 0 10px">送信の前に、こちらの確認をお願いします</p><div></div>';
     document.body.appendChild(host);
     return host;
   }

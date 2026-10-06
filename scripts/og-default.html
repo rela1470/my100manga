@@ -1,0 +1,55 @@
+<!--
+  OG 画像（public/og-default.png）の元。デザインを変えたらここを直して描き直す:
+
+  "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome" --headless=new --disable-gpu \
+    --hide-scrollbars --virtual-time-budget=9000 --screenshot=public/og-default.png \
+    --window-size=1200,630 "file://$PWD/scripts/og-default.html"
+
+  配色はトップ（public/styles.css の :root）に合わせること。
+-->
+<!doctype html><html lang="ja"><head><meta charset="utf-8">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Dela+Gothic+One&family=Zen+Kaku+Gothic+New:wght@700;900&display=swap" rel="stylesheet">
+<style>
+*{box-sizing:border-box}
+html,body{margin:0;padding:0;width:1200px;height:630px;overflow:hidden}
+body{font-family:"Zen Kaku Gothic New","Hiragino Sans",sans-serif;color:#111;background:#fff}
+.card{position:relative;width:1200px;height:630px;background:#fff;border:10px solid #111;overflow:hidden}
+.lines{position:absolute;inset:0;opacity:.9;
+  background:repeating-conic-gradient(from 0deg at 32% 46%,#111 0deg .3deg,transparent .3deg 3.2deg);
+  -webkit-mask-image:radial-gradient(ellipse 42% 46% at 32% 46%,transparent 40%,#000 74%)}
+.dots{position:absolute;inset:0;opacity:.14;background-image:radial-gradient(#111 1.4px,transparent 1.7px);background-size:10px 10px;
+  -webkit-mask-image:radial-gradient(ellipse 58% 60% at 32% 46%,transparent 45%,#000 95%)}
+.sky{position:absolute;right:-5%;top:0;width:44%;height:86%;background:#bfe6f7;border-left:5px solid #111;border-bottom:5px solid #111;transform:skewX(-10deg)}
+.inner{position:relative;height:100%;padding:44px 52px;display:flex;align-items:center;gap:36px}
+.copy{flex:1 1 0;display:flex;flex-direction:column;gap:20px;min-width:0}
+.bubble{position:relative;align-self:flex-start;background:#fff;border:5px solid #111;border-radius:28px;padding:9px 22px;font-weight:900;font-size:22px}
+.bubble::before{content:"";position:absolute;left:38px;bottom:-26px;border-left:12px solid transparent;border-right:22px solid transparent;border-top:26px solid #111}
+.bubble::after{content:"";position:absolute;left:47px;bottom:-14px;border-left:8px solid transparent;border-right:15px solid transparent;border-top:18px solid #fff}
+h1{margin:0;font-family:"Dela Gothic One",sans-serif;font-weight:400;line-height:1.04;font-size:60px}
+h1 span{display:block}
+.row{display:flex;align-items:baseline;gap:10px}
+.n100{font-size:1.9em;line-height:1;color:#e8308a;-webkit-text-stroke:6px #111;paint-order:stroke fill;margin-right:.14em;
+  text-shadow:2px 2px 0 #27a3dc,4px 4px 0 #27a3dc,6px 6px 0 #27a3dc,8px 8px 0 #27a3dc,10px 10px 0 #27a3dc,12px 12px 0 #27a3dc,15px 15px 0 #111}
+.logo{align-self:flex-start;background:#111;color:#fff;font-family:"Dela Gothic One",sans-serif;font-size:26px;padding:7px 18px;letter-spacing:.02em}
+.logo b{color:#e8308a;font-weight:400}
+.panel{position:relative;flex:0 0 404px;width:404px;background:#fff;border:5px solid #111;padding:12px;box-shadow:10px 10px 0 #111}
+.grid{display:grid;grid-template-columns:repeat(10,1fr);gap:4px}
+.cell{aspect-ratio:3/4;border:2px solid #111;border-radius:3px;background:#e6f4fb}
+.cell.p{background:#fdeaf3}
+</style></head><body>
+<div class="card">
+  <div class="lines"></div><div class="dots"></div><div class="sky"></div>
+  <div class="inner">
+    <div class="copy">
+      <p class="bubble">選んで、並べて、URLでシェア！</p>
+      <h1><span>自分を構成する</span><span class="row"><span class="n100">100</span><span>の漫画</span></span></h1>
+      <div class="logo">MY <b>100</b> MANGA</div>
+    </div>
+    <div class="panel"><div class="grid" id="g"></div></div>
+  </div>
+</div>
+<script>
+var g=document.getElementById("g");
+for(var i=1;i<=100;i++){var d=document.createElement("div");d.className="cell"+((i*7)%11===3||(i*3)%13===5?" p":"");g.appendChild(d);}
+</script></body></html>

@@ -39,6 +39,13 @@
        右の進捗メーターは app.js の renderHeroGauge() が更新する。 -->
   <section class="hero">
     <div class="hero-tone" aria-hidden="true"></div>
+    <!-- 背景の飾り。空の吹き出しとコマの白い間（ガター）で、漫画のページらしさを出す。 -->
+    <div class="hero-deco" aria-hidden="true">
+      <span class="hero-gutter"></span>
+      <span class="hero-balloon b1"></span>
+      <span class="hero-balloon b2"></span>
+      <span class="hero-balloon b3"></span>
+    </div>
     <div class="hero-inner">
       <div class="hero-copy">
         <p class="hero-bubble">選んで、並べて、URLでシェア！</p>
@@ -57,7 +64,7 @@
         </div>
       </div>
       <div class="hero-gauge">
-        <div class="hero-gauge-panel">
+        <div class="hero-gauge-burst">
         <div class="hero-gauge-dial" id="heroGauge">
           <span class="hero-gauge-cap">あと</span>
           <span class="hero-gauge-n" id="heroRemaining">100</span>
@@ -78,10 +85,29 @@
     <!-- はじめての人向けの説明。リストが空（0作品）のときだけ app.js render() が出す。 -->
     <section class="empty-guide" id="emptyGuide" hidden>
       <h2 class="empty-guide-title">はじめかた</h2>
+      <!-- 3 コマ。各コマは「番号 + 見出し + アイコン + 本文」。番号は CSS の counter で打つ。 -->
       <ol class="empty-guide-steps">
-        <li><b>漫画を選ぶ</b>上の検索欄から作品を探して追加します。ちょうど100作品そろうと公開できます。</li>
-        <li><b>途中経過は自動保存</b>この端末のブラウザに保存されるので、少しずつ選べます。Googleでログインすると別の端末でも続きを作れます。</li>
-        <li><b>表紙はあとからでOK</b>表紙が出ていない本も、あとで「表紙を取得」からまとめて取得できます。</li>
+        <li>
+          <div class="step-head">
+            <b>漫画を選ぶ</b>
+            <svg class="step-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="11" cy="11" r="7"></circle><path d="m20 20-4.2-4.2"></path></svg>
+          </div>
+          <p class="step-text">上の検索欄から作品を探して追加します。ちょうど100作品そろうと公開できます。</p>
+        </li>
+        <li>
+          <div class="step-head">
+            <b>途中経過は自動保存</b>
+            <svg class="step-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 4h12l4 4v12H4z"></path><path d="M8 4v6h8V4"></path><rect x="8" y="13" width="8" height="7"></rect></svg>
+          </div>
+          <p class="step-text">この端末のブラウザに保存されるので、少しずつ選べます。Googleでログインすると別の端末でも続きを作れます。</p>
+        </li>
+        <li>
+          <div class="step-head">
+            <b>表紙はあとからでOK</b>
+            <svg class="step-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 5h6a3 3 0 0 1 3 3v11a3 3 0 0 0-3-3H3z"></path><path d="M21 5h-6a3 3 0 0 0-3 3v11a3 3 0 0 1 3-3h6z"></path></svg>
+          </div>
+          <p class="step-text">表紙が出ていない本も、あとで「表紙を取得」からまとめて取得できます。</p>
+        </li>
       </ol>
       <a class="empty-guide-link" href="/lists">みんなのリストを見る →</a>
     </section>

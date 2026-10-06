@@ -16,17 +16,17 @@
   --text: #111111;
   --muted: #6b665b;       /* 紙地・panel-2 の上でも 4.5:1 を満たす濃さ */
 
-  /* pop accents。黄 × 赤は特定の少年誌を強く連想させるので避け、
-     アクア（地）× インディゴ（差し色）にしている。 */
-  --accent: #1f4fd7;      /* 差し色のインディゴ */
-  --accent-rgb: 31,79,215;/* --accent の RGB（フォーカス枠用） */
-  --accent-2: #1a43b8;    /* 本文中のリンク。白背景で 4.5:1 以上 */
-  --accent-3: #6d28d9;    /* purple */
-  --accent-4: #7fe0d4;    /* aqua */
-  --pop: #7fe0d4;         /* ヒーローの地・ロゴの 100 に使うアクア */
-  --hero-bg: var(--pop);  /* ヒーローの地 */
+  /* pop accents。黄 × 赤は特定の少年誌を強く連想させるので避け、わら半紙（地）×
+     朱（差し色）にしている。地と差し色は別のトークンなので、ここだけで配色を替えられる。 */
+  --accent: #d8381a;      /* 差し色の朱 */
+  --accent-rgb: 216,56,26;/* --accent の RGB（フォーカス枠用） */
+  --accent-2: #b82e12;    /* 本文中のリンク。白背景で 6.1:1 */
+  --accent-3: #1f4fd7;    /* blue */
+  --accent-4: #e9e5da;    /* わら半紙 */
+  --pop: #d8381a;         /* ロゴの 100・追加タイル・ホバーの地。黒の上でも紙の上でも効く朱 */
+  --hero-bg: #fbf8ef;     /* ヒーローの地（わら半紙。集中線とトーンは黒で刷る） */
   --d3-face: var(--accent);  /* 立体の「100」の面 */
-  --d3-side: #0e2a82;        /* 立体の「100」の側面（面より暗く） */
+  --d3-side: #7a1a06;        /* 立体の「100」の側面（面より暗く） */
   /* 集中線の集まる先。見出し「自分を構成する100の漫画」を狙う。 */
   --shuchu-x: 30%;
   --shuchu-y: 46%;
@@ -34,9 +34,9 @@
   --warn: #c77700;
   --danger: #d7001f;      /* 削除・警告の赤だけは配色に関係なく残す */
   /* 白文字を載せる塗り用（WCAG AA 4.5:1 以上）。 */
-  --accent-strong: #1f4fd7;
-  --accent-strong-2: #163aa8;
-  --accent-3-strong: #5b21b6;
+  --accent-strong: #d8381a;
+  --accent-strong-2: #ad2a0f;
+  --accent-3-strong: #1b3fae;
   --ok-strong: #0a6e4b;   /* 白文字で 6.3:1 */
   --ok-strong-2: #07543a;
   --warn-text: #8a5300;
@@ -345,17 +345,20 @@ button:disabled { opacity: .45; cursor: not-allowed; transform: none; box-shadow
 /* 地のアミ点（トーン）。集中線と重ねて紙に刷った感じを出す。 */
 .hero::before {
   content: "";
-  position: absolute; inset: 0; pointer-events: none; opacity: .1;
-  background-image: radial-gradient(var(--ink) 1.4px, transparent 1.6px);
-  background-size: 10px 10px;
+  position: absolute; inset: 0; pointer-events: none; opacity: .14;
+  background-image: radial-gradient(var(--ink) 1.3px, transparent 1.5px);
+  background-size: 9px 9px;
+  /* 端ほど濃く、中心（見出し）は抜く。 */
+  -webkit-mask-image: radial-gradient(ellipse 60% 62% at var(--shuchu-x) var(--shuchu-y), transparent 45%, #000 95%);
+  mask-image: radial-gradient(ellipse 60% 62% at var(--shuchu-x) var(--shuchu-y), transparent 45%, #000 95%);
 }
 /* 集中線。円錐グラデーションを細い放射状の線にして、中心だけマスクで抜く。
    集まる先（--shuchu-x/y）は見出しの「100 の漫画」。線の無い中心が見出しに重なる。 */
 .hero-tone {
-  position: absolute; inset: 0; pointer-events: none; opacity: .55;
-  background: repeating-conic-gradient(from 0deg at var(--shuchu-x) var(--shuchu-y), var(--ink) 0deg 0.7deg, transparent 0.7deg 5deg);
-  -webkit-mask-image: radial-gradient(ellipse 46% 50% at var(--shuchu-x) var(--shuchu-y), transparent 42%, #000 78%);
-  mask-image: radial-gradient(ellipse 46% 50% at var(--shuchu-x) var(--shuchu-y), transparent 42%, #000 78%);
+  position: absolute; inset: 0; pointer-events: none; opacity: .85;
+  background: repeating-conic-gradient(from 0deg at var(--shuchu-x) var(--shuchu-y), var(--ink) 0deg 0.32deg, transparent 0.32deg 2.4deg);
+  -webkit-mask-image: radial-gradient(ellipse 44% 48% at var(--shuchu-x) var(--shuchu-y), transparent 40%, #000 72%);
+  mask-image: radial-gradient(ellipse 44% 48% at var(--shuchu-x) var(--shuchu-y), transparent 40%, #000 72%);
 }
 .hero-inner {
   position: relative;
@@ -363,6 +366,31 @@ button:disabled { opacity: .45; cursor: not-allowed; transform: none; box-shadow
   padding: 56px 24px 64px;
   display: flex; flex-wrap: wrap; align-items: center; gap: 40px;
 }
+/* 背景の飾り。コマの白い間（ガター）を斜めに 1 本通し、空の吹き出しをいくつか浮かせる。
+   いずれも装飾なので、狭い画面では出さない（中身の邪魔になるため）。 */
+.hero-deco { position: absolute; inset: 0; pointer-events: none; }
+@media (max-width: 900px) { .hero-deco { display: none; } }
+.hero-gutter {
+  position: absolute; left: -12%; right: -12%; top: 6%;
+  height: 18px; background: var(--panel);
+  border-top: var(--bw) solid var(--ink); border-bottom: var(--bw) solid var(--ink);
+  transform: rotate(-5deg);
+}
+.hero-balloon {
+  position: absolute;
+  background: var(--panel); border: var(--bw) solid var(--ink); border-radius: 50%;
+}
+/* しっぽ。三角を 2 枚重ねて枠線だけ残す。 */
+.hero-balloon::before, .hero-balloon::after {
+  content: ""; position: absolute; width: 0; height: 0;
+  border-left: 9px solid transparent; border-right: 15px solid transparent;
+}
+.hero-balloon::before { left: 24%; bottom: -17px; border-top: 18px solid var(--ink); }
+.hero-balloon::after { left: calc(24% + 5px); bottom: -8px; border-top: 12px solid var(--panel); }
+.hero-balloon.b1 { width: 104px; height: 62px; left: 52%; top: 15%; transform: rotate(-4deg); }
+.hero-balloon.b2 { width: 70px; height: 44px; left: 66%; top: 32%; transform: rotate(6deg); }
+.hero-balloon.b3 { width: 60px; height: 38px; left: 45%; top: 76%; transform: rotate(3deg); }
+
 /* 文字側は伸び、メーターは折り返したら中央に来る。 */
 .hero-copy { flex: 999 1 520px; min-width: 0; display: flex; flex-direction: column; gap: 24px; }
 
@@ -395,6 +423,8 @@ button:disabled { opacity: .45; cursor: not-allowed; transform: none; box-shadow
 /* 100 だけ一回り大きく、黒フチ＋右下へ押し出した立体にする。影を 2px ずつ重ねて
    側面を作り、いちばん奥に黒を一枚置いて輪郭を締める。 */
 .hero-100 {
+  /* 面は単色。グラデーション（background-clip: text）も試したが、塗りの範囲が行ボックス
+     なので、はみ出す字の上が欠ける。立体感は下の影の積み重ねで十分出る。 */
   font-size: 1.9em; line-height: 1; color: var(--d3-face);
   -webkit-text-stroke: 6px var(--ink);
   paint-order: stroke fill;
@@ -427,27 +457,32 @@ button:disabled { opacity: .45; cursor: not-allowed; transform: none; box-shadow
 
 /* 進捗メーター。あと何作品かを大きく出し、下の帯で埋まり具合を見せる。 */
 .hero-gauge { flex: 1 1 300px; display: flex; justify-content: center; }
-/* 丸は回しても傾いて見えないので、コマ（四角い枠）ごと傾ける。中の目盛りは枠に対して
-   まっすぐなので、貼り付けたコマが斜めに乗っているように読める。 */
-.hero-gauge-panel {
+/* 丸は回しても傾いて見えないので、後ろに爆発（ギザギザ）を敷いてそれを傾ける。
+   目盛りの文字はまっすぐのままなので読みやすさは落ちない。 */
+.hero-gauge-burst {
   position: relative;
-  padding: 16px;
-  background: var(--panel);
-  border: 5px solid var(--ink);
-  box-shadow: var(--shadow-hard);
-  transform: rotate(-4deg);
+  display: flex; align-items: center; justify-content: center;
+  width: 332px; height: 332px;
 }
-/* コマの地にもトーンを敷く。 */
-.hero-gauge-panel::before {
+.hero-gauge-burst::before, .hero-gauge-burst::after {
   content: "";
-  position: absolute; inset: 0; pointer-events: none; opacity: .1;
-  background-image: radial-gradient(var(--ink) 1.3px, transparent 1.5px);
-  background-size: 9px 9px;
+  position: absolute; inset: 0;
+  clip-path: polygon(
+    50% 0%, 59% 13%, 71% 5%, 73% 20%, 87% 16%, 83% 30%, 98% 32%, 88% 43%,
+    100% 50%, 88% 57%, 98% 68%, 83% 70%, 87% 84%, 73% 80%, 71% 95%, 59% 87%,
+    50% 100%, 41% 87%, 29% 95%, 27% 80%, 13% 84%, 17% 70%, 2% 68%, 12% 57%,
+    0% 50%, 12% 43%, 2% 32%, 17% 30%, 13% 16%, 27% 20%, 29% 5%, 41% 13%);
+  transform: rotate(-8deg);
 }
+/* 黒を一回り大きく敷いて縁取りにし、その上に差し色を少し小さく重ねる。 */
+.hero-gauge-burst::before { background: var(--ink); }
+.hero-gauge-burst::after { background: var(--accent); inset: 7px; }
 .hero-gauge-dial {
   position: relative;
-  width: 252px; height: 252px; border-radius: 50%;
-  background: #fff; border: var(--bw) solid var(--ink);
+  /* 爆発は ::before / ::after で描いていて、そのままだと後から塗られて目盛りを覆う。 */
+  z-index: 1;
+  width: 232px; height: 232px; border-radius: 50%;
+  background: #fff; border: 5px solid var(--ink);
   display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 2px;
 }
 .hero-gauge-cap { font-weight: 900; font-size: 17px; }
@@ -467,9 +502,9 @@ button:disabled { opacity: .45; cursor: not-allowed; transform: none; box-shadow
   :root { --shuchu-x: 50%; --shuchu-y: 32%; }
   .hero-inner { padding: 36px 16px 44px; gap: 28px; }
   .hero-bubble { font-size: 16px; }
-  .hero-gauge-panel { padding: 12px; }
-  .hero-gauge-dial { width: 212px; height: 212px; }
-  .hero-gauge-n { font-size: 80px; }
+  .hero-gauge-burst { width: 290px; height: 290px; }
+  .hero-gauge-dial { width: 204px; height: 204px; }
+  .hero-gauge-n { font-size: 78px; }
 }
 
 /* ── 本棚（トップのグリッドの枠）──────────────────────────────────── */
@@ -745,6 +780,16 @@ body.admin header.site h1 { font-size: 22px; }
   background-image: radial-gradient(var(--ink) 1.2px, transparent 1.4px);
   background-size: 9px 9px;
 }
+/* 数字の後ろの集中線。中心（数字が乗るところ）はマスクで抜く。 */
+.stat-grid.site-stats .stat-card::after {
+  content: "";
+  position: absolute; inset: 0; pointer-events: none; opacity: .16;
+  background: repeating-conic-gradient(from 0deg at 50% 42%, var(--ink) 0deg 0.3deg, transparent 0.3deg 3deg);
+  -webkit-mask-image: radial-gradient(ellipse 40% 42% at 50% 42%, transparent 52%, #000 100%);
+  mask-image: radial-gradient(ellipse 40% 42% at 50% 42%, transparent 52%, #000 100%);
+}
+.stat-grid.site-stats .stat-card .n,
+.stat-grid.site-stats .stat-card .k { position: relative; }
 @media (hover: hover) {
   .stat-grid.site-stats .stat-card:hover { transform: none; box-shadow: none; background: var(--panel-2); }
 }
@@ -2552,10 +2597,58 @@ a.bd-series:hover { background: var(--accent-strong-2); }
 }
 .empty-guide-title::before { bottom: -15px; border-top: 15px solid var(--ink); }
 .empty-guide-title::after { bottom: -9px; border-top: 11px solid var(--panel); }
-.empty-guide-steps { margin: 0 0 10px; padding-left: 1.4em; font-size: 14px; }
-.empty-guide-steps li { margin: 4px 0; }
-.empty-guide-steps b { display: block; }
-.empty-guide-link { font-weight: 700; font-size: 14px; }
+/* 3 コマ横並び。番号は counter でコマの角に打つ。狭い画面では 1 列に積む。 */
+.empty-guide-steps {
+  list-style: none;
+  counter-reset: step;
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 14px;
+  margin: 0 0 14px;
+  padding: 0;
+  font-size: 13px;
+}
+@media (max-width: 760px) { .empty-guide-steps { grid-template-columns: 1fr; } }
+.empty-guide-steps li {
+  position: relative;
+  counter-increment: step;
+  margin: 0;
+  padding: 14px 16px 14px 18px;
+  background: var(--panel);
+  border: var(--bw) solid var(--ink);
+  border-radius: var(--radius-sm);
+  box-shadow: var(--shadow-sm);
+}
+/* コマの地の集中線（薄く）。 */
+.empty-guide-steps li::after {
+  content: "";
+  position: absolute; inset: 0; pointer-events: none; opacity: .09;
+  border-radius: inherit;
+  background: repeating-conic-gradient(from 0deg at 88% 22%, var(--ink) 0deg 0.3deg, transparent 0.3deg 3.4deg);
+  -webkit-mask-image: radial-gradient(ellipse 52% 60% at 88% 22%, transparent 24%, #000 80%);
+  mask-image: radial-gradient(ellipse 52% 60% at 88% 22%, transparent 24%, #000 80%);
+}
+.empty-guide-steps li > * { position: relative; z-index: 1; }
+.step-head {
+  display: flex; align-items: center; justify-content: space-between; gap: 10px;
+  margin-bottom: 6px;
+}
+/* 見出しは本文の書体の極太で出す。見出し書体（Dela Gothic One）はこの大きさだと
+   字の中が潰れて読みにくい。 */
+.empty-guide-steps b {
+  display: block;
+  font-weight: 900; font-size: 14px; letter-spacing: .01em;
+}
+/* 番号は「1.」の形でコマの頭に出す。 */
+.empty-guide-steps b::before {
+  content: counter(step) ". ";
+  color: var(--accent);
+}
+.step-icon {
+  flex: none; width: 30px; height: 30px; color: var(--accent);
+}
+.step-text { margin: 0; }
+.empty-guide-link { font-weight: 900; font-size: 14px; }
 
 /* 公開後モーダルの編集用URLの注意書き。 */
 .edit-url-warn {

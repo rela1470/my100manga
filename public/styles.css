@@ -474,62 +474,53 @@ button:disabled { opacity: .45; cursor: not-allowed; transform: none; box-shadow
 
 /* 進捗メーター。あと何作品かを大きく出し、下の帯で埋まり具合を見せる。 */
 .hero-gauge { flex: 1 1 300px; display: flex; justify-content: center; }
-/* 丸は回しても傾いて見えないので、後ろに爆発（ギザギザ）を敷いてそれを傾ける。
-   目盛りの文字はまっすぐのままなので読みやすさは落ちない。 */
-.hero-gauge-burst {
+/* 丸ではなく吹き出しにする。角のある形なので傾きがそのまま伝わるし、漫画の
+   「人が言っている」感じが出る。しっぽは左下（見出しの方）へ向ける。 */
+.hero-gauge-balloon {
   position: relative;
-  display: flex; align-items: center; justify-content: center;
-  width: 300px; height: 300px;
+  width: 296px;
+  padding: 20px 24px 22px;
+  background: var(--panel);
+  border: 5px solid var(--ink);
+  border-radius: 30px;
+  box-shadow: var(--shadow-hard);
+  display: flex; flex-direction: column; align-items: center; gap: 2px;
+  transform: rotate(-3deg);
 }
-.hero-gauge-burst::before, .hero-gauge-burst::after {
-  content: "";
-  position: absolute; inset: 0;
-  /* トゲの長さ・角度を不揃いにして、太陽（等間隔・等長）に見えないようにする。 */
-  clip-path: polygon(
-    50.0% 0.0%, 59.3% 16.3%, 73.6% 11.7%, 71.4% 24.8%,
-    88.8% 20.1%, 84.1% 38.4%, 93.0% 48.6%, 83.8% 53.6%,
-    97.3% 66.1%, 76.8% 69.3%, 77.4% 84.4%, 67.8% 81.3%,
-    65.2% 94.5%, 49.5% 84.0%, 36.3% 98.1%, 32.9% 80.5%,
-    19.3% 80.1%, 23.4% 69.5%, 6.4% 70.1%, 14.2% 54.1%,
-    5.4% 43.8%, 18.0% 38.6%, 7.4% 23.8%, 28.6% 24.8%,
-    31.6% 10.0%, 41.6% 16.0%);
-  transform: rotate(-8deg);
+/* しっぽ。黒い三角の上に少し小さい白を重ねて、枠線だけ残す。 */
+.hero-gauge-balloon::before, .hero-gauge-balloon::after {
+  content: ""; position: absolute; width: 0; height: 0;
 }
-/* 黒を一回り大きく敷いて縁取りにし、その上に差し色を少し小さく重ねる。 */
-.hero-gauge-burst::before { background: var(--ink); }
-.hero-gauge-burst::after { background: var(--accent-3); inset: 7px; }
-.hero-gauge-dial {
-  position: relative;
-  /* 爆発は ::before / ::after で描いていて、そのままだと後から塗られて目盛りを覆う。 */
-  z-index: 1;
-  width: 236px; height: 236px; border-radius: 50%;
-  background: #fff; border: 5px solid var(--ink);
-  display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 2px;
+.hero-gauge-balloon::before {
+  left: 40px; bottom: -36px;
+  border-left: 18px solid transparent; border-right: 32px solid transparent;
+  border-top: 36px solid var(--ink);
+}
+.hero-gauge-balloon::after {
+  left: 51px; bottom: -22px;
+  border-left: 11px solid transparent; border-right: 21px solid transparent;
+  border-top: 25px solid var(--panel);
 }
 .hero-gauge-cap { font-weight: 900; font-size: 17px; }
-/* 丸からはみ出さない大きさ。Dela Gothic One の数字は 1 字がおよそ 0.85em 幅なので、
-   「100」で 3 字ぶん＋左右の余白が直径に収まるところまで落とす。 */
-.hero-gauge-n { font-family: var(--font-display); font-size: 72px; line-height: 1; color: var(--accent); }
+.hero-gauge-n { font-family: var(--font-display); font-size: 84px; line-height: 1; color: var(--accent); }
 .hero-gauge-bar {
-  /* バーは丸の中心より下に来るので、直径ではなくその高さの弦に収まる幅にする。 */
-  width: 136px; height: 16px; margin-top: 10px;
+  width: 196px; height: 17px; margin-top: 12px;
   border: 3px solid var(--ink); border-radius: var(--radius-pill);
   background: #fff; overflow: hidden;
 }
 .hero-gauge-fill { width: 0; height: 100%; background: var(--accent); transition: width var(--dur) var(--ease); }
 .hero-gauge-sub { font-weight: 700; font-size: 13px; }
 /* 100 作品そろったら緑にして、公開できることを一目で分かるようにする（公開ボタンと同じ色）。 */
-.hero-gauge-dial.ready .hero-gauge-n { color: var(--ok-strong); }
-.hero-gauge-dial.ready .hero-gauge-fill { background: var(--ok-strong); }
+.hero-gauge-balloon.ready .hero-gauge-n { color: var(--ok-strong); }
+.hero-gauge-balloon.ready .hero-gauge-fill { background: var(--ok-strong); }
 @media (max-width: 560px) {
   /* 縦積みになるので、集中線の集まる先も見出しの位置（上寄り）へ移す。 */
   :root { --shuchu-x: 50%; --shuchu-y: 32%; }
   .hero-inner { padding: 36px 16px 44px; gap: 28px; }
   .hero-bubble { font-size: 16px; }
-  .hero-gauge-burst { width: 266px; height: 266px; }
-  .hero-gauge-dial { width: 208px; height: 208px; }
-  .hero-gauge-n { font-size: 64px; }
-  .hero-gauge-bar { width: 120px; }
+  .hero-gauge-balloon { width: 262px; padding: 16px 20px 18px; }
+  .hero-gauge-n { font-size: 72px; }
+  .hero-gauge-bar { width: 168px; }
 }
 
 /* ── 本棚（トップのグリッドの枠）──────────────────────────────────── */

@@ -219,6 +219,21 @@ export function adminCsrfOk(request: Request, env: Env): boolean {
  * を通すだけなので害は無い。
  */
 export function isAdminUiPath(pathname: string): boolean {
+  return normalizeAssetPath(pathname).replace(/\.html?$/, "").replace(/\/index$/, "") === "/admin";
+}
+
+/**
+ * admin 画面でしか使わない静的アセットか（public/admin.js）。中身は API が守るので直接の
+ * 穴ではないが、管理機能の一覧・操作名・エンドポイントの構造がそのまま読めるので、UI と
+ * 同じく Access の内側に置く。admin.html から読むときは Access の cookie が付くので通る。
+ */
+export function isAdminAssetPath(pathname: string): boolean {
+  return normalizeAssetPath(pathname) === "/admin.js";
+}
+
+/** 静的アセットのパスを、配信側が解決するのと同じ形に寄せる（多重エンコード・バックスラッシュ・
+ *  重複スラッシュ・相対参照・大文字小文字・末尾スラッシュ）。 */
+function normalizeAssetPath(pathname: string): string {
   let p = pathname;
   for (let i = 0; i < 3; i++) {
     let d: string;
@@ -238,11 +253,8 @@ export function isAdminUiPath(pathname: string): boolean {
   } catch {
     // 解決できなければそのまま判定する。
   }
-  p = p
+  return p
     .toLowerCase()
     .replace(/\/{2,}/g, "/")
-    .replace(/\/+$/, "")
-    .replace(/\.html?$/, "")
-    .replace(/\/index$/, "");
-  return p === "/admin";
+    .replace(/\/+$/, "");
 }

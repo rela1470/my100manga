@@ -429,12 +429,23 @@ export function clientIp(request: Request): string {
   );
 }
 
-// 全レスポンスに付けるセキュリティヘッダ（src/index.ts の fetch で包む）。CSP は GTM / AdSense が
-// 読み込む先が多く全面適用は壊しやすいので、いまはクリックジャッキング対策の frame-ancestors だけ。
+// 全レスポンスに付けるセキュリティヘッダ（src/index.ts の fetch で包む）。
 // 既に同名ヘッダがあるレスポンス（個別に付けたもの）は上書きしない。
+//
+// CSP は「third-party を壊さずに効くもの」だけを入れている:
+//   frame-ancestors 'none' … クリックジャッキング対策（埋め込み禁止）
+//   base-uri 'self'        … <base> を差し込んで相対 URL のスクリプト・リンクを別ホストへ
+//                            向け替える攻撃を塞ぐ。このサイトは <base> を使わない
+//   form-action 'self'     … フォームの送信先を自ドメインに固定（送信先の差し替え対策）。
+//                            使っているフォームは年齢確認（自分へ POST）と method="dialog" だけ
+//   object-src 'none'      … <object>/<embed> を禁止。どのページでも使っていない
+// script-src / img-src / connect-src は入れない。GTM・AdSense・ValueCommerce が動的に
+// 読み込む先が多く、取りこぼすと広告と計測が黙って止まる。入れるなら公開後に
+// Content-Security-Policy-Report-Only で実際の読み込み先を数えてから。see docs/csp.md
 const SECURITY_HEADERS: Record<string, string> = {
   "x-frame-options": "DENY",
-  "content-security-policy": "frame-ancestors 'none'",
+  "content-security-policy":
+    "frame-ancestors 'none'; base-uri 'self'; form-action 'self'; object-src 'none'",
   "x-content-type-options": "nosniff",
   "referrer-policy": "strict-origin-when-cross-origin",
   "permissions-policy": "camera=(), microphone=(), geolocation=()",

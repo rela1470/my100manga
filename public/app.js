@@ -4851,7 +4851,9 @@ function wireEvents() {
   $("useUrl").addEventListener("click", () => {
     if (!urlSubmitEnabled) return; // input is hidden when disabled; guard the bypass too
     const url = $("urlInput").value.trim();
-    if (!/^https?:\/\//i.test(url)) { uiAlert("http(s) の画像URLを指定してください。"); return; }
+    // https のみ（サーバ側 src/corrections.ts normalizeCoverUrl と揃える）。承認されると
+    // 全員のブラウザが読みに行くので、平文の http は受けない。
+    if (!/^https:\/\//i.test(url)) { uiAlert("https:// の画像URLを指定してください。"); return; }
     applyPickedCover(url);
   });
   $("clearCover").addEventListener("click", () => applyPickedCover(""));

@@ -99,11 +99,13 @@ function normalizeIsbn(raw: string): string | null {
   return d.length === 13 ? d : null;
 }
 
-/** Only accept http(s) image URLs (mirrors lists.ts normalizeCover) so a suggestion
- *  can never smuggle a javascript:/data: URL into the global covers cache on approve. */
+/** Only accept https image URLs so a suggestion can never smuggle a javascript:/data:
+ *  URL into the global covers cache on approve. */
 function normalizeCoverUrl(raw: string): string | null {
   const u = raw.trim();
-  return /^https?:\/\//i.test(u) && u.length <= 500 ? u : null;
+  // https のみ。承認されると covers に入って全員のブラウザが読みに行くので、平文の
+  // http を混ぜない（https のページからは mixed content で出ないうえ、経路で差し替えられる）。
+  return /^https:\/\//i.test(u) && u.length <= 500 ? u : null;
 }
 
 /** Cached corrections for a series, ready to merge into the volume list. Reported

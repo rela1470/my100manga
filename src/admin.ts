@@ -1156,7 +1156,10 @@ export async function adminApproveCoverSuggestion(
 ): Promise<Response> {
   const body = (await readJsonObject(request)) as { cover_url?: unknown };
   const coverUrl = typeof body.cover_url === "string" ? body.cover_url.trim() : "";
-  if (!/^https?:\/\//i.test(coverUrl)) return json({ error: "表紙URLが不正です" }, 400);
+  // 投稿側（src/corrections.ts normalizeCoverUrl）と同じく https のみ。承認すると covers に
+  // 入って全員のブラウザが読みに行くので、ここが最後の関門。https 化より前に積まれた
+  // http:// の提案は承認できなくなる（却下して入れ直す）。
+  if (!/^https:\/\//i.test(coverUrl)) return json({ error: "表紙URLが不正です" }, 400);
 
   const row = await env.DB.prepare(
     `SELECT 1 FROM cover_suggestion WHERE isbn = ? AND cover_url = ? AND resolved_at = 0`

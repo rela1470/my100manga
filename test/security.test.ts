@@ -1,8 +1,9 @@
 import { SELF } from "cloudflare:test";
 import { env } from "cloudflare:workers";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { adminCsrfOk, devBypassActive, isAdminUiPath, requireAdmin } from "../src/adminAuth";
+import { adminCsrfOk, devBypassActive, isAdminAssetPath, isAdminUiPath, requireAdmin } from "../src/adminAuth";
 import { purgeExpiredSessions, safeReturnPath } from "../src/auth";
+import { suggestCover } from "../src/corrections";
 import { getTrimmedCover, normalizeCoverTarget, trimKind } from "../src/coverBytes";
 import { createList, MAX_LIST_BODY, stripUrls, updateList } from "../src/lists";
 import { purgePublishAudit, PUBLISH_AUDIT_RETENTION_MS } from "../src/reports";
@@ -54,6 +55,15 @@ describe("admin の保護", () => {
     }
     for (const p of ["/", "/admin.js", "/administrator", "/api/admin/stats", "/l/admin"]) {
       expect(isAdminUiPath(p), p).toBe(false);
+    }
+  });
+
+  it("管理画面だけが読む /admin.js も Access の内側に置く", () => {
+    for (const p of ["/admin.js", "/ADMIN.JS", "/%61dmin.js", "//admin.js", "/x/../admin.js"]) {
+      expect(isAdminAssetPath(p), p).toBe(true);
+    }
+    for (const p of ["/", "/admin", "/admin.html", "/app.js", "/adminx.js", "/l/admin.js"]) {
+      expect(isAdminAssetPath(p), p).toBe(false);
     }
   });
 
@@ -141,6 +151,32 @@ describe("admin の保護", () => {
       expect(await res.text()).not.toContain("<html");
     }
   });
+
+  it("/admin.js も認証が無ければ 403（管理機能の一覧を読ませない）", async () => {
+    const res = await SELF.fetch("https://example.com/admin.js", { redirect: "manual" });
+    expect(res.status).toBe(403);
+    expect(await res.text()).not.toContain("/api/admin/");
+  });
+});
+
+describe("表紙の差し替え候補", () => {
+  const post = (cover_url: string) =>
+    suggestCover(
+      new Request("https://example.com/api/cover-suggestions", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ isbn: "9784088725093", cover_url }),
+      }),
+      baseEnv
+    );
+
+  it("https 以外の画像URLは受け付けない（承認されると全員のブラウザが読みに行くため）", async () => {
+    for (const url of ["http://evil.example/a.jpg", "javascript:alert(1)", "data:image/png;base64,AA", "//evil.example/a.jpg"]) {
+      const res = await post(url);
+      expect(res.status, url).toBe(400);
+      expect(((await res.json()) as { error: string }).error, url).toContain("表紙URL");
+    }
+  });
 });
 
 describe("セキュリティヘッダ・エラー画面", () => {
@@ -148,7 +184,11 @@ describe("セキュリティヘッダ・エラー画面", () => {
     for (const p of ["/", "/api/version", "/styles.css"]) {
       const res = await SELF.fetch(`https://example.com${p}`);
       expect(res.headers.get("x-frame-options"), p).toBe("DENY");
-      expect(res.headers.get("content-security-policy"), p).toBe("frame-ancestors 'none'");
+      const csp = res.headers.get("content-security-policy") ?? "";
+      // third-party（GTM/AdSense/ValueCommerce）を壊さずに効く分だけ入れている。see src/util.ts
+      for (const d of ["frame-ancestors 'none'", "base-uri 'self'", "form-action 'self'", "object-src 'none'"]) {
+        expect(csp, `${p} / ${d}`).toContain(d);
+      }
       expect(res.headers.get("x-content-type-options"), p).toBe("nosniff");
       expect(res.headers.get("referrer-policy"), p).toBe("strict-origin-when-cross-origin");
       expect(res.headers.get("permissions-policy"), p).toContain("camera=()");
@@ -161,7 +201,7 @@ describe("セキュリティヘッダ・エラー画面", () => {
     const res = withSecurityHeaders(
       immutable ?? new Response("hi", { headers: { "x-frame-options": "SAMEORIGIN" } })
     );
-    expect(res.headers.get("content-security-policy")).toBe("frame-ancestors 'none'");
+    expect(res.headers.get("content-security-policy")).toContain("frame-ancestors 'none'");
     expect(await res.text()).toBe("hi");
     const own = withSecurityHeaders(new Response("x", { headers: { "x-frame-options": "SAMEORIGIN" } }));
     expect(own.headers.get("x-frame-options")).toBe("SAMEORIGIN");

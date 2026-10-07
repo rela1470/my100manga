@@ -79,7 +79,7 @@ import {
   parsePage,
 } from "./admin";
 import { addReport, purgePublishAudit } from "./reports";
-import { adminCsrfOk, isAdminUiPath, requireAdmin } from "./adminAuth";
+import { adminCsrfOk, isAdminAssetPath, isAdminUiPath, requireAdmin } from "./adminAuth";
 import { errorPageHtml, MAX_JSON_BODY, readJsonBody, withSecurityHeaders } from "./util";
 import { currentUser, loginCallback, loginStart, logout, purgeExpiredSessions } from "./auth";
 import { handleAccountApi } from "./account";
@@ -507,7 +507,9 @@ const worker = {
       // 認証を通したら末尾の env.ASSETS.fetch(request) が /admin → admin.html を配信する。
       // admin.html に解決されうる変形（/ADMIN.html・/%61dmin・/admin/ 等）も isAdminUiPath で拾う。
       // 状態を変える /api/admin/* は CSRF よけに Origin 必須・自オリジン一致も求める（adminCsrfOk）。
-      if (path.startsWith("/api/admin/") || isAdminUiPath(path)) {
+      // 管理画面だけが読む /admin.js も同じ内側に置く（isAdminAssetPath）。中身は API が
+      // 守るので直接の穴ではないが、管理機能の一覧と操作名をそのまま読ませる必要は無い。
+      if (path.startsWith("/api/admin/") || isAdminUiPath(path) || isAdminAssetPath(path)) {
         const denied = await requireAdmin(request, env);
         if (denied) return denied;
         if (path.startsWith("/api/admin/") && !adminCsrfOk(request, env)) {

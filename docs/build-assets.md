@@ -25,6 +25,7 @@ Cloudflare
 | `*.css` | esbuild `minifyWhitespace` (loader: css) | |
 | `*.html` | コメント除去（自前）。インラインの `<script>` / `<style>` の中身は上と同じ処理 | `<pre>` / `<textarea>` の中身は触らない |
 | 画像・フォント・`*.txt`・`ads.txt` | そのままコピー | フォントのライセンス文（OFL）も**必ずそのまま**残す |
+| ライセンス表記 | **残す** | JS/CSS は `/*! … */`・`@license`・`@preserve`（esbuild の `legalComments: "inline"`）。HTML は `@license` / `Copyright` / `(c) 20xx` / `SPDX-` / `Attribution` を含むコメント |
 | Worker 本体（`src/`） | `wrangler deploy --minify` | バンドル時に esbuild がコメントごと落とす |
 
 実測（2026-10-07）: `app.js` 217KB → 137KB、`admin.js` 201KB → 168KB、`styles.css` 126KB → 76KB。

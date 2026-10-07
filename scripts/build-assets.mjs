@@ -32,6 +32,17 @@ const OUT = path.join(ROOT, "dist", "public");
 // Worker が差し込みに使うプレースホルダ（src/index.ts / src/analytics.ts）。これだけは残す。
 const PLACEHOLDER_RE = /^<!--[A-Za-z0-9_]+-->$/;
 
+// 消してはいけないコメント。上のプレースホルダと、ライセンス・帰属表記。後者は楽天・Yahoo! の
+// クレジットスニペットのように「改変せずそのまま載せる」ことが条件になっているものがあるため
+// （いまは src/footer.ts が配信時に差し込んでいるので public/ には無いが、将来 HTML に直接
+// 置かれたときに黙って消さない）。
+const KEEP_COMMENT_RE = /@license|@preserve|copyright|\(c\)\s*\d|spdx-|attribution/i;
+
+function keepComment(comment) {
+  const inner = comment.trim();
+  return PLACEHOLDER_RE.test(inner) || KEEP_COMMENT_RE.test(inner);
+}
+
 const stats = { js: 0, css: 0, html: 0, copied: 0, bytesIn: 0, bytesOut: 0 };
 
 async function transform(code, loader) {
@@ -40,7 +51,8 @@ async function transform(code, loader) {
     minifyWhitespace: true,
     minifyIdentifiers: false,
     minifySyntax: false,
-    legalComments: "none",
+    // ライセンス表記（/*! … */ や @license / @preserve）はその場に残す。実装メモだけ落とす。
+    legalComments: "inline",
   });
   return res.code;
 }
@@ -90,7 +102,7 @@ async function stripHtml(html) {
 
   // 残ったコメントを落とす（プレースホルダは残す）。行がコメントだけならその行ごと消す。
   out = out.replace(/^[ \t]*<!--[\s\S]*?-->[ \t]*\r?\n|<!--[\s\S]*?-->/gm, (m) =>
-    PLACEHOLDER_RE.test(m.trim()) ? m : ""
+    keepComment(m) ? m : ""
   );
 
   return out.replace(new RegExp(`${MARK}(\\d+)${MARK}`, "g"), (_m, i) => vault[Number(i)]);
@@ -103,7 +115,7 @@ function verifyHtml(relPath, before, after) {
   if (marks(before) !== marks(after)) {
     throw new Error(`${relPath}: プレースホルダが変わった [${marks(before)}] -> [${marks(after)}]`);
   }
-  const left = (after.match(/<!--[\s\S]*?-->/g) ?? []).filter((c) => !PLACEHOLDER_RE.test(c.trim()));
+  const left = (after.match(/<!--[\s\S]*?-->/g) ?? []).filter((c) => !keepComment(c));
   if (left.length) throw new Error(`${relPath}: コメントが残っている: ${left[0].slice(0, 60)}`);
   // タグの数が変わっていたら、コメント除去がタグを巻き込んでいる（コメント自身は数から外す）。
   const tags = (s) => (s.replace(/<!--[\s\S]*?-->/g, "").match(/<[a-zA-Z/][^>]*>/g) ?? []).length;

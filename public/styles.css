@@ -1371,7 +1371,7 @@ a.stat-card.stat-link .k::after { content: " ›"; }
 .merge-preview-vol:hover { filter: none; box-shadow: none; }
 .merge-preview-vol:hover img { outline: 2px solid var(--accent); }
 .merge-preview-vol img, .merge-preview-vol .noimg { width: 64px; height: 92px; border-radius: 4px; }
-.merge-preview-vol img { object-fit: cover; display: block; }
+.merge-preview-vol img { object-fit: contain; display: block; }
 .merge-preview-vol .noimg {
   display: flex; align-items: center; justify-content: center;
   background: var(--panel-2); color: var(--muted); font-size: 10px;
@@ -1925,7 +1925,7 @@ html:has(.modal-backdrop.open) { overflow: hidden; }
 .sel-cover .linkbtn { white-space: nowrap; }
 .sel-cover-thumb { width: 44px; height: 62px; flex: none; }
 .sel-cover-thumb img, .sel-cover-thumb .noimg {
-  width: 100%; height: 100%; object-fit: cover; border-radius: 4px;
+  width: 100%; height: 100%; object-fit: contain; border-radius: 4px;
   background: var(--panel-2); display: flex; align-items: center; justify-content: center;
   font-size: 10px; color: var(--muted); text-align: center;
 }
@@ -2029,8 +2029,13 @@ html:has(.modal-backdrop.open) { overflow: hidden; }
   transition: transform var(--dur) var(--ease-bounce), box-shadow var(--dur) var(--ease), background var(--dur) var(--ease);
 }
 .result:hover { background: var(--panel-2); border-color: var(--accent); box-shadow: var(--shadow-sm); transform: translateY(-1px); }
+/* 表紙のサムネイルは object-fit: contain で切らない（この下の .detail-body .dcover・.fix-cover・
+   .cand・.sel-cover-thumb・.merge-preview-vol も同じ）。箱は 3:4 前後だがコミックスは約 1:1.45 なので
+   cover だと上下が 1 割前後落ちてタイトルが切れる。トリミングは著作物の改変（著作権法20条 同一性保持権）
+   に当たり、出版社の書影利用ガイドラインもたいてい「改変しないこと」を条件にしている。共有画像側も同じ
+   （src/shareImage.ts の preserveAspectRatio="meet"）。左右に余る分は背景が見える。 */
 .result img, .result .noimg {
-  width: 44px; height: 62px; object-fit: cover;
+  width: 44px; height: 62px; object-fit: contain;
   border-radius: 4px; background: var(--panel-2); flex: none;
   display: flex; align-items: center; justify-content: center;
   font-size: 10px; color: var(--muted);
@@ -2413,7 +2418,7 @@ html:has(.modal-backdrop.open) .to-top { display: none; }
 /* view detail modal */
 .detail-body { display: flex; gap: 14px; }
 .detail-body .dcover, .detail-body .dnoimg {
-  width: 96px; height: 132px; object-fit: cover; border-radius: 6px;
+  width: 96px; height: 132px; object-fit: contain; border-radius: 6px;
   background: var(--panel-2); flex: none;
   display: flex; align-items: center; justify-content: center; font-size: 11px; color: var(--muted);
 }
@@ -2484,7 +2489,7 @@ html:has(.modal-backdrop.open) .to-top { display: none; }
 }
 .fix-cover { width: 56px; height: 78px; flex: none; }
 .fix-cover img, .noimg {
-  width: 100%; height: 100%; object-fit: cover; border-radius: 4px;
+  width: 100%; height: 100%; object-fit: contain; border-radius: 4px;
   background: var(--panel-2); display: flex; align-items: center; justify-content: center;
   font-size: 10px; color: var(--muted); text-align: center;
 }
@@ -2512,7 +2517,7 @@ html:has(.modal-backdrop.open) .to-top { display: none; }
   transition: transform var(--dur) var(--ease-bounce), box-shadow var(--dur) var(--ease), border-color var(--dur) var(--ease);
 }
 .cand:hover { border-color: var(--accent); transform: translateY(-2px); box-shadow: var(--shadow-pop); }
-.cand img { width: 100%; aspect-ratio: 3 / 4; object-fit: cover; border-radius: 4px; background: var(--panel); }
+.cand img { width: 100%; aspect-ratio: 3 / 4; object-fit: contain; border-radius: 4px; background: var(--panel); }
 .cand .src {
   align-self: center;
   font-size: 9px; font-weight: 700; color: var(--accent-2);
@@ -2781,14 +2786,19 @@ a.bd-series:hover { background: var(--accent-strong-2); }
 .edit-url-warn.safe { color: var(--muted); background: var(--panel-2); border-color: var(--border); }
 button.copied { border-color: var(--ok-strong); color: var(--ok-strong); }
 
-/* 購入リンクの広告表記（ステマ規制）。見出しの横に小さく「PR」。 */
+/* 広告表記（ステマ規制）。購入リンクの見出しの横と、購入リンクのまとまりの外に置く
+   アフィリンク（あらすじの出典・画像参考元）の横に小さく「PR」。 */
 .pr-label {
   display: inline-block; margin-left: 6px; padding: 0 6px;
   border: 1px solid var(--muted); border-radius: 4px;
   font-size: 11px; font-weight: 700; line-height: 1.5; color: var(--muted); vertical-align: 1px;
 }
+/* 小さい字の行に付くぶんは一回り小さく。 */
+.dsynopsis-src .pr-label, .dmeta .pr-label { margin-left: 4px; padding: 0 4px; font-size: 10px; }
 /* あらすじの出典表記。 */
 .dsynopsis-src { margin: 6px 0 0; font-size: 11px; color: var(--muted); text-align: right; }
+.dsynopsis-src a { color: inherit; text-decoration: underline; }
+.dsynopsis-src a:hover { color: var(--accent); }
 
 /* 404 ページ（public/404.html）。 */
 .notfound { text-align: center; padding: 24px 0 8px; }

@@ -322,14 +322,14 @@ describe("共有画像の出典クレジット", () => {
     expect(coverSource("")).toBeNull();
   });
 
-  it("描くセルにある出典だけを固定順で並べ、© 各著作権者を付ける", () => {
+  it("描くセルにある出典だけを固定順で並べ、著作権の帰属を 1 行で付ける", () => {
     const items = Array.from({ length: 100 }, (_, i) => ({
       cover_url: i < 25 ? "https://item-shopping.c.yimg.jp/i/n/a" : i === 99 ? "https://thumbnail.image.rakuten.co.jp/@0_pdb/a.jpg" : "",
     }));
     const list = { items } as unknown as MangaList;
-    expect(creditLine(list, "q1")).toBe("書影: Yahoo!ショッピング　© 各著作権者");
-    expect(creditLine(list, "q2")).toBe("© 各著作権者");
-    expect(creditLine(list, "og")).toBe("書影: 楽天ブックス / Yahoo!ショッピング　© 各著作権者");
+    expect(creditLine(list, "q1")).toBe("書影: Yahoo!ショッピング　表紙の著作権は各出版社・著作者に帰属します");
+    expect(creditLine(list, "q2")).toBe("表紙の著作権は各出版社・著作者に帰属します");
+    expect(creditLine(list, "og")).toBe("書影: 楽天ブックス / Yahoo!ショッピング　表紙の著作権は各出版社・著作者に帰属します");
   });
 
   it("楽天の表紙はセルに見合う大きさで取り、もったいない本舗は触らない", () => {

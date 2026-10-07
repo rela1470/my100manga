@@ -33,6 +33,20 @@ interface BookMetaRow {
 // あらすじが空のキャッシュを楽天から取り直す間隔（handleBook）。
 const EMPTY_CAPTION_RETRY_MS = 24 * 60 * 60 * 1000;
 
+// あらすじ（楽天 itemCaption = 出版社の内容紹介文）をそのまま全文返さず、頭だけ返す。
+// 内容紹介文は出版社の著作物で、全文転載は引用（著作権法32条）の主従関係を満たさない。
+// 切ったことを caption_truncated で伝え、クライアントは続きを楽天ブックスへ送る
+// （public/book-detail.js）。D1 のキャッシュは全文のまま持つ（取り直しの判定に使う）。
+// 実測（book_meta 181 件）では中央値 104 字・p75 153 字・最長 476 字なので、100 字で
+// 3 分の 2 が切られる。長さを変えるならここだけ。
+const CAPTION_MAX = 100;
+
+function clipCaption(caption: string): { caption: string; caption_truncated: boolean } {
+  const chars = [...caption];
+  if (chars.length <= CAPTION_MAX) return { caption, caption_truncated: false };
+  return { caption: chars.slice(0, CAPTION_MAX).join("") + "…", caption_truncated: true };
+}
+
 // 並べ替え（/api/sort-keys）で一度に引ける ISBN 数。public/app.js MAX_ITEMS と揃える。
 const MAX_SORT_KEY_ISBNS = 1000;
 
@@ -67,9 +81,11 @@ export async function handleBook(request: Request, env: Env): Promise<Response> 
   // あらすじが出ないため。取り直しても空なら checked_at が進み、また 1 日後に試す。
   const cached = refresh ? null : await readBookMeta(env, isbn);
   if (cached && (cached.meta.caption || Date.now() - cached.checkedAt < EMPTY_CAPTION_RETRY_MS)) {
-    return json({ ...cached.meta, ...(await masterP), series: await seriesP, status: "ok" }, 200, {
-      "cache-control": "no-store",
-    });
+    return json(
+      { ...cached.meta, ...clipCaption(cached.meta.caption), ...(await masterP), series: await seriesP, status: "ok" },
+      200,
+      { "cache-control": "no-store" }
+    );
   }
 
   const [row, res] = await Promise.all([
@@ -84,9 +100,11 @@ export async function handleBook(request: Request, env: Env): Promise<Response> 
   // 取り直し（あらすじ空の再試行）で楽天を引けなかった（レート制限）ときは、キャッシュの
   // 楽天由来の値（マスタに無い新刊の作者・出版社など）を落とさないようキャッシュを返す。
   if (rk === null && cached) {
-    return json({ ...cached.meta, ...(await masterP), series: await seriesP, status: "ok" }, 200, {
-      "cache-control": "no-store",
-    });
+    return json(
+      { ...cached.meta, ...clipCaption(cached.meta.caption), ...(await masterP), series: await seriesP, status: "ok" },
+      200,
+      { "cache-control": "no-store" }
+    );
   }
 
   const result: BookMeta = {
@@ -122,7 +140,7 @@ export async function handleBook(request: Request, env: Env): Promise<Response> 
   // "Rakuten was rate-limited so we never got an answer" — the latter is retryable and
   // mustn't be shown as 見つかりませんでした. rk === null is the undetermined (skipped) case.
   const status = rk === null ? "unavailable" : "ok";
-  return json({ ...result, ...(await masterP), series: await seriesP, status }, 200, {
+  return json({ ...result, ...clipCaption(result.caption), ...(await masterP), series: await seriesP, status }, 200, {
     "cache-control": "no-store",
   });
 }

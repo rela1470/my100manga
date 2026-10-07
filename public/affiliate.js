@@ -144,6 +144,26 @@
     return s ? "https://search.rakuten.co.jp/search/mall/" + encodeURIComponent(s) + "/" : "";
   }
 
+  // 楽天ブックスの該当巻（ISBN 検索）へのアフィリエイトリンク。あらすじの出典表記から
+  // 原典へ送るのに使う（public/book-detail.js）。アフィリ ID 未設定なら素の検索 URL。
+  window.rakutenBookLink = function (item) {
+    return rakutenPrint(item);
+  };
+
+  // アフィリエイトリンクの横に出す「PR」の印（ステマ規制）。購入リンクの見出しと同じ見た目。
+  // 購入リンクのまとまりの外に置くアフィリンク（あらすじの出典・画像参考元）に付ける。
+  // アフィリ ID が 1 つも入っていないとき（dev、および外部ストアを使わない R18版）は、
+  // リンクが素の URL で広告ではないので null を返す。R18版の利用規約が「広告は一切ありません」
+  // と言っているので、ここで PR が出てしまうと規約と食い違う。
+  window.prLabel = function () {
+    var a = aff();
+    if (!a.amazon && !a.rakuten && !a.mercari && !a.yahooSid) return null;
+    var el = document.createElement("span");
+    el.className = "pr-label";
+    el.textContent = "PR";
+    return el;
+  };
+
   // 本の詳細ポップアップの行（エディタ app.js・閲覧 view.js 共通）。値が無ければ行ごと隠す。
   window.setMetaRow = function (rowId, valueId, text) {
     var has = !!text;
@@ -164,9 +184,11 @@
     var a = document.createElement("a");
     a.href = src.url;
     a.target = "_blank";
-    a.rel = "noopener sponsored";
+    a.rel = "noopener sponsored nofollow";
     a.textContent = src.label;
     dd.appendChild(a);
+    var pr = window.prLabel();
+    if (pr) dd.appendChild(pr);
   };
 
   // 「画像参考元」: which site a cover image comes from, inferred from its URL, plus a

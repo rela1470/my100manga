@@ -15,7 +15,7 @@
 // list edit or a cover filled in later yields a fresh image, and the og:image URL
 // carries it as ?v= so X re-fetches.
 //
-// 書影の出典（楽天ブックス / 楽天市場 / Yahoo!ショッピング 等）と「© 各著作権者」を全種類の
+// 書影の出典（楽天ブックス / 楽天市場 / Yahoo!ショッピング 等）と著作権の帰属を全種類の
 // 画像の下端に 1 行で入れる。出典は実際に描くセルの表紙 URL から割り出す（creditLine）。
 //
 // フォントは描画時に外部（Google Fonts）へ取りに行かず、静的アセットの Noto Sans JP Bold
@@ -39,7 +39,7 @@ export type ShareVariant = "og" | "full" | "q1" | "q2" | "q3" | "q4";
 export const SHARE_VARIANTS: readonly ShareVariant[] = ["og", "full", "q1", "q2", "q3", "q4"];
 
 // Bump to regenerate every stored image after a design change.
-const LAYOUT_VERSION = 7;
+const LAYOUT_VERSION = 8;
 const CELLS = 100;
 const COVER_CONCURRENCY = 10;
 const MAX_NAME_CHARS = 16;
@@ -189,8 +189,14 @@ export function coverSource(url: string): CoverSource | null {
   return "各販売サイト";
 }
 
-/** 画像下端のクレジット: 「書影: 楽天ブックス / Yahoo!ショッピング　© 各著作権者」。
- *  出典はこの variant が描くセル（表紙のあるもの）に実際に含まれるものだけ。 */
+/** 画像下端のクレジット: 「書影: 楽天ブックス / Yahoo!ショッピング　表紙の著作権は各出版社・著作者に帰属します」。
+ *  出典はこの variant が描くセル（表紙のあるもの）に実際に含まれるものだけ。
+ *
+ *  以前は「© 各著作権者」だったが、日本は無方式主義で © に法的な働きは無く、権利者を 1 人も
+ *  特定していないので著作権法48条の出所の明示にもなっていない。帰属をそのまま文にして、
+ *  作品ごとの作者・出版社は画像に入れた URL の先（public/cover-zoom.js の著作権表示）に委ねる。 */
+const CREDIT_RIGHTS = "表紙の著作権は各出版社・著作者に帰属します";
+
 export function creditLine(list: MangaList, variant: ShareVariant): string {
   const L = layout(variant);
   const found = new Set<CoverSource>();
@@ -199,7 +205,15 @@ export function creditLine(list: MangaList, variant: ShareVariant): string {
     if (src) found.add(src);
   }
   const sources = SOURCE_ORDER.filter((s) => found.has(s));
-  return (sources.length ? `書影: ${sources.join(" / ")}　` : "") + "© 各著作権者";
+  return (sources.length ? `書影: ${sources.join(" / ")}　` : "") + CREDIT_RIGHTS;
+}
+
+/** クレジット行の font-size。出典が 4 つ以上載ると既定の大きさでは幅に入らない（full/q は
+ *  5 つで約 1174px > 1152px）ので、入るところまで縮める。ヘッダーの fit と同じ考え方。 */
+function creditSize(text: string, L: Layout): number {
+  const avail = L.width - L.pad * 2;
+  const em = emWidth(text);
+  return Math.max(10, Math.min(L.creditSize, Math.floor(avail / em)));
 }
 
 /** 「rela1470's 」 before the brand; nothing when the list has no name. */
@@ -242,13 +256,12 @@ function buildSvg(list: MangaList, variant: ShareVariant, hasCover: boolean[], h
   const parts: string[] = [];
   parts.push(
     `<svg xmlns="http://www.w3.org/2000/svg" width="${L.width}" height="${L.height}" viewBox="0 0 ${L.width} ${L.height}" font-family="${FONT_FAMILY}" font-weight="700">`,
-    `<defs><clipPath id="r" clipPathUnits="objectBoundingBox"><rect width="1" height="1" rx="0.07" ry="0.0525"/></clipPath></defs>`,
     `<rect width="100%" height="100%" fill="${COLOR.bg}"/>`,
     // 外枠。画面の本棚と同じく、黒いコマ枠で囲う。
     `<rect x="${FRAME_W / 2}" y="${FRAME_W / 2}" width="${L.width - FRAME_W}" height="${L.height - FRAME_W}" fill="none" stroke="${COLOR.ink}" stroke-width="${FRAME_W}"/>`,
     headerSvg(L, size, owner, brand, range, outlined, brandW, COLOR),
     `<text x="${L.width - L.pad}" y="${L.headerY}" font-size="${Math.round(size * 0.75)}" fill="${COLOR.muted}" text-anchor="end">${escapeHtml(url)}</text>`,
-    `<text x="${L.width - L.pad}" y="${L.creditY}" font-size="${L.creditSize}" fill="${COLOR.muted}" text-anchor="end">${escapeHtml(creditLine(list, variant))}</text>`
+    creditSvg(list, variant, L, COLOR)
   );
 
   const r = (L.cellW * 0.07).toFixed(1);
@@ -264,7 +277,11 @@ function buildSvg(list: MangaList, variant: ShareVariant, hasCover: boolean[], h
     if (i < list.items.length && hasCover[i]) {
       parts.push(
         `<rect x="${x}" y="${y}" width="${w}" height="${h}" rx="${r}" fill="${COLOR.empty}"/>`,
-        `<image href="${coverHref(i)}" x="${x}" y="${y}" width="${w}" height="${h}" preserveAspectRatio="xMidYMid slice" clip-path="url(#r)"/>`,
+        // 表紙は切らない（preserveAspectRatio="meet"）。3:4 のセルに対してコミックスは約 1:1.45 で、
+        // slice だと上下が 1 割強落ちてタイトルが切れる。トリミングと角丸は著作物の改変（著作権法20条
+        // 同一性保持権）に当たり、出版社の書影利用ガイドラインもたいてい「改変しないこと」を条件に
+        // している。左右に余る分はセルの下地（COLOR.empty）が見える。
+        `<image href="${coverHref(i)}" x="${x}" y="${y}" width="${w}" height="${h}" preserveAspectRatio="xMidYMid meet"/>`,
         frame
       );
     } else {
@@ -280,6 +297,15 @@ function buildSvg(list: MangaList, variant: ShareVariant, hasCover: boolean[], h
   }
   parts.push(`</svg>`);
   return parts.join("");
+}
+
+/** 画像下端のクレジット 1 行（右寄せ）。幅に入らなければ字を縮める。 */
+function creditSvg(list: MangaList, variant: ShareVariant, L: Layout, COLOR: { muted: string }): string {
+  const text = creditLine(list, variant);
+  return (
+    `<text x="${L.width - L.pad}" y="${L.creditY}" font-size="${creditSize(text, L)}" ` +
+    `fill="${COLOR.muted}" text-anchor="end">${escapeHtml(text)}</text>`
+  );
 }
 
 /** 左上の「◯◯'s My 100 Manga 1–25」の行。サイト名をアウトラインで描くときは、

@@ -33,14 +33,15 @@
   }
 
   // 著作権表示。「© 発行年 作者／出版社」。詳細（/api/book）がまだ返っていなければ分かる
-  // ぶんだけ、何も分からなければ「© 各著作権者」。発行日は "2015年3月19日" の形で来るので
+  // ぶんだけ、何も分からなければ「表紙の著作権は各出版社・著作者に帰属します」。© は権利者名が
+  // 無いと表示として成立しない（src/shareImage.ts の CREDIT_RIGHTS と同じ理由）。発行日は "2015年3月19日" の形で来るので
   // 先頭の 4 桁を年として使う。
   function copyrightText(meta) {
     var m = (typeof meta === "function" ? meta() : meta) || {};
     var year = ((m.pubdate || "").match(/\d{4}/) || [""])[0];
     var names = [m.author || "", m.publisher || ""].filter(Boolean).join("／");
     var body = [year, names].filter(Boolean).join(" ");
-    return "© " + (body || "各著作権者");
+    return body ? "© " + body : "表紙の著作権は各出版社・著作者に帰属します";
   }
 
   // 書影そのものの出どころ（どのストアの画像か）。詳細の「画像参考元」と同じ判定。

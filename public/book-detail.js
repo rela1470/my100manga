@@ -55,7 +55,7 @@
       <div class="dsynopsis" id="bdSynopsisBox" style="display:none">
         <div class="dsynopsis-title">あらすじ</div>
         <p class="dsynopsis-text" id="bdSynopsis"></p>
-        <p class="dsynopsis-src">出典: 楽天ブックス</p>
+        <p class="dsynopsis-src" id="bdSynopsisSrcBox"></p>
       </div>
       <div class="buy" id="bdBuy" style="display:none">
         <div class="buy-title">購入リンク<span class="pr-label">PR</span></div>
@@ -248,6 +248,23 @@
     }
     if (data.caption) {
       $("bdSynopsis").textContent = data.caption;
+      // あらすじは出版社の内容紹介文なので全文は出さず、サーバが 100 字で切って返す
+      // （src/book.ts clipCaption）。切れているときは続きを楽天ブックスの該当巻へ送る。
+      // 購入リンクと同じアフィリエイトリンク（window.rakutenBookLink）なので、購入リンクの
+      // まとまりの外にあっても広告と分かるよう「PR」を付ける（景表法・ステマ規制）。
+      const box = $("bdSynopsisSrcBox");
+      box.textContent = "";
+      const src = document.createElement("a");
+      src.href =
+        typeof window.rakutenBookLink === "function"
+          ? window.rakutenBookLink(book)
+          : "https://books.rakuten.co.jp/search?sitem=" + encodeURIComponent(book.isbn || "");
+      src.target = "_blank";
+      src.rel = "noopener sponsored nofollow";
+      src.textContent = data.caption_truncated ? "続きは楽天ブックスで" : "出典: 楽天ブックス";
+      box.appendChild(src);
+      const pr = typeof window.prLabel === "function" ? window.prLabel() : null;
+      if (pr) box.appendChild(pr);
       $("bdSynopsisBox").style.display = "";
     }
   }

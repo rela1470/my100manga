@@ -432,6 +432,8 @@ MADB の取り込みでは成年コミック（MADB の `schema:contentRating` �
 
 ## 既知の制約 / TODO
 
+- **【要確認・法務】楽天ウェブサービス規約と他社アフィリエイトの併用**: 規約の英語参考訳（[Article 10 Forbidden Actions](https://webservice.rakuten.co.jp/guide/rule)）に "To gain income by using the Web Services in ways other than Rakuten Affiliate (excludes the cases where the Company explicitly grants permission)" があり、**楽天アフィリエイト以外での収益化が禁止**と読める。当サイトは楽天 API 由来の表示（書影 Tier1/3・あらすじ・売上ランキング）と同じページに Amazonアソシエイト / バリューコマース / メルカリ アフィリエイト / AdSense を載せているので抵触の疑いがある。第8条（楽天サイトへのリンク義務、ウェブサービスを使っている部分からの外部リンク）も同様に要確認。英訳ページ自身が「日本語原文が優先・英訳に法的効力なし」と断っているので、**日本語原文を読んだうえで、必要なら楽天ウェブサービスへ照会する**。抵触する場合の影響は訴訟ではなく appId 停止＝書影とあらすじが全部落ちること。取りうる手は (a) 楽天から書面で許諾を得る、(b) 楽天由来データを出す領域と他社アフィリの領域を分ける、(c) 購入リンクを楽天のみにする。
+
 - **新刊の欠落（シリーズ検索）**: シリーズ検索（`/api/search`）は MADB ダンプ時点のマスタのみを参照する。ダンプに無い新シリーズは出てこない（NDL 等での新シリーズ補完は **未実装（TODO）**）。
 - **巻の欠落を MADB ライブ SPARQL で補完**: MADB は新しい単行本ほど `schema:isPartOf`（巻→シリーズ）が欠けており、月次ダンプでは未リンク（例: ONE PIECE は正典シリーズ C268196 が巻100までで、巻101+ が別扱い）。`/api/series/:id/volumes` はダンプの巻に加えて、MADB ライブ SPARQL エンドポイント（`https://mediaarts-db.artmuseums.go.jp/sparql`）へ問い合わせ、ダンプの最大巻より後の未収録巻だけを追記する（`src/madbLive.ts`）。同名別エディションへの誤割当を避けるため補完は厳格に絞る:
   1. **タイトル完全一致＋著者一致**（ロール接頭辞 `[著]` は ingest と同じ正規化で除去）。

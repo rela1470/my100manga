@@ -304,6 +304,12 @@ npm run dev
 環境を書かない素の名前（`npm run deploy` 等）は `scripts/require-target.mjs` が候補を並べて止める
 （wrangler も以前の package.json も、環境を省くと本番を指す作りだったため）。
 
+`deploy:*` は中で `npm run build`（`scripts/build-assets.mjs`）を走らせ、`public/` からコメントを
+落としたコピー `dist/public` を作って、そちらを配る（Worker 本体は `--minify`）。実装メモや設計の
+経緯をブラウザに配らないため。元の `public/` は触らないので手元と git には全部残る。
+**`npx wrangler deploy` を直に叩くと `public/` がそのまま出る**ので、デプロイは npm script 経由で。
+詳細は [`docs/build-assets.md`](docs/build-assets.md)。
+
 ### 前提（カスタムドメイン）
 
 `routes` の `custom_domain: true` で独自ドメインを割り当てる。事前に **`example.com` ゾーンを同じ Cloudflare アカウントに追加し、ネームサーバを Cloudflare に向けてアクティブ**にしておくこと。`example.com` / `dev.example.com` の DNS レコードは初回デプロイ時に wrangler が自動作成する。ゾーンが未登録だとデプロイ時に custom domain の割当で失敗する。

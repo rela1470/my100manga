@@ -17,6 +17,11 @@
   // Access で守るため、Access を通らない workers.dev 経路を残すとバイパスになる。
   "workers_dev": false,
   "assets": {
+    // ローカル（`wrangler dev`）が配る元。デプロイ（npm run deploy:*）では
+    // `--assets dist/public` で上書きし、コメントを落とした `npm run build` の出力を配る
+    // （public/ の実装メモをブラウザに配らないため）。see docs/build-assets.md
+    // `npx wrangler deploy` を直に叩くとここが使われて public/ がそのまま出るので、
+    // デプロイは必ず npm script 経由で行うこと。
     "directory": "./public",
     "binding": "ASSETS",
     // 全リクエストで Worker を先に走らせる。理由は 2 つ:

@@ -13,3 +13,6 @@ backups/
 
 # Claude Code の個人設定（デプロイ許可など）
 .claude/settings.local.json
+
+# npm run build の出力（public/ からコメントを落とした配布用のコピー）
+dist/

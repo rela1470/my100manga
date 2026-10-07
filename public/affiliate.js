@@ -144,12 +144,6 @@
     return s ? "https://search.rakuten.co.jp/search/mall/" + encodeURIComponent(s) + "/" : "";
   }
 
-  // 楽天ブックスの該当巻（ISBN 検索）へのアフィリエイトリンク。あらすじの出典表記から
-  // 原典へ送るのに使う（public/book-detail.js）。アフィリ ID 未設定なら素の検索 URL。
-  window.rakutenBookLink = function (item) {
-    return rakutenPrint(item);
-  };
-
   // アフィリエイトリンクの横に出す「PR」の印（ステマ規制）。購入リンクの見出しと同じ見た目。
   // 購入リンクのまとまりの外に置くアフィリンク（あらすじの出典・画像参考元）に付ける。
   // アフィリ ID が 1 つも入っていないとき（dev、および外部ストアを使わない R18版）は、
@@ -162,6 +156,23 @@
     el.className = "pr-label";
     el.textContent = "PR";
     return el;
+  };
+
+  // あらすじの出典表記（本の詳細ポップアップ共通: book-detail.js・app.js・view.js）。
+  // あらすじは出版社の内容紹介文なので全文は出さず、サーバが 100 字で切って返す
+  // （src/book.ts clipCaption）。切れているときは続きを楽天ブックスの該当巻へ送る。
+  // 購入リンクと同じアフィリエイトリンクなので、購入リンクのまとまりの外にあっても広告と
+  // 分かるよう「PR」を付ける（景表法・ステマ規制）。
+  window.setSynopsisSource = function (box, item, truncated) {
+    box.textContent = "";
+    var a = document.createElement("a");
+    a.href = rakutenPrint(item);
+    a.target = "_blank";
+    a.rel = "noopener sponsored nofollow";
+    a.textContent = truncated ? "続きは楽天ブックスで" : "出典: 楽天ブックス";
+    box.appendChild(a);
+    var pr = window.prLabel();
+    if (pr) box.appendChild(pr);
   };
 
   // 本の詳細ポップアップの行（エディタ app.js・閲覧 view.js 共通）。値が無ければ行ごと隠す。

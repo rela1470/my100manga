@@ -1339,12 +1339,13 @@ async function loadEditMeta(it, seq) {
     return;
   }
   if (seq !== editSeq) return;
-  applyBookMeta(data);
+  applyBookMeta(data, "e", { item: it });
 }
 
 // Fill the author / 出版社 / 発行日 / あらすじ rows from an /api/book response.
 // `p` is the element-id prefix: "e" = edit modal, "v" = volume detail modal.
 // opts.keepAuthor: 役割付きの全作者（巻一覧の creators）を出していれば上書きしない。
+// opts.item: 表示中の本（あらすじの出典リンクを該当巻へ向けるのに isbn を使う）。
 function applyBookMeta(data, p = "e", opts = {}) {
   if (!opts.keepAuthor && Array.isArray(data.authors) && data.authors.length) {
     setDetailAuthor(p + "Author", data.authors.join("、"));
@@ -1368,6 +1369,7 @@ function applyBookMeta(data, p = "e", opts = {}) {
   }
   if (data.caption) {
     $(p + "Synopsis").textContent = data.caption;
+    window.setSynopsisSource($(p + "SynopsisSrcBox"), opts.item || {}, data.caption_truncated); // public/affiliate.js
     $(p + "SynopsisBox").style.display = "";
   } else {
     $(p + "Synopsis").textContent = "";
@@ -1394,7 +1396,7 @@ async function refetchBook(btn) {
       // keep any あらすじ already shown rather than blanking it with this empty response.
       btn.textContent = "混み合っています。少し待って再取得";
     } else {
-      applyBookMeta(data);
+      applyBookMeta(data, "e", { item: it });
       btn.textContent = data.caption ? "再取得しました" : "この巻のあらすじ情報はありません";
     }
   } catch {
@@ -4289,7 +4291,7 @@ function openVolumeDetail(v, opts) {
     fetch(`/api/book?isbn=${encodeURIComponent(v.isbn)}`)
       .then((res) => (res.ok ? res.json() : null))
       .then((data) => {
-        if (data && seq === volSeq) applyBookMeta(data, "v", { keepAuthor: !!v.creators });
+        if (data && seq === volSeq) applyBookMeta(data, "v", { keepAuthor: !!v.creators, item: v });
       })
       .catch(() => {});
   }

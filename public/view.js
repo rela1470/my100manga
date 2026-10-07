@@ -405,6 +405,7 @@ async function loadBookMeta(it, seq) {
   }
   if (data.caption) {
     $("dSynopsis").textContent = data.caption;
+    window.setSynopsisSource($("dSynopsisSrcBox"), it, data.caption_truncated); // public/affiliate.js
     $("dSynopsisBox").style.display = "";
   }
 }

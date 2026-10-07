@@ -1,0 +1,49 @@
+My 100 Manga
+Copyright 2026 Jun Watanabe
+
+このリポジトリのソースコードは Apache License 2.0（LICENSE）で配布します。
+ただし次のファイルは第三者の著作物に由来し、Apache License 2.0 の対象外です。
+それぞれ記載のライセンスが適用されます。
+
+--------------------------------------------------------------------------------
+1. db/circulation-data.sql
+--------------------------------------------------------------------------------
+出典      英語版ウィキペディア "List of best-selling manga"
+          https://en.wikipedia.org/wiki/Special:PermanentLink/1377319872
+          （oldid 1377319872 / 最終更新 2026-09-28 / 取得 2026-10-03）
+ライセンス Creative Commons Attribution-ShareAlike 4.0 International (CC BY-SA 4.0)
+          https://creativecommons.org/licenses/by-sa/4.0/
+変更点    作品名・著者・出版社・累計発行部数・集計時点のみを抽出し、日本語の作品名と
+          当サイトのシリーズ ID に対応付けた。記事本文は含まない。
+          生成は scripts/wikipedia-circulation.mjs。
+
+--------------------------------------------------------------------------------
+2. src/brandGlyphs.ts
+--------------------------------------------------------------------------------
+出典      Dela Gothic One
+          Copyright 2020 The Dela Gothic Project Authors
+          https://github.com/syakuzen/DelaGothic
+ライセンス SIL Open Font License, Version 1.1
+          全文は public/fonts/DelaGothicOne-OFL.txt
+変更点    欧文・数字のグリフだけを SVG パスのアウトラインとして抽出し、TypeScript の
+          定数にした（共有画像の描画に使う resvg が 2 つ目のフォントを読めないため）。
+          抽出は scripts/brand-glyphs.py。
+          元フォントに Reserved Font Name は設定されていない。
+
+--------------------------------------------------------------------------------
+3. public/fonts/NotoSansJP-Bold-subset.otf
+--------------------------------------------------------------------------------
+出典      Noto Sans JP
+          Copyright 2014-2021 Adobe (http://www.adobe.com/),
+          with Reserved Font Name 'Source'
+ライセンス SIL Open Font License, Version 1.1
+          全文は public/fonts/OFL.txt
+変更点    JIS X 0208 + ASCII + 半角カナ/全角英数にサブセット化した。
+          Reserved Font Name 'Source' はファイル名にもフォント名にも含めていない。
+
+--------------------------------------------------------------------------------
+
+なお、サイト上に表示される表紙画像・作品データ・あらすじ等は、外部の公開データベース・
+API（メディア芸術データベース、楽天ウェブサービス、Yahoo! JAPAN Webサービス 等）から
+取得したもので、このリポジトリには含まれず、Apache License 2.0 の対象外です。それぞれの
+権利は各提供元に帰属します。詳細は https://my100manga.com/about をご覧ください。

@@ -2,6 +2,7 @@
 -- 出典: https://en.wikipedia.org/wiki/Special:PermanentLink/1377319872
 -- 取得: 2026-10-03（oldid 1377319872 / 最終更新 2026-09-28）
 -- Wikipedia 本文は CC BY-SA 4.0。持ち込むのは事実の列だけ（注記などの文章は入れない）。
+-- このファイルは Apache License 2.0 の対象外。CC BY-SA 4.0 が適用される（詳細は NOTICE）。
 -- 全件を入れ替える。add-circulation.sql を流した後に実行する。
 DELETE FROM circulation;
 INSERT INTO circulation

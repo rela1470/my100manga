@@ -458,6 +458,11 @@ const CSP_ADSENSE = [
   "https://ssl.gstatic.com",
 ];
 const CSP_TURNSTILE = ["https://challenges.cloudflare.com"];
+// Cloudflare Web Analytics（RUM）のビーコン。**ゾーンの設定でエッジが HTML に自動挿入する**ので
+// リポジトリを検索しても出てこない。ローカルの `wrangler dev` では挿入されないため、許可リストの
+// 検算は必ず本番の実物の HTML でやること（ここはそれで見つけた漏れ）。
+// 計測値の送り先は https://cloudflareinsights.com/cdn-cgi/rum なので connect-src にも要る。
+const CSP_CLOUDFLARE_RUM = ["https://static.cloudflareinsights.com", "https://cloudflareinsights.com"];
 // バリューコマース（Yahoo!ショッピングの購入リンクと計測ピクセル）。
 const CSP_VALUECOMMERCE = ["https://ck.jp.ap.valuecommerce.com", "https://ad.jp.ap.valuecommerce.com"];
 
@@ -476,12 +481,12 @@ export const CSP_REPORT_PATH = "/api/csp-report";
  *  止まるようなら違反レポートに eval が出るので、そこで判断する）。 */
 const CSP_DOCUMENT = [
   "default-src 'self'",
-  `script-src 'self' 'unsafe-inline' ${[...CSP_GOOGLE_TAG, ...CSP_GOOGLE_ANALYTICS, ...CSP_ADSENSE, ...CSP_TURNSTILE, ...CSP_VALUECOMMERCE].join(" ")}`,
+  `script-src 'self' 'unsafe-inline' ${[...CSP_GOOGLE_TAG, ...CSP_GOOGLE_ANALYTICS, ...CSP_ADSENSE, ...CSP_TURNSTILE, ...CSP_VALUECOMMERCE, ...CSP_CLOUDFLARE_RUM].join(" ")}`,
   // styles.css が Google Fonts を @import している。
   "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com https://tagmanager.google.com",
   "font-src 'self' data: https://fonts.gstatic.com",
   "img-src 'self' data: blob: https:",
-  `connect-src 'self' ${[...CSP_GOOGLE_TAG, ...CSP_GOOGLE_ANALYTICS, ...CSP_ADSENSE, ...CSP_TURNSTILE].join(" ")}`,
+  `connect-src 'self' ${[...CSP_GOOGLE_TAG, ...CSP_GOOGLE_ANALYTICS, ...CSP_ADSENSE, ...CSP_TURNSTILE, ...CSP_CLOUDFLARE_RUM].join(" ")}`,
   // CSP_GOOGLE_TAG は GTM の <noscript> iframe（googletagmanager.com/ns.html）のため。
   `frame-src ${[...CSP_TURNSTILE, ...CSP_GOOGLE_TAG, "https://googleads.g.doubleclick.net", "https://tpc.googlesyndication.com", "https://*.safeframe.googlesyndication.com", "https://www.google.com", "https://*.adtrafficquality.google"].join(" ")}`,
   "frame-ancestors 'none'",

@@ -207,6 +207,9 @@ describe("セキュリティヘッダ・エラー画面", () => {
     expect(doc).toContain("https://www.googletagmanager.com"); // GTM
     expect(doc).toContain("https://challenges.cloudflare.com"); // Turnstile
     expect(doc).toContain("https://fonts.googleapis.com"); // styles.css の @import
+    // Cloudflare Web Analytics のビーコン。エッジが HTML に自動挿入するので、リポジトリを
+    // 検索しても出てこない（本番の実物を見て見つけた漏れ）。消すと RUM が黙って止まる。
+    expect(doc).toContain("https://static.cloudflareinsights.com");
     expect(doc).toContain("report-uri /api/csp-report");
     expect(doc).toContain("frame-ancestors 'none'");
 

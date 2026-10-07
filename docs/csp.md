@@ -83,13 +83,23 @@ XSS 側の実態として、`innerHTML` はすべて静的テンプレか空文�
 ## 変更したときの確認
 
 許可リストを触ったら、**実際に配られる HTML が参照している読み込み先が全部ポリシー内か**を
-機械的に確かめる（GTM の `ns.html` iframe の漏れはこれで見つかった）。
+機械的に確かめる（GTM の `ns.html` iframe の漏れはこれで見つかった）。各ページの
+`script`/`link`/`img`/`iframe` の src を集めて、CSP の各ディレクティブと突き合わせる。
 
-```sh
-npm run build
-npx wrangler dev --assets dist/public --port 8799
-# 各ページの script/link/img/iframe の src を集めて、CSP の各ディレクティブと突き合わせる
-```
+**検算は必ず「デプロイ済みの実物」に対してやること。ローカルの `wrangler dev` では駄目。**
+Cloudflare はゾーンの設定でエッジが HTML に手を入れる（Web Analytics のビーコン
+`static.cloudflareinsights.com/beacon.min.js` の自動挿入など）。これはリポジトリを検索しても
+出てこないし、ローカルでは挿入されない。**実際にこれで 1 件漏らして本番に出した**（RUM の
+ビーコンがブロックされる状態で数分間動いていた）。dev に出してから dev の HTML で検算し、
+本番に出したあともう一度本番の HTML で検算する。
 
-静的な参照しか見られないので、実行時に増える読み込み先（広告）は違反レポート頼み。
+静的な参照しか見られないので、実行時に増える読み込み先（広告の配信先など）は違反レポート頼み。
 だから公開直後の `wrangler tail` が要る。
+
+### AdSense は審査が通るまで検証できない
+
+`pagead2.googlesyndication.com/pagead/js/adsbygoogle.js` は審査中でも読み込まれるので
+`script-src` の 1 ホストぶんは今も通っているが、**広告が実際に配信され始めてから増える
+読み込み先（セーフフレーム・広告品質・計測）は、審査通過まで一切出てこない**。
+承認が下りたら、広告が出た状態で `wrangler tail | grep 'csp violation'` を見ること。
+止まっていたら `CSP_MODE=report` に落として、違反を集めてから許可リストを直す。

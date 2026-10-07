@@ -118,8 +118,11 @@ export interface ViewJob {
 export interface ShareJob {
   slug: string;
   host: string;
-  /** 積んだ時点のリストの updated_at。consumer はこれより新しい版があれば捨てる（後続のメッセージが描く）。 */
+  /** 積んだ時点のリストの updated_at。consumer はこれより新しい版があれば捨てる（後続のメッセージが描く）。
+   *  押した人が待っている要求時生成（/api/share-prepare）では付けない（捨てられると誰も描き直さない）。 */
   updated_at?: number;
+  /** 描く variant（src/shareImage.ts の ShareVariant）。省略時は全部。 */
+  variants?: string[];
 }
 
 export interface Book {

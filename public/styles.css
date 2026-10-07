@@ -2282,6 +2282,48 @@ html:has(.modal-backdrop.open) { overflow: hidden; }
 button.x-post { background: #000; border-color: #000; color: #fff; }
 button.x-post:hover { background: #222; border-color: #222; }
 /* 画像共有のあとに出す SNS の投稿画面リンク（share-x.js の showSnsPanel）。 */
+/* 共有画像の生成待ち（public/share-x.js）。描けたものから 1 枚ずつタイルに入るので、
+   4 枚版はこの埋まり方がそのまま進捗になる（作り物のバーは置かない）。1 枚版は刻みが
+   無いので、必ず出来ている og を薄く敷いて「何ができるか」だけ見せる。 */
+.share-wait { display: grid; gap: 6px; margin: 0 0 12px; }
+.share-wait.quarters { grid-template-columns: 1fr 1fr; }
+.share-wait.single { grid-template-columns: 1fr; }
+.share-wait-tile {
+  position: relative;
+  border: 2px solid var(--ink);
+  border-radius: 8px;
+  overflow: hidden;
+  background: var(--panel-2) center / cover no-repeat;
+  aspect-ratio: 3 / 4;
+}
+.share-wait.single .share-wait-tile { aspect-ratio: 12 / 17; }
+.share-wait-tile.has-preview { opacity: .5; filter: saturate(.5); }
+.share-wait-tile img { display: block; width: 100%; height: 100%; object-fit: contain; }
+/* 待っているタイルの上を光が流れる。出来たタイルでは止める。 */
+.share-wait-tile::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(100deg, transparent 30%, rgba(255, 255, 255, .6) 50%, transparent 70%);
+  transform: translateX(-100%);
+  animation: shareWaitShimmer 1.6s ease-in-out infinite;
+}
+.share-wait-tile.done { opacity: 1; filter: none; }
+.share-wait-tile.done::after { content: none; }
+@keyframes shareWaitShimmer { to { transform: translateX(100%); } }
+@media (prefers-reduced-motion: reduce) {
+  .share-wait-tile::after { animation-duration: 4s; }
+}
+/* 背の低い画面ではタイルを小さくして、ダイアログ全体が 1 画面に収まるようにする
+   （aspect-ratio を保ったまま縮めたいので、高さではなく幅で絞る）。 */
+@media (max-height: 760px) {
+  .share-wait { max-width: 260px; margin-inline: auto; }
+}
+.share-wait-note { padding: 0 0 4px; }
+.share-wait-slow { margin: 0 0 12px; }
+/* 公開完了モーダルの準備状況の行（public/app.js）。 */
+.share-ready { padding: 0 0 8px; }
+
 .sns-links { display: grid; grid-template-columns: repeat(auto-fill, minmax(110px, 1fr)); gap: 8px; margin: 0 0 16px; }
 .sns-link {
   display: block; text-align: center; padding: 12px 8px; border-radius: 8px;

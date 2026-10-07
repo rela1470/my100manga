@@ -117,9 +117,12 @@
     { "name": "RL_COVERS", "namespace_id": "1002", "simple": { "limit": 120, "period": 60 } },
     { "name": "RL_HEAVY", "namespace_id": "1003", "simple": { "limit": 20, "period": 60 } }
   ],
-  // 共有画像（src/shareImage.ts）の事前生成キュー。og は公開時に waitUntil で描き、残りの
-  // full/q1–q4 はリストの作成/更新で {slug, host, updated_at} を 60 秒遅延で積んで、同じ Worker の
-  // queue() が 1 枚ずつ描いて R2 に置く。描画はメモリを食う（isolate 128MB）ので batch 1・並列 1。
+  // 共有画像（src/shareImage.ts）の事前生成キュー。og は公開時に waitUntil で描き、full は
+  // リストの作成/更新で {slug, host, updated_at, variants} を積む（初回公開は 5 秒、更新は 60 秒の
+  // 遅延。遅延の間の編集はまとめられる）。4 枚版（q1–q4）は積まない — 画像を添付して投稿する人は
+  // 一部なので、全リストぶん先に描くとキューが詰まる。「画像でポスト」で 4 枚版が選ばれたときに
+  // /api/share-prepare が積む。同じ Worker の queue() が 1 枚ずつ描いて R2 に置く。描画はメモリを
+  // 食う（isolate 128MB）ので batch 1・並列 1。
   // キューは事前に `wrangler queues create <name>` で作る（閲覧ビーコンの my100manga-views も同様）。
   // binding が無ければ og だけ描く。閲覧ビーコンは binding が無ければその場で D1 に書く。
   "queues": {

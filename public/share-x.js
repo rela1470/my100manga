@@ -9,7 +9,8 @@
 //   ファイル共有できる端末（主にスマホ）は Web Share API の共有シートへ渡す。できない
 //   端末（PC、アプリ内ブラウザ等）は保存・コピーのボタンを出す。どちらも主要 SNS の
 //   投稿画面へのリンクを出し、コピー／保存した画像を貼ってもらう（intent では画像を
-//   添付できない）。
+//   添付できない）。画像がまだサーバに無ければ、出来るまで待つパネルを出す（4 枚版は
+//   出来た順にタイルが埋まるので、それがそのまま進捗になる）。下の「生成待ち」を参照。
 (function () {
   // サイト名・ハッシュタグはサイト種別（本家 / R18版）で変わるので、サーバが差し込む
   // window.__SITE__（src/analytics.ts analyticsTags）から読む。無ければ本家の値。
@@ -183,10 +184,12 @@
     quarters: { label: "25冊ずつ4枚", variants: ["q1", "q2", "q3", "q4"] },
   };
 
-  async function fetchImage(slug, variant) {
+  // ?v=<内容のハッシュ> を付けて取る。付けないとサーバが付きの URL へ 302 するので 1 往復増える
+  // （src/index.ts handleShareImage）。
+  async function fetchImage(slug, variant, hash) {
     let res;
     try {
-      res = await fetch(`/share/${encodeURIComponent(slug)}/${variant}.jpg`);
+      res = await fetch(`/share/${encodeURIComponent(slug)}/${variant}.jpg${hash ? `?v=${encodeURIComponent(hash)}` : ""}`);
     } catch (e) {
       throw Object.assign(new Error("network"), { userMessage: "通信に失敗しました。接続を確認してもう一度お試しください。" });
     }
@@ -198,11 +201,242 @@
     return new File([await res.blob()], `my100manga-${slug}${suffix}.jpg`, { type: "image/jpeg" });
   }
 
-  // 4 枚は順に取る（同時だとサーバの生成が重なって遅くなる）。
-  async function fetchImages(slug, kind) {
-    const files = [];
-    for (const v of KINDS[kind].variants) files.push(await fetchImage(slug, v));
-    return files;
+  /* ---------- 生成待ち ---------- */
+  // 画像はサーバが描く（src/shareImage.ts）。公開・更新で先に描かれるのは og と full だけで、
+  // 4 枚版（q1–q4）は要求されてから描く。描画はメモリを食うのでサイト全体で 1 枚ずつしか
+  // 進まない（wrangler.jsonc の max_concurrency 1）ため、混んでいると数十秒待つことがある。
+  //
+  // そこで「ボタンを押す → 出来るまで固まったように見える」のをやめて、
+  //   1. /api/share-status で何枚できているかを聞く（R2 を見るだけ。描画は起こさない）
+  //   2. 足りなければ /api/share-prepare で積んでもらい、出来た順に 1 枚ずつ並べる
+  //   3. 待たせたときは、共有へ進むのは利用者のクリックから（Web Share はユーザー操作が要る）
+  // という形にしている。4 枚版はタイルが 1 枚ずつ埋まるのがそのまま進捗になる。
+  const POLL_MS = 2000;
+  const POLL_SLOW_MS = 5000; // 長引いたら間隔を広げる（status は安いが無駄打ちはしない）
+  const BACKOFF_AFTER_MS = 30000;
+  const SLOW_AFTER_MS = 45000; // これを過ぎたら「画像なしでポスト」を前に出す
+  const GIVE_UP_MS = 180000;
+
+  const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+  async function fetchStatus(slug) {
+    let res;
+    try {
+      res = await fetch(`/api/share-status?slug=${encodeURIComponent(slug)}`, { cache: "no-store" });
+    } catch (e) {
+      throw Object.assign(new Error("network"), { userMessage: "通信に失敗しました。接続を確認してもう一度お試しください。" });
+    }
+    if (!res.ok) {
+      const msg = (window.apiStatusMessage && window.apiStatusMessage(res.status)) || "";
+      throw Object.assign(new Error(`HTTP ${res.status}`), { userMessage: msg });
+    }
+    return await res.json(); // { hash, ready: [variant, ...] }
+  }
+
+  // 「この種類を描いてほしい」という申告。積むだけなので、失敗してもポーリングは続ける
+  // （/share/<slug>/<variant>.jpg 自体にその場で描く経路が残っている）。
+  function requestPrepare(slug, kind) {
+    return fetch("/api/share-prepare", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ slug, kind }),
+    }).catch(() => {});
+  }
+
+  // 待機パネル。ui-dialog.js の見た目を借りて、タイル・経過・逃げ道（画像なしでポスト）を出す。
+  // 1 つを使い回すので、開くたびに中身を作り直す。
+  let waitHost = null;
+  let waitCancelled = false;
+  let waitResolveGo = null; // 「共有する」待ちの resolver
+  let waitUrls = []; // タイルに入れた object URL（閉じるときに戻す）
+
+  function waitAct(act, slug, owner) {
+    if (act === "nocard") openIntent(intentUrl(slug, owner));
+    waitCancelled = true;
+    if (waitResolveGo) {
+      const r = waitResolveGo;
+      waitResolveGo = null;
+      r(false);
+    }
+  }
+
+  function openWaitPanel(kind, slug, owner, hash) {
+    if (!waitHost) {
+      waitHost = document.createElement("div");
+      waitHost.className = "ui-dialog-backdrop";
+      waitHost.innerHTML =
+        '<div class="ui-dialog" role="dialog" aria-modal="true" aria-labelledby="shareWaitMsg">' +
+        '<p class="ui-dialog-msg" id="shareWaitMsg"></p>' +
+        '<div class="share-wait"></div>' +
+        '<p class="spinner share-wait-note"></p>' +
+        '<p class="hint share-wait-slow" hidden></p>' +
+        '<div class="ui-dialog-actions">' +
+        '<button type="button" data-act="close">閉じる</button>' +
+        '<button type="button" class="x-post share-wait-nocard" data-act="nocard" hidden>𝕏 でポスト（画像なし）</button>' +
+        '<button type="button" class="primary share-wait-go" data-act="go" hidden></button>' +
+        "</div></div>";
+      document.body.appendChild(waitHost);
+      waitHost.addEventListener("click", (e) => {
+        const b = e.target.closest("button[data-act]");
+        if (!b) return;
+        if (b.dataset.act === "go") {
+          const r = waitResolveGo;
+          waitResolveGo = null;
+          if (r) r(true);
+          return;
+        }
+        waitAct(b.dataset.act, waitHost._slug, waitHost._owner);
+      });
+      waitHost.addEventListener("keydown", (e) => {
+        // 下のモーダル（共有モーダル）まで Esc で閉じないように止める（ui-dialog.js）。
+        if (e.key === "Escape") {
+          e.preventDefault();
+          waitAct("close", waitHost._slug, waitHost._owner);
+        }
+      });
+    }
+    waitHost._slug = slug;
+    waitHost._owner = owner;
+    waitCancelled = false;
+    const variants = KINDS[kind].variants;
+    const msg = waitHost.querySelector(".ui-dialog-msg");
+    const box = waitHost.querySelector(".share-wait");
+    const note = waitHost.querySelector(".share-wait-note");
+    const slow = waitHost.querySelector(".share-wait-slow");
+    const go = waitHost.querySelector(".share-wait-go");
+    const nocard = waitHost.querySelector(".share-wait-nocard");
+
+    function buildTiles(h) {
+      for (const u of waitUrls) URL.revokeObjectURL(u);
+      waitUrls = [];
+      box.textContent = "";
+      box.className = `share-wait ${variants.length > 1 ? "quarters" : "single"}`;
+      for (let i = 0; i < variants.length; i++) {
+        const t = document.createElement("div");
+        t.className = "share-wait-tile";
+        // 1 枚版は刻みが無いので、必ず出来ている og を下敷きにして「こういう絵ができる」を見せる。
+        if (variants.length === 1) {
+          t.style.backgroundImage = `url("/share/${encodeURIComponent(slug)}/og.jpg?v=${encodeURIComponent(h)}")`;
+          t.classList.add("has-preview");
+        }
+        const img = document.createElement("img");
+        img.alt = "";
+        img.hidden = true;
+        t.appendChild(img);
+        box.appendChild(t);
+      }
+    }
+
+    msg.textContent = "共有画像を準備しています";
+    note.textContent = "画像を作成しています…";
+    slow.hidden = true;
+    go.hidden = true;
+    nocard.hidden = true;
+    buildTiles(hash);
+    waitHost.classList.add("open");
+    waitHost.querySelector('button[data-act="close"]').focus();
+
+    return {
+      cancelled: () => waitCancelled,
+      reset(h) {
+        // 待っている間にリストが編集された。取り直しになるので並べ直す。
+        buildTiles(h);
+        note.textContent = "リストが更新されました。画像を作り直しています…";
+      },
+      fill(i, file) {
+        const tile = box.children[i];
+        if (!tile) return;
+        const url = URL.createObjectURL(file);
+        waitUrls.push(url);
+        const img = tile.querySelector("img");
+        img.src = url;
+        img.hidden = false;
+        tile.classList.add("done");
+      },
+      tick(done, waited) {
+        note.textContent =
+          variants.length > 1 && done > 0
+            ? `${variants.length}枚中${done}枚できました…`
+            : "画像を作成しています…";
+        if (waited > SLOW_AFTER_MS && slow.hidden) {
+          slow.hidden = false;
+          slow.textContent = "混み合っています。画像なしで先にポストすることもできます（リンクのカードには100冊の画像が出ます）。";
+          nocard.hidden = false;
+        }
+      },
+      // 揃ったあと。待たせたぶん利用者が画面を離れている可能性があるので、共有へ進むのは
+      // ここでのクリックから（それが Web Share のユーザー操作にもなる）。
+      done(viaShare) {
+        msg.textContent = "共有画像ができました";
+        note.hidden = true;
+        slow.hidden = true;
+        nocard.hidden = true;
+        go.hidden = false;
+        go.textContent = viaShare ? "共有する" : "投稿先を選ぶ";
+        go.focus();
+        return new Promise((resolve) => (waitResolveGo = resolve));
+      },
+      close() {
+        waitResolveGo = null;
+        note.hidden = false;
+        waitHost.classList.remove("open");
+        for (const u of waitUrls) URL.revokeObjectURL(u);
+        waitUrls = [];
+        box.textContent = "";
+      },
+    };
+  }
+
+  /** 選ばれた種類の画像を揃える。揃っていれば待たせず、足りなければ待機パネルを出して
+   *  ポーリングする。中断されたら null、揃えば File の配列。 */
+  async function collectImages(slug, kind, owner, viaShare) {
+    const variants = KINDS[kind].variants;
+    const files = new Array(variants.length).fill(null);
+    const isReady = (st, v) => (st.ready || []).includes(v);
+    let status = await fetchStatus(slug);
+    let hash = status.hash;
+    // いちばん多い経路: もう全部ある。パネルは出さずそのまま渡す。
+    if (variants.every((v) => isReady(status, v))) {
+      for (let i = 0; i < variants.length; i++) files[i] = await fetchImage(slug, variants[i], hash);
+      return files;
+    }
+    const ui = openWaitPanel(kind, slug, owner, hash);
+    try {
+      await requestPrepare(slug, kind);
+      const started = Date.now();
+      for (;;) {
+        for (let i = 0; i < variants.length; i++) {
+          if (files[i] || !isReady(status, variants[i])) continue;
+          try {
+            files[i] = await fetchImage(slug, variants[i], hash);
+            ui.fill(i, files[i]);
+          } catch (e) {
+            // 出来ているはずのものが取れなかった（消された・入れ違い）。次の周回で拾い直す。
+            files[i] = null;
+          }
+          if (ui.cancelled()) return null;
+        }
+        if (files.every(Boolean)) break;
+        const waited = Date.now() - started;
+        if (waited > GIVE_UP_MS) {
+          throw Object.assign(new Error("timeout"), {
+            userMessage: "いま混み合っているようです。時間をおいてもう一度お試しください。",
+          });
+        }
+        ui.tick(files.filter(Boolean).length, waited);
+        await sleep(waited > BACKOFF_AFTER_MS ? POLL_SLOW_MS : POLL_MS);
+        if (ui.cancelled()) return null;
+        status = await fetchStatus(slug);
+        if (status.hash !== hash) {
+          hash = status.hash;
+          files.fill(null);
+          ui.reset(hash);
+        }
+      }
+      return (await ui.done(viaShare)) ? files : null;
+    } finally {
+      ui.close();
+    }
   }
 
   function download(files) {
@@ -263,6 +497,8 @@
   // 捨てないと更新前の画像を出し続ける）。public/app.js の公開・更新の後から呼んでいる。
   const resets = [];
   function resetImages() {
+    // 待っている最中にリストが更新されたら、その待ちは古い内容のものなので畳む。
+    if (waitHost && waitHost.classList.contains("open")) waitAct("close", waitHost._slug, waitHost._owner);
     for (const f of resets) f();
   }
 
@@ -281,9 +517,11 @@
       for (const k of Object.keys(cache)) delete cache[k];
       retry = null;
     });
-    async function getImages(slug, kind) {
-      if (!(cache[kind] && cache[kind].slug === slug)) cache[kind] = { slug, files: await fetchImages(slug, kind) };
-      return cache[kind].files;
+    async function getImages(slug, kind, owner, viaShare) {
+      if (cache[kind] && cache[kind].slug === slug) return cache[kind].files;
+      const files = await collectImages(slug, kind, owner, viaShare);
+      if (files) cache[kind] = { slug, files };
+      return files; // null = 待機パネルで中断された
     }
     const label = imageBtn.textContent;
     imageBtn.addEventListener("click", async () => {
@@ -297,9 +535,10 @@
       imageBtn.disabled = true;
       imageBtn.textContent = "画像を作成中…";
       try {
-        const files = await getImages(slug, kind);
+        const files = await getImages(slug, kind, owner, viaShare);
+        imageBtn.textContent = label;
+        if (!files) return; // 待機パネルで中断された（ポスト済みか、閉じられた）
         if (!viaShare) {
-          imageBtn.textContent = label;
           // 勝手にダウンロードせず、保存・コピーのボタンと投稿先を出して選んでもらう。
           // リンクのクリックで開くのでポップアップブロックにもかからない。
           const how = canCopyImage() ? "画像を保存して添付するか、コピーして貼り付けてください" : "画像を保存して添付してください";

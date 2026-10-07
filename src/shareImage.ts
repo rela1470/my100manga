@@ -37,6 +37,9 @@ import { Env, ListItem, MangaList } from "./types";
 
 export type ShareVariant = "og" | "full" | "q1" | "q2" | "q3" | "q4";
 export const SHARE_VARIANTS: readonly ShareVariant[] = ["og", "full", "q1", "q2", "q3", "q4"];
+// 4 枚版（X の 1 投稿に添付できる上限）。公開時には描かず、「画像でポスト」で 4 枚版が
+// 選ばれたときだけ描く（src/index.ts queueShareImages）。
+export const QUARTERS: readonly ShareVariant[] = ["q1", "q2", "q3", "q4"];
 
 // Bump to regenerate every stored image after a design change.
 const LAYOUT_VERSION = 8;
@@ -520,6 +523,43 @@ export async function ensureShareImage(
 
 async function shareImageKey(list: MangaList, variant: ShareVariant): Promise<string> {
   return `share/${list.slug}/${variant}-${await shareImageHash(list)}.jpg`;
+}
+
+export interface ShareInventory {
+  /** `hash` を渡したとき、その内容で出来ている variant（＝そのまま返せるもの）。 */
+  ready: ShareVariant[];
+  /** ハッシュを問わず 1 枚でも R2 に置かれたことがある variant。 */
+  everRendered: ShareVariant[];
+}
+
+const SHARE_KEY_RE = /^(og|full|q[1-4])-([0-9a-f]+)\.jpg$/;
+
+/** R2 にある共有画像の棚卸し（list 1 回）。
+ *
+ *  everRendered は「この slug はその variant を要求されたことがある」印として使う
+ *  （src/index.ts queueShareImages）。renderAndStore の掃除は `share/<slug>/<variant>-`
+ *  単位で最新 1 枚を残すので、内容を編集しても古いハッシュのオブジェクトがその variant を
+ *  次に描くまで残り、印として読める。逆に言うと、残留オブジェクトをまとめて消す掃除を
+ *  足すときはこの印も消えることに注意する。
+ *
+ *  R2 が無い／読めないときは空を返す（呼び出し側は「まだ無い」として扱えばよい）。 */
+export async function shareInventory(env: Env, slug: string, hash?: string): Promise<ShareInventory> {
+  const inv: ShareInventory = { ready: [], everRendered: [] };
+  if (!env.COVERS) return inv;
+  const prefix = `share/${slug}/`;
+  try {
+    // 1 リストあたり多くても十数個（variant 6 種 × 新旧）なので 1 ページで収まる。
+    for (const o of (await env.COVERS.list({ prefix })).objects) {
+      const m = o.key.slice(prefix.length).match(SHARE_KEY_RE);
+      if (!m) continue;
+      const variant = m[1] as ShareVariant;
+      if (!inv.everRendered.includes(variant)) inv.everRendered.push(variant);
+      if (hash && m[2] === hash && !inv.ready.includes(variant)) inv.ready.push(variant);
+    }
+  } catch (err) {
+    console.error("share inventory failed", slug, err);
+  }
+  return inv;
 }
 
 // R2 キー → 描画中の Promise。同じ画像への同時リクエストは 1 回の描画を共有する。

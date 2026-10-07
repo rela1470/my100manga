@@ -4777,6 +4777,48 @@ async function showShare(slug, token) {
     $("editUrlWarnLogin").hidden = !(me && me.enabled);
   }
   $("shareModal").classList.add("open");
+  stopShareReadyPoll();
+  pollShareReady(slug, Date.now());
+}
+
+/* ---------- 共有画像の準備状況 ---------- */
+// 公開直後は full（100冊を1枚）がまだ描けていないことがある（src/index.ts queueShareImages で
+// キューに積み、サイト全体で 1 枚ずつ描くため）。編集用URLを控えている間に出来てしまうことが
+// 多いので、ボタンは塞がず 1 行だけ知らせる。/api/share-status は R2 を見るだけで描画を
+// 起こさないので、モーダルが開いている間ポーリングしてよい。
+const SHARE_READY_POLL_MS = 3000;
+const SHARE_READY_SLOW_MS = 45000;
+let shareReadyTimer = null;
+
+function stopShareReadyPoll() {
+  clearTimeout(shareReadyTimer);
+  shareReadyTimer = null;
+  $("shareReady").hidden = true;
+}
+
+async function pollShareReady(slug, started) {
+  const el = $("shareReady");
+  if (!$("shareModal").classList.contains("open") || shareSlug !== slug) return;
+  let ready = [];
+  try {
+    const res = await fetch(`/api/share-status?slug=${encodeURIComponent(slug)}`, { cache: "no-store" });
+    if (res.ok) ready = (await res.json()).ready || [];
+  } catch (e) {
+    // 取れなければ黙って次の回に回す（準備状況は案内であって機能ではない）。
+  }
+  if (!$("shareModal").classList.contains("open") || shareSlug !== slug) return;
+  if (ready.includes("full")) {
+    el.hidden = true; // 揃ったので黙る（ここで止める）
+    return;
+  }
+  // 長引いたら「画像なしで先にポスト」を促す。ボタンの並べ替えはしない（下の「𝕏 でポスト」が
+  // そのまま画像なしの投稿なので、文面で指せば足りる）。
+  el.textContent =
+    Date.now() - started > SHARE_READY_SLOW_MS
+      ? "共有画像が混み合っています。下の「𝕏 でポスト」なら画像を待たずに投稿できます。"
+      : "共有画像を準備しています…（できてから「画像でポスト」を押すと待たずに済みます）";
+  el.hidden = false;
+  shareReadyTimer = setTimeout(() => pollShareReady(slug, started), SHARE_READY_POLL_MS);
 }
 
 async function requestCloseShare() {
@@ -4790,6 +4832,7 @@ async function requestCloseShare() {
       return;
     }
   }
+  stopShareReadyPoll();
   $("shareModal").classList.remove("open");
 }
 

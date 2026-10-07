@@ -129,7 +129,17 @@ import { Env, MangaList, ShareJob } from "./types";
 import { rateLimit } from "./ratelimit";
 import { turnstileAction, verifyTurnstile } from "./turnstile";
 import { COVER_CACHE, getTrimmedCover, trimKind } from "./coverBytes";
-import { ensureShareImage, getShareImage, isLinkPreviewBot, shareImageHash, SHARE_IMAGE_SIZE, SHARE_VARIANTS, type ShareVariant } from "./shareImage";
+import {
+  ensureShareImage,
+  getShareImage,
+  isLinkPreviewBot,
+  QUARTERS,
+  shareImageHash,
+  shareInventory,
+  SHARE_IMAGE_SIZE,
+  SHARE_VARIANTS,
+  type ShareVariant,
+} from "./shareImage";
 import {
   bumpsViewEpoch,
   bumpViewEpoch,
@@ -215,6 +225,12 @@ const worker = {
           // 公開の書き込み枠（30/分）は食わせない。壊れたページで連打されても困るので枠は要る。
           const limited = await rateLimit(request, env.RL_COVERS, "csp-report");
           if (limited) return limited;
+        } else if (path === "/api/share-prepare") {
+          // 共有画像を描いてほしいという申告（public/share-x.js）。キューに積むだけで D1 にも
+          // 外部 API にも触らないが、無制限に描画を起こせる口は残さない。公開の書き込み枠
+          // （30/分）だと 4 枚版を選び直しただけで頭を打つので、広い方の binding の別 bucket。
+          const limited = await rateLimit(request, env.RL_COVERS, "share-prepare");
+          if (limited) return limited;
         } else if (path === "/api/me/draft") {
           // 作成中のリストの自動保存。ログイン必須の 1 行 upsert だが、無制限に打てる口を
           // 残さない。公開の書き込み枠（30/分）だと編集中（2 秒ごとに保存）で普通に頭を打つ
@@ -253,9 +269,11 @@ const worker = {
                   ? "candidates"
                   : path === "/api/public-lists"
                     ? "public-lists"
-                    : /^\/api\/series\/[A-Za-z0-9]+\/(volumes|merge-candidates)$/.test(path)
-                      ? "volumes"
-                      : null;
+                    : path === "/api/share-status"
+                      ? "share-status"
+                      : /^\/api\/series\/[A-Za-z0-9]+\/(volumes|merge-candidates)$/.test(path)
+                        ? "volumes"
+                        : null;
         if (getBucket) {
           const limited = await rateLimit(request, env.RL_COVERS, getBucket);
           if (limited) return limited;
@@ -862,6 +880,14 @@ const worker = {
         return await renderViewPage(request, env, ctx, viewMatch[1], url.origin, url.searchParams.get("i") === "1");
       }
 
+      // --- 共有画像の準備状況・要求（public/share-x.js の待機 UI）---
+      if (path === "/api/share-status" && request.method === "GET") {
+        return await handleShareStatus(env, ctx, url.searchParams.get("slug") ?? "");
+      }
+      if (path === "/api/share-prepare" && request.method === "POST") {
+        return await handleSharePrepare(request, env, ctx, url.host);
+      }
+
       // --- Share image (all 100 covers in one picture; og:image + X attachment) ---
       const shareMatch = path.match(/^\/share\/([A-Za-z0-9_-]+)\/(og|full|q[1-4])\.jpg$/);
       if (shareMatch && request.method === "GET") {
@@ -1046,10 +1072,22 @@ async function handleShareImage(
 
 // 作成/更新の直後に共有画像を描いておく。X 等のクローラは投稿直後に og:image を取りに来る
 // ので、og はこのリクエストの waitUntil ですぐ描く（グローバルに直列のキューで待たせない）。
-// 残りの variant（full/q1–q4）はキュー（SHARE_QUEUE）に遅延付きで積み、consumer が描く。
+//
+// full はキュー（SHARE_QUEUE）に積む。100 冊ぶんのデコードを抱える一番重い描画なので、
+// メモリが縛られている直列レーン（wrangler.jsonc の max_concurrency 1）に通す。
+//
+// q1–q4 は積まない。画像を添付してまで投稿する人は一部なので、全リストぶん先に描くと
+// キューが 1 リスト 5 枚で詰まり、待っている人の順番が遠のく。4 枚版は「画像でポスト」で
+// 選ばれたときに /api/share-prepare が積む。ただし以前その slug で 4 枚版が描かれていれば
+// （shareInventory の everRendered）、編集のたびに一緒に積み直す — 一度 4 枚版を使った人は
+// また使う見込みが高く、2 回目からは待たせずに済む。
+//
 // 遅延の間に編集し直されたら、consumer は古いメッセージを捨てる（renderAllShareImages）ので、
 // 編集を続けても描画は最後の版の 1 回で済む。
 const SHARE_QUEUE_DELAY_SEC = 60;
+// 初回公開は合流させる前の版が無いので短く待つ。公開直後の共有モーダルで「画像でポスト」を
+// 押されるまでに full を用意しておきたい（public/app.js の待機表示）。
+const SHARE_QUEUE_FIRST_DELAY_SEC = 5;
 
 async function queueShareImages(env: Env, ctx: ExecutionContext, slug: string, host: string, list: MangaList | null): Promise<void> {
   ctx.waitUntil(
@@ -1059,21 +1097,74 @@ async function queueShareImages(env: Env, ctx: ExecutionContext, slug: string, h
     })().catch((err) => console.error("share image prewarm failed", err))
   );
   if (!env.SHARE_QUEUE) return;
-  try {
-    const job: ShareJob = { slug, host, updated_at: list?.updated_at };
-    await env.SHARE_QUEUE.send(job, { delaySeconds: SHARE_QUEUE_DELAY_SEC });
-  } catch (err) {
-    console.error("share queue send failed", err);
-  }
+  // R2 の棚卸し 1 回ぶん、公開の応答を待たせない。
+  ctx.waitUntil(
+    (async () => {
+      const inv = await shareInventory(env, slug);
+      const variants: ShareVariant[] = ["full"];
+      if (QUARTERS.some((v) => inv.everRendered.includes(v))) variants.push(...QUARTERS);
+      const job: ShareJob = { slug, host, updated_at: list?.updated_at, variants };
+      const first = !inv.everRendered.includes("full");
+      await env.SHARE_QUEUE!.send(job, {
+        delaySeconds: first ? SHARE_QUEUE_FIRST_DELAY_SEC : SHARE_QUEUE_DELAY_SEC,
+      });
+    })().catch((err) => console.error("share queue send failed", err))
+  );
 }
 
-/** キュー consumer の本体: og を先頭に全 variant を 1 枚ずつ、R2 に無いものだけ描く。
- *  メッセージより新しい版があれば（遅延中に編集された）、その版のメッセージが後から来るので捨てる。 */
+/** キュー consumer の本体: 指定された variant を og → full → q1–q4 の順に 1 枚ずつ、
+ *  R2 に無いものだけ描く。メッセージより新しい版があれば（遅延中に編集された）、その版の
+ *  メッセージが後から来るので捨てる。
+ *
+ *  描画の所要時間はコードの中では測れない（Workers の時計は I/O のたびにしか進まないので、
+ *  CPU だけの描画区間は 0ms に見える）。1 メッセージはふつう full 1 枚なので、observability の
+ *  cpuTime をそのまま 1 枚ぶんとして読む。 */
 async function renderAllShareImages(env: Env, ctx: ExecutionContext, job: ShareJob): Promise<void> {
   const data = await getListSnapshot(env, ctx, job.slug);
   if (!data) return; // 削除済み
   if (typeof job.updated_at === "number" && data.updated_at > job.updated_at) return;
-  for (const variant of SHARE_VARIANTS) await ensureShareImage(env, ctx, data, variant, job.host);
+  const want = Array.isArray(job.variants) ? job.variants : SHARE_VARIANTS;
+  for (const variant of SHARE_VARIANTS) {
+    if (want.includes(variant)) await ensureShareImage(env, ctx, data, variant, job.host);
+  }
+}
+
+/** 共有画像の準備状況（public/share-x.js のポーリングと public/app.js の共有モーダル）。
+ *  R2 を 1 回 list するだけで、描画は起こさない — 公開直後のモーダルが自動で叩くので、
+ *  読むだけに保たないと「見ているだけで描画が増える」ことになる。 */
+async function handleShareStatus(env: Env, ctx: ExecutionContext, slug: string): Promise<Response> {
+  if (!/^[A-Za-z0-9_-]{1,64}$/.test(slug)) return json({ error: "bad request" }, 400);
+  const data = await getListSnapshot(env, ctx, slug);
+  if (!data) return json({ error: "not found" }, 404);
+  const hash = await shareImageHash(data);
+  const inv = await shareInventory(env, slug, hash);
+  // hash はクライアントが ?v= 付きで取りに行くのに使う（付けないと 302 を 1 往復ぶん踏む）。
+  return json({ hash, ready: inv.ready }, 200, { "cache-control": "no-store" });
+}
+
+/** 「この variant を描いてほしい」という申告。積むだけで、待つのはクライアントの
+ *  ポーリング（/api/share-status）。既にあるものは consumer が R2 の head で飛ばすので、
+ *  連打されても描画は増えない。
+ *
+ *  updated_at は付けない。押した人が待っているので、遅延中の編集を理由に捨てられると
+ *  誰も描き直さないまま待ちぼうけになる（公開・更新から積む方とはここが逆）。 */
+async function handleSharePrepare(request: Request, env: Env, ctx: ExecutionContext, host: string): Promise<Response> {
+  const body = (await request.json().catch(() => null)) as { slug?: unknown; kind?: unknown } | null;
+  const slug = typeof body?.slug === "string" ? body.slug : "";
+  if (!/^[A-Za-z0-9_-]{1,64}$/.test(slug)) return json({ error: "bad request" }, 400);
+  if (!(await getListSnapshot(env, ctx, slug))) return json({ error: "not found" }, 404);
+  const variants: ShareVariant[] = body?.kind === "quarters" ? [...QUARTERS] : ["full"];
+  if (!env.SHARE_QUEUE) return json({ queued: false }, 200, { "cache-control": "no-store" });
+  try {
+    const job: ShareJob = { slug, host, variants };
+    await env.SHARE_QUEUE.send(job);
+    return json({ queued: true }, 200, { "cache-control": "no-store" });
+  } catch (err) {
+    // 積めなくても応答は失敗させない。別の誰かの要求や公開・更新で描かれることがあるので、
+    // クライアントはそのままポーリングを続け、出来なければ待ち切ったところで案内に倒れる。
+    console.error("share prepare send failed", err);
+    return json({ queued: false }, 200, { "cache-control": "no-store" });
+  }
 }
 
 // 閲覧レスポンスの cache-control。ブラウザは毎回取り直し（編集直後に古い版を見せない）、

@@ -269,6 +269,24 @@ header.site .header-link-icon svg { display: block; }
 .account-menu a:hover, .account-menu button:hover { background: var(--panel-2); color: var(--accent); }
 .account-danger { margin-top: 32px; padding-top: 12px; border-top: 1px solid var(--border); color: var(--muted); font-size: 13px; }
 .account-danger summary { cursor: pointer; }
+
+/* /account の「当サイトが保存している情報」（public/account-page.js renderData）。
+   保存しているとおりの粒度で出すので列が多くなる。横は表ごとにスクロールさせ、
+   ページ自体が横に伸びないようにする。 */
+.account-data { margin: 20px 0; }
+.account-data h4 { margin: 0 0 4px; font-size: 14px; }
+.account-data .hint { margin: 0 0 8px; }
+.account-dl { display: grid; grid-template-columns: max-content 1fr; gap: 4px 14px; margin: 0; font-size: 13px; }
+.account-dl dt { color: var(--muted); }
+.account-dl dd { margin: 0; overflow-wrap: anywhere; }
+.account-table { overflow-x: auto; }
+.account-table table { border-collapse: collapse; font-size: 12px; white-space: nowrap; }
+.account-table th, .account-table td {
+  border: 1px solid var(--border); padding: 4px 8px; text-align: left; vertical-align: top;
+}
+.account-table th { background: var(--panel-2); font-weight: 700; }
+/* User-Agent だけは長いので、折り返して高さで吸収する（renderData が span.ua で包む）。 */
+.account-table .ua { display: inline-block; max-width: 30em; white-space: normal; overflow-wrap: anywhere; }
 .mylists-note a { color: var(--accent); font-weight: 600; }
 
 .toolbar {

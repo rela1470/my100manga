@@ -10,10 +10,15 @@ import { badRequest, json, notFound, readJsonObject } from "./util";
 //   GET    /api/me/lists  … 自分のアカウントに紐付いた公開リスト（編集用に edit_token も返す）
 //   POST   /api/me/claim  … この端末の編集リンク {slug, token} のうちユーザが選んだものをアカウントに紐付ける
 //   GET/PUT/DELETE /api/me/draft … 作成中のリスト（1 アカウント 1 件）
+//   GET    /api/me/data   … このアカウントについて当サイトが持っている保有個人データ全部
+//                            （/account の「当サイトが保存している情報」。個人情報保護法33条の
+//                            開示請求を待たずに本人がいつでも見られるようにするためのもの）
 // edit_token は持ち主本人にだけ返す。公開データ API（GET /api/lists/:slug）は従来どおり漏らさない。
 
 const MAX_DRAFT_ITEMS = 1000; // public/app.js MAX_ITEMS と揃える
 const MAX_CLAIM = 200;
+const MAX_SESSIONS = 50; // /api/me/data が出すログイン記録の上限
+const MAX_AUDIT = 200; // /api/me/data が出す公開・更新の記録の上限
 const NO_STORE = { "cache-control": "no-store" };
 
 function unauthorized(): Response {
@@ -37,6 +42,140 @@ export async function getMyLists(env: Env, user: User): Promise<Response> {
     .bind(user.id)
     .all<{ slug: string; edit_token: string; owner_name: string | null; created_at: number; updated_at: number }>();
   return json({ lists: results.map((r) => ({ ...r, owner_name: r.owner_name ?? "" })) }, 200, NO_STORE);
+}
+
+/** GET /api/me/data — このアカウントについて当サイトの D1 が持っているものを全部返す。
+ *
+ *  個人情報保護法33条の開示請求に、請求を待たずに本人が自分で応えられるようにするための
+ *  もの（/privacy の「保有個人データの開示・訂正・利用停止・削除等の請求」と対になる）。
+ *  出すのは users / sessions / user_drafts / lists / publish_audit の 5 つで、これが
+ *  ログインしている人について当サイトが持っている全部。
+ *
+ *  出さないもの:
+ *    - sessions.id_hash … ログイン中のセッションの鍵そのもの（持ち主にも返す意味がなく、
+ *      画面に出すと肩越しに見られるだけ損）。作成日時と期限だけ出す。
+ *    - lists.edit_token … 編集用の鍵。編集に使う /api/me/lists では返すが、
+ *      「保存されている情報の一覧」に混ぜない。
+ *  リストと下書きの中身（どの本を選んだか・コメント）は、本人が編集画面でそのまま見られる
+ *  ので、ここでは件数と更新日時だけにする（この応答を無駄に重くしない）。
+ *
+ *  publish_audit は slug が鍵で user_id を持たないので、このアカウントのリストの slug で引く
+ *  （匿名で公開したあとにアカウントへ紐付けたリストの記録も、紐付いた時点で本人のものとして
+ *  出る）。件数は MAX_AUDIT で頭打ちにする。 */
+export async function getMyData(env: Env, user: User): Promise<Response> {
+  const [accountRes, sessionRes, draftRes, listRes] = await env.DB.batch([
+    env.DB.prepare(
+      `SELECT id, google_sub, email, name, picture, created_at, last_login_at FROM users WHERE id = ?`
+    ).bind(user.id),
+    env.DB.prepare(
+      `SELECT created_at, expires_at FROM sessions WHERE user_id = ? ORDER BY created_at DESC LIMIT ?`
+    ).bind(user.id, MAX_SESSIONS),
+    env.DB.prepare(`SELECT owner_name, bio, items_json, updated_at FROM user_drafts WHERE user_id = ?`).bind(
+      user.id
+    ),
+    env.DB.prepare(
+      `SELECT slug, owner_name, bio, items_json, unlisted, created_at, updated_at
+         FROM lists WHERE user_id = ? ORDER BY updated_at DESC`
+    ).bind(user.id),
+  ]);
+
+  const account = (accountRes.results?.[0] ?? null) as AccountRow | null;
+  const sessions = (sessionRes.results ?? []) as { created_at: number; expires_at: number }[];
+  const draftRow = (draftRes.results?.[0] ?? null) as DraftRow | null;
+  const listRows = (listRes.results ?? []) as ListRow[];
+
+  const lists = listRows.map((r) => ({
+    slug: r.slug,
+    owner_name: r.owner_name ?? "",
+    bio: r.bio ?? "",
+    item_count: itemCount(r.items_json),
+    unlisted: r.unlisted === 1,
+    created_at: r.created_at,
+    updated_at: r.updated_at,
+  }));
+
+  // 公開・更新の記録（接続元 IP / User-Agent / 国）。slug 単位なので自分のリストのぶんを引く。
+  let publish_audit: PublishAuditRow[] = [];
+  if (lists.length) {
+    const marks = lists.map(() => "?").join(",");
+    const { results } = await env.DB.prepare(
+      `SELECT slug, action, owner_name, ip, user_agent, country, created_at
+         FROM publish_audit WHERE slug IN (${marks}) ORDER BY created_at DESC LIMIT ?`
+    )
+      .bind(...lists.map((l) => l.slug), MAX_AUDIT)
+      .all<PublishAuditRow>();
+    publish_audit = results ?? [];
+  }
+
+  return json(
+    {
+      account: account && {
+        id: account.id,
+        google_sub: account.google_sub,
+        email: account.email,
+        name: account.name,
+        picture: account.picture,
+        created_at: account.created_at,
+        last_login_at: account.last_login_at,
+      },
+      sessions,
+      draft: draftRow && {
+        owner_name: draftRow.owner_name,
+        bio: draftRow.bio,
+        item_count: itemCount(draftRow.items_json),
+        updated_at: draftRow.updated_at,
+      },
+      lists,
+      publish_audit,
+      audit_truncated: publish_audit.length >= MAX_AUDIT,
+    },
+    200,
+    NO_STORE
+  );
+}
+
+interface AccountRow {
+  id: string;
+  google_sub: string;
+  email: string;
+  name: string;
+  picture: string;
+  created_at: number;
+  last_login_at: number;
+}
+interface DraftRow {
+  owner_name: string;
+  bio: string;
+  items_json: string;
+  updated_at: number;
+}
+interface ListRow {
+  slug: string;
+  owner_name: string | null;
+  bio: string | null;
+  items_json: string;
+  unlisted: number;
+  created_at: number;
+  updated_at: number;
+}
+interface PublishAuditRow {
+  slug: string;
+  action: string;
+  owner_name: string | null;
+  ip: string | null;
+  user_agent: string | null;
+  country: string | null;
+  created_at: number;
+}
+
+/** items_json の件数。壊れていても 0 を返して開示そのものを止めない。 */
+function itemCount(itemsJson: string): number {
+  try {
+    const v = JSON.parse(itemsJson);
+    return Array.isArray(v) ? v.length : 0;
+  } catch {
+    return 0;
+  }
 }
 
 /** 匿名公開したリストを、edit_token を知っていることを証明にアカウントへ紐付ける。
@@ -187,6 +326,7 @@ export async function handleAccountApi(request: Request, env: Env, path: string)
   if (!user) return unauthorized();
   if (path === "/api/me" && method === "DELETE") return await deleteAccount(request, env, user);
   if (path === "/api/me/lists" && method === "GET") return await getMyLists(env, user);
+  if (path === "/api/me/data" && method === "GET") return await getMyData(env, user);
   if (path === "/api/me/claim" && method === "POST") return await claimLists(request, env, user);
   if (path === "/api/me/draft") {
     if (method === "GET") return await getDraft(env, user);

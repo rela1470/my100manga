@@ -10,6 +10,7 @@ import { purgePublishAudit, PUBLISH_AUDIT_RETENTION_MS } from "../src/reports";
 import type { Env } from "../src/types";
 import {
   BODY_TOO_LARGE,
+  cspMode,
   errorPageHtml,
   readJsonBody,
   replaceLiteral,
@@ -193,6 +194,61 @@ describe("セキュリティヘッダ・エラー画面", () => {
       expect(res.headers.get("referrer-policy"), p).toBe("strict-origin-when-cross-origin");
       expect(res.headers.get("permissions-policy"), p).toContain("camera=()");
       await res.arrayBuffer();
+    }
+  });
+
+  it("HTML には読み込み先の許可リスト込みの CSP、それ以外には最小の CSP", async () => {
+    const html = () => new Response("<p>x</p>", { headers: { "content-type": "text/html; charset=utf-8" } });
+    const api = () => new Response("{}", { headers: { "content-type": "application/json" } });
+
+    const doc = withSecurityHeaders(html(), {}).headers.get("content-security-policy") ?? "";
+    expect(doc).toContain("script-src 'self' 'unsafe-inline'");
+    expect(doc).toContain("https://pagead2.googlesyndication.com"); // AdSense
+    expect(doc).toContain("https://www.googletagmanager.com"); // GTM
+    expect(doc).toContain("https://challenges.cloudflare.com"); // Turnstile
+    expect(doc).toContain("https://fonts.googleapis.com"); // styles.css の @import
+    expect(doc).toContain("report-uri /api/csp-report");
+    expect(doc).toContain("frame-ancestors 'none'");
+
+    // JSON には script-src 等を付けない（意味が無く、間違えたときの被害だけ残る）。
+    const json = withSecurityHeaders(api(), {}).headers.get("content-security-policy") ?? "";
+    expect(json).not.toContain("script-src");
+    expect(json).toContain("frame-ancestors 'none'");
+  });
+
+  it("CSP_MODE で効かせ方を切り替えられる（本番の巻き戻し用）", () => {
+    const html = () => new Response("<p>x</p>", { headers: { "content-type": "text/html; charset=utf-8" } });
+    expect(cspMode({})).toBe("enforce");
+    expect(cspMode({ CSP_MODE: " Report " })).toBe("report");
+    expect(cspMode({ CSP_MODE: "off" })).toBe("off");
+    expect(cspMode({ CSP_MODE: "でたらめ" })).toBe("enforce");
+
+    // report: ブロックする方は最小のまま残し、Report-Only に本番用を入れる。
+    const rep = withSecurityHeaders(html(), { CSP_MODE: "report" });
+    expect(rep.headers.get("content-security-policy-report-only")).toContain("script-src");
+    expect(rep.headers.get("content-security-policy")).not.toContain("script-src");
+    expect(rep.headers.get("content-security-policy")).toContain("frame-ancestors 'none'");
+
+    // off: 最小の CSP だけ。クリックジャッキング対策は消えない。
+    const off = withSecurityHeaders(html(), { CSP_MODE: "off" });
+    expect(off.headers.get("content-security-policy")).not.toContain("script-src");
+    expect(off.headers.get("content-security-policy")).toContain("frame-ancestors 'none'");
+    expect(off.headers.get("content-security-policy-report-only")).toBeNull();
+  });
+
+  it("違反レポートの受け口は壊れた中身でも 204 で、公開の書き込み枠を食わない", async () => {
+    for (const body of [
+      JSON.stringify({ "csp-report": { "effective-directive": "script-src", "blocked-uri": "https://evil.example/x.js" } }),
+      JSON.stringify([{ type: "csp-violation", body: { effectiveDirective: "img-src", blockedURL: "https://evil.example/x.png" } }]),
+      "not json at all",
+      "",
+    ]) {
+      const res = await SELF.fetch("https://example.com/api/csp-report", {
+        method: "POST",
+        headers: { "content-type": "application/csp-report" },
+        body,
+      });
+      expect(res.status, body.slice(0, 30)).toBe(204);
     }
   });
 

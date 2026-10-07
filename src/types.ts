@@ -71,6 +71,11 @@ export interface Env {
   // も管理者だけが使える。開発期間中のみ本番 vars に "true" を置き、正式リリース時に外す想定。
   // ローカル dev では ADMIN_DEV_BYPASS="true" でも有効になる（下の devToolsEnabled 参照）。
   DEV_TOOLS?: string;
+  // CSP の効かせ方（src/util.ts cspMode）。未設定 = enforce。本番で広告や計測が止まったとき
+  // すぐ巻き戻せるよう、var ではなく secret で入れる想定:
+  //   echo report | npx wrangler secret put CSP_MODE   … Report-Only（ブロックしない）
+  //   echo off    | npx wrangler secret put CSP_MODE   … 最小の CSP に戻す
+  CSP_MODE?: string;
   // Google タグ（src/analytics.ts）。HTML ページの <!--ANALYTICS-->（head）と
   // <!--GTM_BODY-->（body 冒頭の noscript）に注入する。ADSENSE_CLIENT は AdSense の
   // パブリッシャ ID（"ca-pub-..."）、GTM_CONTAINER_ID は Google タグマネージャの

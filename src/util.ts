@@ -429,34 +429,123 @@ export function clientIp(request: Request): string {
   );
 }
 
+// ── CSP ──────────────────────────────────────────────────────────────────────
+// 読み込み先の許可リスト。いま実際に読んでいるものだけを並べる。新しい外部スクリプト・
+// 画像・接続先を足したら、ここと public/privacy.html の「外部送信について」の両方を直す。
+// 取りこぼすと広告や計測が黙って止まるので、違反は /api/csp-report に飛ばして観測する
+// （src/index.ts handleCspReport → wrangler tail で見える）。see docs/csp.md
+const CSP_GOOGLE_TAG = ["https://www.googletagmanager.com", "https://tagmanager.google.com"];
+const CSP_GOOGLE_ANALYTICS = [
+  "https://www.google-analytics.com",
+  "https://ssl.google-analytics.com",
+  "https://*.google-analytics.com",
+  "https://*.analytics.google.com",
+];
+// AdSense は実行時に読み込み先を増やす（セーフフレーム・広告品質・資金調達メッセージ）。
+// Google の案内にある主要ホストをまとめて許可する。
+const CSP_ADSENSE = [
+  "https://pagead2.googlesyndication.com",
+  "https://tpc.googlesyndication.com",
+  "https://*.safeframe.googlesyndication.com",
+  "https://partner.googleadservices.com",
+  "https://adservice.google.com",
+  "https://googleads.g.doubleclick.net",
+  "https://*.g.doubleclick.net",
+  "https://fundingchoicesmessages.google.com",
+  "https://*.adtrafficquality.google",
+  "https://www.google.com",
+  "https://www.gstatic.com",
+  "https://ssl.gstatic.com",
+];
+const CSP_TURNSTILE = ["https://challenges.cloudflare.com"];
+// バリューコマース（Yahoo!ショッピングの購入リンクと計測ピクセル）。
+const CSP_VALUECOMMERCE = ["https://ck.jp.ap.valuecommerce.com", "https://ad.jp.ap.valuecommerce.com"];
+
+export const CSP_REPORT_PATH = "/api/csp-report";
+
+/** HTML ページに付ける CSP。
+ *
+ *  'unsafe-inline' を script-src に残しているのは、インラインの <script>（編集トークンを
+ *  アドレスバーから消す処理・GTM スニペット）があるのと、AdSense がインラインを使うため。
+ *  nonce 化は AdSense の 'strict-dynamic' 対応とセットでないと広告が止まるので、公開後に
+ *  違反レポートを見ながら進める（docs/csp.md）。それでも許可ホストの制限は効くので、
+ *  「知らないドメインからスクリプトを読ませる」形の差し込みは塞げる。
+ *
+ *  img-src が https: と広いのは、表紙（楽天・自前の /cover）と広告の画像が多数のホストに
+ *  散らばるため。'unsafe-eval' は入れていない（自前コードは使っていない。広告が要求して
+ *  止まるようなら違反レポートに eval が出るので、そこで判断する）。 */
+const CSP_DOCUMENT = [
+  "default-src 'self'",
+  `script-src 'self' 'unsafe-inline' ${[...CSP_GOOGLE_TAG, ...CSP_GOOGLE_ANALYTICS, ...CSP_ADSENSE, ...CSP_TURNSTILE, ...CSP_VALUECOMMERCE].join(" ")}`,
+  // styles.css が Google Fonts を @import している。
+  "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com https://tagmanager.google.com",
+  "font-src 'self' data: https://fonts.gstatic.com",
+  "img-src 'self' data: blob: https:",
+  `connect-src 'self' ${[...CSP_GOOGLE_TAG, ...CSP_GOOGLE_ANALYTICS, ...CSP_ADSENSE, ...CSP_TURNSTILE].join(" ")}`,
+  // CSP_GOOGLE_TAG は GTM の <noscript> iframe（googletagmanager.com/ns.html）のため。
+  `frame-src ${[...CSP_TURNSTILE, ...CSP_GOOGLE_TAG, "https://googleads.g.doubleclick.net", "https://tpc.googlesyndication.com", "https://*.safeframe.googlesyndication.com", "https://www.google.com", "https://*.adtrafficquality.google"].join(" ")}`,
+  "frame-ancestors 'none'",
+  "base-uri 'self'",
+  "form-action 'self'",
+  "object-src 'none'",
+  `report-uri ${CSP_REPORT_PATH}`,
+  "report-to csp",
+].join("; ");
+
+/** HTML 以外（API の JSON・JS・CSS・画像）に付ける最小の CSP。script-src 等は意味が無く、
+ *  間違えたときの被害だけが残るので、埋め込みと送信先の固定だけにする。
+ *  CSP_MODE="off" で巻き戻したときの行き先でもある。 */
+const CSP_MINIMAL = "frame-ancestors 'none'; base-uri 'self'; form-action 'self'; object-src 'none'";
+
+/** CSP の効かせ方。本番の巻き戻しを速くするため **secret** で上書きできるようにしてある
+ *  （`echo report | npx wrangler secret put CSP_MODE` ＝ コードのデプロイ無しで切り替わる）。
+ *    未設定 / "enforce" … 実際にブロックする
+ *    "report"           … Report-Only。ブロックせず違反だけ送る
+ *    "off"              … 最小の CSP に戻す（クリックジャッキング対策は残る） */
+export type CspMode = "enforce" | "report" | "off";
+
+/** CSP の設定だけを読む最小の形。util.ts は何も import しない素の道具箱にしておきたいので、
+ *  types.ts の Env を引っぱらずに構造だけで受ける。 */
+export interface CspEnv {
+  CSP_MODE?: string;
+}
+
+export function cspMode(env: CspEnv): CspMode {
+  const m = (env.CSP_MODE ?? "").trim().toLowerCase();
+  return m === "report" || m === "off" ? m : "enforce";
+}
+
 // 全レスポンスに付けるセキュリティヘッダ（src/index.ts の fetch で包む）。
 // 既に同名ヘッダがあるレスポンス（個別に付けたもの）は上書きしない。
-//
-// CSP は「third-party を壊さずに効くもの」だけを入れている:
-//   frame-ancestors 'none' … クリックジャッキング対策（埋め込み禁止）
-//   base-uri 'self'        … <base> を差し込んで相対 URL のスクリプト・リンクを別ホストへ
-//                            向け替える攻撃を塞ぐ。このサイトは <base> を使わない
-//   form-action 'self'     … フォームの送信先を自ドメインに固定（送信先の差し替え対策）。
-//                            使っているフォームは年齢確認（自分へ POST）と method="dialog" だけ
-//   object-src 'none'      … <object>/<embed> を禁止。どのページでも使っていない
-// script-src / img-src / connect-src は入れない。GTM・AdSense・ValueCommerce が動的に
-// 読み込む先が多く、取りこぼすと広告と計測が黙って止まる。入れるなら公開後に
-// Content-Security-Policy-Report-Only で実際の読み込み先を数えてから。see docs/csp.md
 const SECURITY_HEADERS: Record<string, string> = {
   "x-frame-options": "DENY",
-  "content-security-policy":
-    "frame-ancestors 'none'; base-uri 'self'; form-action 'self'; object-src 'none'",
+  "content-security-policy": CSP_MINIMAL,
   "x-content-type-options": "nosniff",
   "referrer-policy": "strict-origin-when-cross-origin",
   "permissions-policy": "camera=(), microphone=(), geolocation=()",
 };
 
 /** レスポンスにセキュリティヘッダを足す。ASSETS / fetch 由来のレスポンスはヘッダが immutable
- *  なことがあるので、そのときは本文ストリームをそのまま渡して作り直す（バッファしない）。 */
-export function withSecurityHeaders(res: Response): Response {
+ *  なことがあるので、そのときは本文ストリームをそのまま渡して作り直す（バッファしない）。
+ *  HTML には読み込み先の許可リスト込みの CSP（CSP_DOCUMENT）を、それ以外には最小の
+ *  CSP（CSP_MINIMAL）を付ける。env を渡さない呼び出しは最小のものだけ。 */
+export function withSecurityHeaders(res: Response, env?: CspEnv): Response {
   if (res.status === 101 || (res as { webSocket?: unknown }).webSocket) return res;
+  const isHtml = (res.headers.get("content-type") ?? "").includes("text/html");
+  const mode = env ? cspMode(env) : "off";
   const apply = (h: Headers) => {
+    // 個別に CSP を付けたレスポンスは、ここでは一切触らない（上書きしない約束を守る）。
+    const hadCsp = h.has("content-security-policy");
     for (const [k, v] of Object.entries(SECURITY_HEADERS)) if (!h.has(k)) h.set(k, v);
+    if (hadCsp || !isHtml || mode === "off") return;
+    // Report-Only のときは、ブロックする方のヘッダは最小のまま残す（巻き戻しても
+    // クリックジャッキング対策が消えないように）。
+    if (mode === "report") {
+      h.set("content-security-policy-report-only", CSP_DOCUMENT);
+    } else {
+      h.set("content-security-policy", CSP_DOCUMENT);
+    }
+    h.set("reporting-endpoints", `csp="${CSP_REPORT_PATH}"`);
   };
   try {
     apply(res.headers);

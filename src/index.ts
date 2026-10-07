@@ -80,7 +80,7 @@ import {
 } from "./admin";
 import { addReport, purgePublishAudit } from "./reports";
 import { adminCsrfOk, isAdminAssetPath, isAdminUiPath, requireAdmin } from "./adminAuth";
-import { errorPageHtml, MAX_JSON_BODY, readJsonBody, withSecurityHeaders } from "./util";
+import { CSP_REPORT_PATH, cspMode, errorPageHtml, MAX_JSON_BODY, readJsonBody, withSecurityHeaders } from "./util";
 import { currentUser, loginCallback, loginStart, logout, purgeExpiredSessions } from "./auth";
 import { handleAccountApi } from "./account";
 import { handleRanking } from "./ranking";
@@ -210,6 +210,11 @@ const worker = {
           // 書き込み枠（30/分）は食わせず、外部 API を叩く読み取り系と同じ binding の別 bucket。
           const limited = await rateLimit(request, env.RL_COVERS, "sort-keys");
           if (limited) return limited;
+        } else if (path === "/api/csp-report") {
+          // CSP の違反レポート（src/util.ts の report-uri）。ブラウザが自動で送るものなので、
+          // 公開の書き込み枠（30/分）は食わせない。壊れたページで連打されても困るので枠は要る。
+          const limited = await rateLimit(request, env.RL_COVERS, "csp-report");
+          if (limited) return limited;
         } else if (path === "/api/me/draft") {
           // 作成中のリストの自動保存。ログイン必須の 1 行 upsert だが、無制限に打てる口を
           // 残さない。公開の書き込み枠（30/分）だと編集中（2 秒ごとに保存）で普通に頭を打つ
@@ -296,6 +301,10 @@ const worker = {
       }
       // 現在のデプロイ版を返す。開きっぱなしの SPA タブがこれを見て、自分が読み込んだ版
       // （<meta app-version>）と食い違ったら「新しい版」バナーを出す。see public/app.js
+      // CSP の違反レポート。ブラウザが勝手に投げてくるので、記録して 204 を返すだけ。
+      if (path === CSP_REPORT_PATH && request.method === "POST") {
+        return await handleCspReport(request, env);
+      }
       if (path === "/api/version" && request.method === "GET") {
         return json({ version: appVersion(env) }, 200, { "cache-control": "no-store" });
       }
@@ -924,9 +933,42 @@ export default {
     if (res.ok && bumpsViewEpoch(request)) {
       ctx.waitUntil(bumpViewEpoch(env).catch((err) => console.error("view epoch bump failed", err)));
     }
-    return withSecurityHeaders(res);
+    return withSecurityHeaders(res, env);
   },
 } satisfies ExportedHandler<Env>;
+
+/** CSP の違反レポートを受けて 1 行で記録する（wrangler tail / observability で見る）。
+ *  ブラウザが自動で投げてくるものなので、中身は一切信用せず、長さを切って捨てるだけ。
+ *  report-uri 形式（{"csp-report": {...}}）と Reporting API 形式（[{type, body}, ...]）の
+ *  どちらでも来るので両方拾う。常に 204（ブラウザは応答を見ない）。 */
+async function handleCspReport(request: Request, env: Env): Promise<Response> {
+  const noStore = { status: 204, headers: { "cache-control": "no-store" } } as const;
+  const body = await readJsonBody(request, 16 * 1024);
+  const cut = (v: unknown) => (typeof v === "string" ? v.slice(0, 200) : "");
+  const entries: Array<Record<string, unknown>> = [];
+  if (body && typeof body === "object") {
+    const one = (body as { "csp-report"?: unknown })["csp-report"];
+    if (one && typeof one === "object") entries.push(one as Record<string, unknown>);
+    if (Array.isArray(body)) {
+      for (const r of body.slice(0, 10)) {
+        const b = (r as { body?: unknown })?.body;
+        if (b && typeof b === "object") entries.push(b as Record<string, unknown>);
+      }
+    }
+  }
+  for (const e of entries) {
+    console.error(
+      "csp violation",
+      JSON.stringify({
+        mode: cspMode(env),
+        directive: cut(e["effective-directive"] ?? e["violated-directive"] ?? e.effectiveDirective),
+        blocked: cut(e["blocked-uri"] ?? e.blockedURL),
+        doc: cut(e["document-uri"] ?? e.documentURL),
+      })
+    );
+  }
+  return new Response(null, noStore);
+}
 
 // On-demand cover resolution (hits Google/Rakuten, caches results). The list
 // endpoints return cache-only covers so they're instant; the client calls this

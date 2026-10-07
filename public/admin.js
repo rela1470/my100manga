@@ -134,6 +134,64 @@ new MutationObserver(() => {
   });
 }).observe(document.body, { childList: true, subtree: true });
 
+// スマホのカード表示で、承認・却下などを押したあとも次の項目のボタンが同じ画面位置に来るように
+// する。処理のたびに一覧を丸ごと読み直すので、何もしないと処理した項目が消えたぶん下の項目が
+// せり上がり、1 件ごとに画面を追い直すことになる。押したボタンの画面上の位置を覚えておき、
+// 読み直しで行が並び直ったら、その位置に次の項目の操作欄を合わせてスクロールする。
+// 対象は一覧の項目（表のカード 1 行 / シリーズの結合のグループ）の中のボタン。ページャーや
+// ツールバー、モーダルの中のボタンは項目ではないので対象外。
+const CARD_MEDIA = "(max-width: 640px)";
+const ACTION_BOX = "td.report-actions, .merge-group-head";
+let keepSpot = null; // { container, index, y, observer, timer }
+
+function dropKeepSpot() {
+  if (!keepSpot) return;
+  keepSpot.observer.disconnect();
+  clearTimeout(keepSpot.timer);
+  keepSpot = null;
+}
+
+// 読み直しが終わった（＝項目が描き直された）ときに呼ぶ。覚えておいた位置へ合わせる。
+function applyKeepSpot() {
+  const spot = keepSpot;
+  if (!spot) return;
+  const items = spot.container.children;
+  if (!items.length) return; // 中身を空にしただけ。描き直しを待つ
+  const next = items[Math.min(spot.index, items.length - 1)];
+  const box = next.querySelector(ACTION_BOX) || next.querySelector("button");
+  dropKeepSpot();
+  if (!box) return;
+  const dy = box.getBoundingClientRect().top - spot.y;
+  if (Math.abs(dy) >= 2) window.scrollBy(0, dy);
+}
+
+document.addEventListener(
+  "click",
+  (e) => {
+    if (!(e.target instanceof Element) || !matchMedia(CARD_MEDIA).matches) return;
+    const btn = e.target.closest("button");
+    if (!btn || btn.closest(".modal-backdrop, .ui-dialog-backdrop")) return;
+    const item = btn.closest(".merge-group") || btn.closest(".admin-table tbody > tr");
+    const container = item && item.parentElement;
+    if (!container) return;
+    const box = btn.closest(ACTION_BOX) || btn;
+
+    dropKeepSpot();
+    const observer = new MutationObserver(() => requestAnimationFrame(applyKeepSpot));
+    observer.observe(container, { childList: true });
+    keepSpot = {
+      container,
+      index: [...container.children].indexOf(item),
+      y: box.getBoundingClientRect().top,
+      observer,
+      // 読み直しが起きないまま終わる操作（確認ダイアログの取り消し、その場で直すだけの
+      // ボタン）もあるので、一定時間で諦める。
+      timer: setTimeout(dropKeepSpot, 15000),
+    };
+  },
+  true
+);
+
 // 汎用ページャー。total（総件数）と現在ページから前へ/次へと位置表示を描く。
 // go(nextPage) は該当一覧の loader を呼ぶ。1ページに収まるなら非表示。
 function renderPager(pagerId, page, total, go) {

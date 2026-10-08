@@ -54,7 +54,35 @@
     return fallback || "エラーが発生しました。もう一度お試しください。";
   }
 
+  // 本棚の下書き（localStorage）がこの端末にあることを 1 日 1 回だけサーバに知らせる
+  // （管理画面の「ローカル保存の端末数」用, src/draftDevices.ts）。送るのは端末のランダム ID
+  // だけで、下書きの中身は送らない。下書きが空なら送らない。失敗しても何もしない。
+  const DEVICE_KEY = "my100manga_device_v1";
+  const PING_DAY_KEY = "my100manga_draft_ping_v1";
+  function draftPing(itemCount) {
+    if (!itemCount) return;
+    try {
+      const d = new Date();
+      const today = `${d.getFullYear()}-${d.getMonth() + 1}-${d.getDate()}`;
+      if (localStorage.getItem(PING_DAY_KEY) === today) return;
+      let device = localStorage.getItem(DEVICE_KEY);
+      if (!device || !/^[A-Za-z0-9_-]{16,64}$/.test(device)) {
+        const bytes = crypto.getRandomValues(new Uint8Array(16));
+        device = Array.from(bytes, (b) => b.toString(16).padStart(2, "0")).join("");
+        localStorage.setItem(DEVICE_KEY, device);
+      }
+      localStorage.setItem(PING_DAY_KEY, today);
+      fetch("/api/draft-ping", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ device }),
+        keepalive: true,
+      }).catch(() => {});
+    } catch (e) {}
+  }
+
   window.apiFetch = apiFetch;
+  window.draftPing = draftPing;
   window.apiErrorMessage = apiErrorMessage;
   window.apiStatusMessage = statusMessage;
 })();

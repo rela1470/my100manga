@@ -95,6 +95,17 @@ CREATE TABLE IF NOT EXISTS list_view_seen (
 );
 CREATE INDEX IF NOT EXISTS idx_list_view_seen_day ON list_view_seen (day);
 
+-- 本棚の下書きを localStorage に持っている端末。管理画面の「ローカル保存の端末数（過去30日）」の
+-- 元データ。下書きはサーバに送られないので、作成画面が「この端末に下書きがある」とだけ 1 日 1 回
+-- 知らせる (POST /api/draft-ping)。device は端末の localStorage に置いたランダム ID で、IP も
+-- 下書きの中身も持たない。人数ではなく端末数（スマホと PC は別に数える）。30 日より古い行は
+-- 日次 cron で消す。See src/draftDevices.ts。
+CREATE TABLE IF NOT EXISTS draft_devices (
+  device    TEXT PRIMARY KEY,
+  last_seen INTEGER NOT NULL               -- 最後に知らせがあった時刻 (epoch ms)
+);
+CREATE INDEX IF NOT EXISTS idx_draft_devices_last_seen ON draft_devices (last_seen);
+
 -- Cache of resolved cover URLs per ISBN: a real Google Books cover if one exists,
 -- else the Rakuten Books cover, else "" (no cover anywhere). See src/covers.ts.
 CREATE TABLE IF NOT EXISTS covers (

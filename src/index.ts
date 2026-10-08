@@ -85,6 +85,7 @@ import { currentUser, loginCallback, loginStart, logout, purgeExpiredSessions } 
 import { handleAccountApi } from "./account";
 import { handleRanking } from "./ranking";
 import { consumeViewBatch, handleListView, handlePublicLists, purgeListViewSeen } from "./publicLists";
+import { handleDraftPing, purgeDraftDevices } from "./draftDevices";
 import { adminSalesSnapshot, adminSalesStatus, handleSalesRanking, runSalesSnapshot } from "./salesRanking";
 import {
   adminCirculationLink,
@@ -237,6 +238,11 @@ const worker = {
           // 残さない。公開の書き込み枠（30/分）だと編集中（2 秒ごとに保存）で普通に頭を打つ
           // ので、広い方の binding を別 bucket で使う（120/分 = 0.5 秒に 1 回）。
           const limited = await rateLimit(request, env.RL_COVERS, "draft");
+          if (limited) return limited;
+        } else if (path === "/api/draft-ping") {
+          // 下書きのある端末の知らせ（src/draftDevices.ts）。端末ごとに 1 日 1 回しか来ないが、
+          // 公開の書き込み枠（30/分）は食わせない。
+          const limited = await rateLimit(request, env.RL_COVERS, "draft-ping");
           if (limited) return limited;
         } else if (path.startsWith("/api/") && !path.startsWith("/api/admin/")) {
           // 閲覧ビーコンは公開・通報と枠を分ける（たくさん閲覧した人や同じ IP を共有する人が
@@ -502,6 +508,10 @@ const worker = {
           await queueShareImages(env, ctx, slug, url.host, fresh);
         }
         return res;
+      }
+      // 下書きのある端末の知らせ（src/draftDevices.ts）。
+      if (path === "/api/draft-ping" && request.method === "POST") {
+        return await handleDraftPing(request, env);
       }
       // 閲覧ページのアクセス数ビーコン（src/publicLists.ts）。
       const listViewMatch = path.match(/^\/api\/lists\/([A-Za-z0-9_-]+)\/view$/);
@@ -926,6 +936,8 @@ const worker = {
     // 公開の監査ログ（publish_audit, IP・UA を含む）は 365 日で消す。期限切れのログインセッションも掃除する。
     ctx.waitUntil(purgePublishAudit(env).catch((err) => console.error("publish audit purge failed", err)));
     ctx.waitUntil(purgeExpiredSessions(env).catch((err) => console.error("session purge failed", err)));
+    // 下書きのある端末（draft_devices）は集計窓の 30 日を過ぎたら消す。
+    ctx.waitUntil(purgeDraftDevices(env).catch((err) => console.error("draft device purge failed", err)));
   },
 
   // キューの consumer。閲覧ビーコン（VIEW_QUEUE）と共有画像（SHARE_QUEUE）の 2 本を受ける。

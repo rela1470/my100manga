@@ -493,7 +493,10 @@ function saveDraft() {
       JSON.stringify({ owner: state.owner, bio: state.bio, items: state.items, savedAt: Date.now() })
     );
   } catch (e) {}
-  if (!state.editSlug) scheduleServerDraft();
+  if (!state.editSlug) {
+    scheduleServerDraft();
+    if (window.draftPing) window.draftPing(state.items.length);
+  }
 }
 
 /* ---------- 作成中のリストのサーバ同期（ログイン中のみ, src/account.ts） ---------- */
@@ -642,6 +645,8 @@ function loadDraft() {
     // filter(Boolean) also migrates the old fixed-100 array (which stored nulls for empty slots).
     if (Array.isArray(d.items)) state.items = d.items.filter(Boolean).map(normItem);
   } catch (e) {}
+  // 保存済みの下書きを開いただけの日も「この端末に本棚がある」と数える（public/api.js）。
+  if (window.draftPing) window.draftPing(state.items.length);
 }
 
 /* ---------- grid ---------- */

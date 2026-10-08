@@ -53,7 +53,7 @@ DB 側に記録されないので、この表で管理する。
 | `remove-redundant-name-overrides.sql` | タグ（廉価版・文庫版・傑作選）で言えるようになったシリーズ名の修正 13 件を外す（`series_name_override` の DELETE）。管理画面の「修正を外す」導線と同時に入れるので**デプロイ後でも可**（SQL だけでも成立する） | ○ | 2026-10-05（0 件。該当行が無い） | 2026-10-05（13 件削除。R18版も dev / 本番とも同日 適用・デプロイ済み、どちらも 0 件） |
 | `add-series-suggest.sql` | `series_suggest`（検索欄の入力補完の前方一致索引。マスタから作り直すので中身も入る）。`src/suggest.ts` が読むので**デプロイ前に**。適用後にファイルを `series_suggest_new` + `RENAME` 方式へ書き換えたが、出来上がる表は同じなので流し直しは不要 | ○ | 2026-10-06（245,177 行） | 2026-10-06（245,179 行。R18版も dev / 本番とも同日 適用・デプロイ済み、どちらも 257,560 行） |
 | `add-series-register.sql` | `series_register_request`（マスタに丸ごと無い作品の「シリーズとして登録してほしい」依頼。collect-only）。`src/seriesRegister.ts` が読み書きするので**デプロイ前に** | ○ | 2026-10-06 | 2026-10-06（R18版も dev / 本番とも同日 適用・デプロイ済み） |
-| `add-draft-devices.sql` | `draft_devices`（本棚の下書きを localStorage に持つ端末。管理画面の「ローカル保存の端末(30日)」）。`POST /api/draft-ping` と管理画面の統計・日次 cron が読み書きするので**デプロイ前に** | ○ | 2026-10-08（bookmark `0000012b-00000000-000050fe-6bd26ed3956d0f0a72260dcc78de41fd`） | 2026-10-08（bookmark `0000019c-00000000-000050fe-08f548da10cc3231d82633cfd8ae4421`。R18版は dev / 本番とも未適用） |
+| `add-draft-devices.sql` | `draft_devices`（本棚の下書きを localStorage に持つ端末。管理画面の「ローカル保存の端末(30日)」）。`POST /api/draft-ping` と管理画面の統計・日次 cron が読み書きするので**デプロイ前に** | ○ | 2026-10-08（bookmark `0000012b-00000000-000050fe-6bd26ed3956d0f0a72260dcc78de41fd`） | 2026-10-08（bookmark `0000019c-00000000-000050fe-08f548da10cc3231d82633cfd8ae4421`。R18版も dev / 本番とも同日 適用・デプロイ済み。bookmark r18dev `0000002f-00000000-000050fe-6dc5a8c9b50306413ce48c8c39ba4b96` / r18 `0000003b-00000000-000050fe-4ad6bf057868af3be10cb01d9b5b72fe`） |
 
 冪等: ○ = 何度流しても同じ結果。× = 2 回目はエラーになる（`ALTER TABLE ... ADD COLUMN` など。エラーで
 止まるだけで壊れはしないが、同じファイルの後続の文も流れない）。

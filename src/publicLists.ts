@@ -37,14 +37,39 @@ export function isCrawler(ua: string): boolean {
   return !ua || BOT_UA.test(ua);
 }
 
-/** 訪問者の識別子。IP + 日付の SHA-256 で、IP そのものは保存しない。日付を混ぜるので日をまたいで
- *  同じ人を追跡できない。User-Agent は混ぜない: 混ぜると UA を変えて送り直すだけで 1 IP から
- *  いくらでも数を伸ばせる。代わりに同じ IP を共有する別の人（携帯キャリアの NAT・社内 LAN 等）は
- *  1 人として数える（少なめに数える側に倒す）。 */
-async function visitorKey(request: Request, day: string): Promise<string> {
-  const text = `${clientIp(request)}|${day}`;
-  const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(text));
-  return Array.from(new Uint8Array(digest), (b) => b.toString(16).padStart(2, "0")).join("");
+/** 訪問者の識別子。IP + 日付の HMAC-SHA256（鍵は secret の VIEW_HASH_SECRET）で、IP そのものは
+ *  保存しない。素の SHA-256 だと IPv4 は 2^32 通りしかないので、DB が漏れれば総当たりで IP に戻せる。
+ *  鍵付きにして、鍵が無ければ戻せないようにする。日付を混ぜるので日をまたいで同じ人を追跡できない。
+ *  User-Agent は混ぜない: 混ぜると UA を変えて送り直すだけで 1 IP からいくらでも数を伸ばせる。
+ *  代わりに同じ IP を共有する別の人（携帯キャリアの NAT・社内 LAN 等）は 1 人として数える
+ *  （少なめに数える側に倒す）。鍵が未設定なら null（数えない。鍵なしのハッシュは保存しない）。 */
+async function visitorKey(request: Request, env: Env, day: string): Promise<string | null> {
+  const key = await viewHashKey(env);
+  if (!key) return null;
+  const mac = await crypto.subtle.sign("HMAC", key, new TextEncoder().encode(`${clientIp(request)}|${day}`));
+  return Array.from(new Uint8Array(mac), (b) => b.toString(16).padStart(2, "0")).join("");
+}
+
+// VIEW_HASH_SECRET から作った HMAC 鍵。secret は isolate の間は変わらないので 1 度だけ import する。
+let hashKey: { secret: string; key: Promise<CryptoKey> } | null = null;
+let warnedNoSecret = false;
+
+function viewHashKey(env: Env): Promise<CryptoKey> | null {
+  const secret = (env.VIEW_HASH_SECRET ?? "").trim();
+  if (!secret) {
+    if (!warnedNoSecret) {
+      warnedNoSecret = true;
+      console.warn("VIEW_HASH_SECRET is not set: list views are not counted (wrangler secret put VIEW_HASH_SECRET)");
+    }
+    return null;
+  }
+  if (hashKey?.secret !== secret) {
+    const key = crypto.subtle.importKey("raw", new TextEncoder().encode(secret), { name: "HMAC", hash: "SHA-256" }, false, [
+      "sign",
+    ]);
+    hashKey = { secret, key };
+  }
+  return hashKey.key;
 }
 
 /** POST /api/lists/:slug/view — 閲覧ページのビーコン。数えたかどうかに関係なく 204 を返す
@@ -58,7 +83,9 @@ export async function handleListView(request: Request, env: Env, ctx: ExecutionC
   const day = jstDay(Date.now());
   // セッション Cookie があるときだけ D1 を引く（匿名の閲覧は D1 に触らない）。
   const user = await currentUser(request, env);
-  const job: ViewJob = { slug, day, visitor: await visitorKey(request, day), userId: user?.id ?? null };
+  const visitor = await visitorKey(request, env, day);
+  if (!visitor) return done;
+  const job: ViewJob = { slug, day, visitor, userId: user?.id ?? null };
   if (env.VIEW_QUEUE) {
     ctx.waitUntil(env.VIEW_QUEUE.send(job).catch((err) => console.error("view queue send failed", err)));
   } else {

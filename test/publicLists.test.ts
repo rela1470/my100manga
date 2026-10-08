@@ -1,8 +1,9 @@
 import { env } from "cloudflare:workers";
 import { beforeEach, describe, expect, it } from "vitest";
-import { isCrawler, jstDay, purgeListViewSeen, purgePublicListsCache, recordListViews } from "../src/publicLists";
+import { handleListView, isCrawler, jstDay, purgeListViewSeen, purgePublicListsCache, recordListViews } from "../src/publicLists";
 import { BROWSER_UA, beacon, createList, view } from "./helpers";
-import { SELF } from "cloudflare:test";
+import { createExecutionContext, SELF } from "cloudflare:test";
+import type { Env } from "../src/types";
 
 async function publicLists(sort = "new") {
   const res = await SELF.fetch(`https://example.com/api/public-lists?sort=${sort}`);
@@ -201,5 +202,29 @@ describe("GET /api/public-lists のエッジキャッシュ", () => {
     expect(second.headers.get("cache-control")).toBe("public, max-age=60");
     expect(second.headers.get("x-client-cache-control")).toBeNull();
     expect(await second.json()).toEqual(await first.json());
+  });
+});
+
+describe("閲覧者 ID（list_view_seen.visitor）", () => {
+  it("IP + 日付の素の SHA-256 ではなく鍵付き（HMAC）で保存する", async () => {
+    const { slug } = await createList();
+    await beacon(slug, { ip: "198.51.100.7" });
+    const row = await env.DB.prepare(`SELECT visitor FROM list_view_seen WHERE slug = ?`).bind(slug).first<{ visitor: string }>();
+    const plain = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(`198.51.100.7|${jstDay(Date.now())}`));
+    const plainHex = Array.from(new Uint8Array(plain), (b) => b.toString(16).padStart(2, "0")).join("");
+    expect(row?.visitor).toMatch(/^[0-9a-f]{64}$/);
+    expect(row?.visitor).not.toBe(plainHex);
+  });
+
+  it("VIEW_HASH_SECRET が無ければ数えない（鍵なしのハッシュを保存しない）", async () => {
+    const { slug } = await createList();
+    const req = new Request(`https://example.com/api/lists/${slug}/view`, {
+      method: "POST",
+      headers: { "user-agent": BROWSER_UA, "cf-connecting-ip": "198.51.100.8" },
+    });
+    const noSecret = { ...(env as unknown as Env), VIEW_HASH_SECRET: "", VIEW_QUEUE: undefined } as Env;
+    expect((await handleListView(req, noSecret, createExecutionContext(), slug)).status).toBe(204);
+    const n = await env.DB.prepare(`SELECT COUNT(*) AS n FROM list_view_seen WHERE slug = ?`).bind(slug).first<{ n: number }>();
+    expect(n?.n).toBe(0);
   });
 });

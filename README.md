@@ -127,6 +127,20 @@ Google Books で書影が取れない ISBN を、楽天ブックス書籍検索 
 - `RAKUTEN_REFERER`（登録したサイトURL）は秘密ではないため `wrangler.jsonc` の `vars` に置く（本番 `https://example.com/`、dev 環境は `https://dev.example.com/`）。ゲートウェイは Referer / Sec-Fetch-* 等のブラウザ相当ヘッダを要求するため `src/rakuten.ts` が付与する。
   - ⚠️ dev で書影を楽天から取るには、Rakuten アプリのサイトURL（Referer）に `https://dev.example.com/` も登録しておくこと。未登録なら dev では楽天が弾かれ Google Books のみのカバレッジになる（動作自体は継続する）。
 
+## 閲覧数の鍵（`VIEW_HASH_SECRET`）
+
+公開リストの閲覧数は、同じ訪問者を 1 日 1 回だけ数えるために「IP + 日付」の HMAC-SHA256 を
+`list_view_seen.visitor` に 2 日間置く（`src/publicLists.ts` `visitorKey`）。素の SHA-256 では IPv4 を
+総当たりで戻せるので鍵付きにしている。**未設定だと閲覧数を数えない**（ログに警告が出る）。値は env ごとに別の乱数でよい。
+変えるとその日の重複判定がリセットされるだけなので、漏れたと思ったら作り直してよい。
+
+```bash
+openssl rand -base64 32 | npx wrangler secret put VIEW_HASH_SECRET                # 本番
+openssl rand -base64 32 | npx wrangler secret put VIEW_HASH_SECRET --env dev      # dev（r18 / r18dev も同様）
+```
+
+ローカル `wrangler dev` は `.dev.vars` に `VIEW_HASH_SECRET=<任意の文字列>` を書く。
+
 ## アフィリエイト（購入リンク）
 
 閲覧ページ（`/l/:slug`）の作品詳細モーダルに **Amazon・楽天・Yahoo!ショッピング・メルカリの購入リンク**を出す。紙の本は絶版が多いので、**紙版と電子書籍版（Kindle / 楽天Kobo）を常に併記**する（電子版は絶版でも入手できることが多い）。

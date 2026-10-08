@@ -106,6 +106,9 @@ export interface Env {
   // 日次 Cron で売上ランキングを取るか（src/index.ts salesRankingCronEnabled）。"true" のときだけ。
   // vars は env に継承されないので、本家の本番の vars にだけ書く。
   SALES_RANKING_CRON?: string;
+  // 閲覧数の重複判定に使う訪問者 ID（IP + 日付）の HMAC 鍵（src/publicLists.ts visitorKey）。secret。
+  // 未設定なら閲覧数を数えない。値を変えるとその日の重複判定がリセットされる（その日だけ多めに数える）。
+  VIEW_HASH_SECRET?: string;
 }
 
 /** VIEW_QUEUE のメッセージ（閲覧ビーコン 1 件）。visitor は IP + 日付のハッシュ、userId は

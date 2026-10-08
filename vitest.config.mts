@@ -48,6 +48,7 @@ export default defineConfig(async () => {
             TURNSTILE_SITE_KEY: "",
             TURNSTILE_SECRET: "",
             ADMIN_DEV_BYPASS: "",
+            VIEW_HASH_SECRET: "test-view-hash-secret",
           },
         },
       }),

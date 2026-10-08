@@ -48,6 +48,7 @@ import {
   adminGetList,
   adminListCorrections,
   adminListLists,
+  adminListUsers,
   adminListPublishAudit,
   adminListReports,
   adminListVolumeReports,
@@ -613,6 +614,9 @@ const worker = {
       }
       if (path === "/api/admin/lists" && request.method === "GET") {
         return await adminListLists(env, parsePage(url));
+      }
+      if (path === "/api/admin/users" && request.method === "GET") {
+        return await adminListUsers(env, parsePage(url), url.searchParams.get("q") ?? "");
       }
       const adminListMatch = path.match(/^\/api\/admin\/lists\/([A-Za-z0-9_-]+)$/);
       if (adminListMatch) {

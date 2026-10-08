@@ -21,6 +21,7 @@
       <a href="#dashboard" data-page="dashboard">概要</a>
       <a href="#reports" data-page="reports">通報</a>
       <a href="#lists" data-page="lists">公開リスト</a>
+      <a href="#users" data-page="users">Googleアカウント</a>
       <a href="#audit" data-page="audit">監査ログ</a>
       <a href="#volume-reports" data-page="volume-reports">巻の通報</a>
       <a href="#series-reports" data-page="series-reports">シリーズ名の修正</a>
@@ -124,6 +125,35 @@
         <tbody id="listBody"></tbody>
       </table>
       <div class="pager" id="listPager" style="display:none"></div>
+    </section>
+
+    <!-- Google アカウント一覧（メールアドレスと紐付いた公開リスト） -->
+    <section class="admin-page" id="page-users" hidden>
+      <div class="toolbar">
+        <strong>Googleアカウント</strong>
+        <span class="count" id="userCount"></span>
+        <input type="text" id="userQuery" placeholder="メールアドレス・名前で絞り込み（任意）" style="margin-left:8px">
+        <div style="flex:1"></div>
+        <button id="reloadUsers">再読み込み</button>
+      </div>
+      <p class="hint">
+        Google でログインしたことのあるアカウントを直近ログイン順に並べ、アカウントに紐付いた公開リストを併記します。
+        ログインせずに公開したリストや、アカウントに追加していないリストはここには出ません。
+      </p>
+      <p class="hint" id="userHint" style="display:none"></p>
+      <table class="admin-table" id="userTable" style="display:none">
+        <thead>
+          <tr>
+            <th>メールアドレス</th>
+            <th>名前</th>
+            <th>公開リスト</th>
+            <th>登録</th>
+            <th>最終ログイン</th>
+          </tr>
+        </thead>
+        <tbody id="userBody"></tbody>
+      </table>
+      <div class="pager" id="userPager" style="display:none"></div>
     </section>
 
     <!-- 公開の監査ログ -->

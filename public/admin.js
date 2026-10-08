@@ -22,6 +22,7 @@ const PER = 50;
 const pageState = {
   reports: 1,
   lists: 1,
+  users: 1,
   audit: 1,
   volReports: 1,
   seriesReports: 1,
@@ -369,6 +370,80 @@ async function loadLists(page = pageState.lists) {
 
   table.style.display = "";
   renderPager("listPager", page, total, loadLists);
+}
+
+// Google アカウント一覧。各アカウントに紐付いた公開リストを slug（押すと詳細）で並べる。
+async function loadUsers(page = pageState.users) {
+  const table = $("userTable");
+  const body = $("userBody");
+  const hint = $("userHint");
+  body.textContent = "";
+  hint.style.display = "none";
+  table.style.display = "none";
+  $("userPager").style.display = "none";
+
+  const q = $("userQuery").value.trim();
+  const qs = q ? `&q=${encodeURIComponent(q)}` : "";
+  let data;
+  try {
+    const res = await fetch(`/api/admin/users?page=${page}&per=${PER}${qs}`);
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    data = await res.json();
+  } catch {
+    hint.textContent = "一覧の取得に失敗しました";
+    hint.style.display = "";
+    return;
+  }
+
+  const users = data.users || [];
+  const total = data.total ?? users.length;
+  pageState.users = page;
+  $("userCount").textContent = `${total.toLocaleString("ja-JP")}件`;
+
+  if (total === 0) {
+    hint.textContent = q ? "該当するアカウントはありません。" : "まだ Google でログインしたアカウントはありません。";
+    hint.style.display = "";
+    return;
+  }
+
+  for (const u of users) {
+    let listCell;
+    if (u.lists.length) {
+      listCell = el(
+        "td",
+        null,
+        u.lists.map((l) => {
+          const link = el("a", {
+            className: "slug detail",
+            textContent: l.slug,
+            title: "詳細（公開履歴つき）を表示",
+          });
+          link.addEventListener("click", () => openDetail(l.slug));
+          const meta = `${l.owner_name || "（名前なし）"}・${l.item_count}作品・更新 ${fmtDate(l.updated_at)}`;
+          return el("div", null, [
+            link,
+            l.unlisted ? el("span", { className: "muted", textContent: " 限定公開", title: "noindex・運営からの紹介対象外" }) : "",
+            el("span", { className: "muted", textContent: ` ${meta}` }),
+          ]);
+        })
+      );
+    } else {
+      listCell = el("td", { className: "muted", textContent: "なし" });
+    }
+
+    body.append(
+      el("tr", null, [
+        el("td", { className: "owner", textContent: u.email || "(不明)" }),
+        el("td", { className: "owner", textContent: u.name || "-" }),
+        listCell,
+        el("td", { textContent: fmtDate(u.created_at) }),
+        el("td", { textContent: fmtDate(u.last_login_at) }),
+      ])
+    );
+  }
+
+  table.style.display = "";
+  renderPager("userPager", page, total, loadUsers);
 }
 
 function coverThumb(url, cls, noimgCls, alt) {
@@ -4154,6 +4229,7 @@ const PAGES = {
     loadReports(1);
   },
   lists: () => loadLists(1),
+  users: () => loadUsers(1),
   audit: () => loadAudit(1),
   "volume-reports": () => {
     resetHistory("volReports");
@@ -4367,6 +4443,10 @@ $("reloadReport").addEventListener("click", () =>
   HISTORY.reports.on ? loadResolvedReports(pageState.reportResolved) : loadReports(pageState.reports)
 );
 $("reloadAudit").addEventListener("click", () => loadAudit(1));
+$("reloadUsers").addEventListener("click", () => loadUsers(pageState.users));
+$("userQuery").addEventListener("keydown", (e) => {
+  if (e.key === "Enter") loadUsers(1);
+});
 $("auditSlug").addEventListener("keydown", (e) => {
   if (e.key === "Enter") loadAudit(1);
 });

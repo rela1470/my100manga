@@ -104,6 +104,73 @@ export async function adminListLists(env: Env, opts: PageOpts): Promise<Response
   return json({ lists, total, page: opts.page, per: opts.per }, 200, { "cache-control": "no-store" });
 }
 
+/** Google アカウント一覧。メールアドレスと、そのアカウントに紐付いた公開リストを併記する。
+ *  直近ログイン順。q 指定時はメールアドレス・表示名を部分一致で絞り込む。 */
+export async function adminListUsers(env: Env, opts: PageOpts, q = ""): Promise<Response> {
+  const term = q.trim();
+  const like = `%${term.replace(/[\\%_]/g, (c) => `\\${c}`)}%`;
+  const where = term ? `WHERE email LIKE ?1 ESCAPE '\\' OR name LIKE ?1 ESCAPE '\\'` : "";
+  const binds = term ? [like] : [];
+
+  const total = await countRows(env, `SELECT COUNT(*) AS n FROM users ${where}`, binds);
+  const { results: users } = await env.DB.prepare(
+    `SELECT id, email, name, created_at, last_login_at FROM users ${where}
+      ORDER BY last_login_at DESC LIMIT ?${binds.length + 1} OFFSET ?${binds.length + 2}`
+  )
+    .bind(...binds, opts.per, opts.offset)
+    .all<{ id: string; email: string; name: string; created_at: number; last_login_at: number }>();
+
+  // このページのアカウントのリストを1回で引く（IN の個数がページ件数で変わるので json_each で渡す）。
+  const ids = (users ?? []).map((u) => u.id);
+  const { results: rows } = ids.length
+    ? await env.DB.prepare(
+        `SELECT user_id, slug, owner_name, unlisted, items_json, created_at, updated_at
+           FROM lists WHERE user_id IN (SELECT value FROM json_each(?)) ORDER BY updated_at DESC`
+      )
+        .bind(JSON.stringify(ids))
+        .all<{
+          user_id: string;
+          slug: string;
+          owner_name: string | null;
+          unlisted: number;
+          items_json: string;
+          created_at: number;
+          updated_at: number;
+        }>()
+    : { results: [] };
+
+  const listsByUser = new Map<string, unknown[]>();
+  for (const r of rows ?? []) {
+    const arr = listsByUser.get(r.user_id) ?? [];
+    arr.push({
+      slug: r.slug,
+      owner_name: r.owner_name ?? "",
+      unlisted: r.unlisted === 1,
+      item_count: parseStoredItems(r.items_json).length,
+      created_at: r.created_at,
+      updated_at: r.updated_at,
+    });
+    listsByUser.set(r.user_id, arr);
+  }
+
+  return json(
+    {
+      users: (users ?? []).map((u) => ({
+        email: u.email,
+        name: u.name,
+        created_at: u.created_at,
+        last_login_at: u.last_login_at,
+        lists: listsByUser.get(u.id) ?? [],
+      })),
+      total,
+      page: opts.page,
+      per: opts.per,
+    },
+    200,
+    { "cache-control": "no-store" }
+  );
+}
+
 export async function adminStats(request: Request, env: Env): Promise<Response> {
   const count = async (sql: string): Promise<number> => {
     const row = await env.DB.prepare(sql).first<{ n: number }>();

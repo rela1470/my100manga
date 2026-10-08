@@ -165,7 +165,7 @@ describe("閲覧スナップショット（R2 view/<slug>.json）", () => {
     await bucket().put(`share/${slug}/og-0000.jpg`, new Uint8Array([1, 2, 3]));
     await view(slug); // colo キャッシュに載せる
 
-    expect((await adminDeleteList(env, slug, "https://example.com")).status).toBe(200);
+    expect((await adminDeleteList(new Request("https://example.com/api/admin/lists"), env, slug, "https://example.com")).status).toBe(200);
     expect(await bucket().head(snapshotKey(slug))).toBeNull();
     expect(await bucket().head(`share/${slug}/og-0000.jpg`)).toBeNull();
 
@@ -220,7 +220,7 @@ describe("閲覧スナップショット（R2 view/<slug>.json）", () => {
 
   it("存在しない slug の削除では他のリストの R2 を触らない", async () => {
     const { slug } = await createList();
-    expect((await adminDeleteList(env, "no-such-list")).status).toBe(404);
+    expect((await adminDeleteList(new Request("https://example.com/api/admin/lists"), env, "no-such-list")).status).toBe(404);
     expect(await bucket().head(snapshotKey(slug))).not.toBeNull();
   });
 

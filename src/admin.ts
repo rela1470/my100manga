@@ -3,7 +3,7 @@ import { parseStoredItems, resolveBooks, resolveListItems } from "./listItems";
 import { badRequest, json, notFound, normTitle, readJsonObject, searchKey, toIsbn13, seriesNameSql, volSort } from "./util";
 import { normalizeCorrectionVolume } from "./corrections";
 import { getMostCommonVolumeTitle } from "./series";
-import { deleteListStatements } from "./lists";
+import { deleteListStatements, PUBLISH_ACTIONS_SQL, recordPublishAudit } from "./lists";
 import { devBypassActive } from "./adminAuth";
 import { invalidateListView, purgeListArtifacts } from "./viewSnapshot";
 import { isGroupId, resolveGroup } from "./groups";
@@ -54,13 +54,14 @@ interface AdminListRow {
 
 export async function adminListLists(env: Env, opts: PageOpts): Promise<Response> {
   // 公開リスト一覧に publish_audit を紐づけ、直近の公開元 IP / 国 / 公開回数を併記する。
+  // 退会時の紐付け解除（account_unlink）等は公開ではないので create / update だけで数える。
   const total = await countRows(env, `SELECT COUNT(*) AS n FROM lists`);
   const { results } = await env.DB.prepare(
     `SELECT l.slug, l.owner_name, l.unlisted, l.items_json, l.created_at, l.updated_at,
-            (SELECT COUNT(*) FROM publish_audit a WHERE a.slug = l.slug) AS publish_count,
-            (SELECT MAX(a.created_at) FROM publish_audit a WHERE a.slug = l.slug) AS last_published_at,
-            (SELECT a.ip FROM publish_audit a WHERE a.slug = l.slug ORDER BY a.created_at DESC LIMIT 1) AS last_ip,
-            (SELECT a.country FROM publish_audit a WHERE a.slug = l.slug ORDER BY a.created_at DESC LIMIT 1) AS last_country
+            (SELECT COUNT(*) FROM publish_audit a WHERE a.slug = l.slug AND a.action IN ${PUBLISH_ACTIONS_SQL}) AS publish_count,
+            (SELECT MAX(a.created_at) FROM publish_audit a WHERE a.slug = l.slug AND a.action IN ${PUBLISH_ACTIONS_SQL}) AS last_published_at,
+            (SELECT a.ip FROM publish_audit a WHERE a.slug = l.slug AND a.action IN ${PUBLISH_ACTIONS_SQL} ORDER BY a.created_at DESC LIMIT 1) AS last_ip,
+            (SELECT a.country FROM publish_audit a WHERE a.slug = l.slug AND a.action IN ${PUBLISH_ACTIONS_SQL} ORDER BY a.created_at DESC LIMIT 1) AS last_country
        FROM lists l ORDER BY l.created_at DESC LIMIT ? OFFSET ?`
   )
     .bind(opts.per, opts.offset)
@@ -341,9 +342,14 @@ export async function adminGetList(env: Env, slug: string): Promise<Response> {
 }
 
 /** origin は閲覧キャッシュ（この colo の Cache API）を消すためのサイトの origin。 */
-export async function adminDeleteList(env: Env, slug: string, origin?: string): Promise<Response> {
+export async function adminDeleteList(request: Request, env: Env, slug: string, origin?: string): Promise<Response> {
+  const owner = await env.DB.prepare(`SELECT owner_name FROM lists WHERE slug = ?`)
+    .bind(slug)
+    .first<{ owner_name: string | null }>();
   const [res] = await env.DB.batch(deleteListStatements(env, slug));
   if (!(res.meta?.changes ?? 0)) return notFound("リストが見つかりません");
+  // 監査ログに管理者削除として残す（作成者の削除・退会と見分けられるように）。
+  await recordPublishAudit(request, env, slug, "admin_delete", owner?.owner_name ?? "");
   // 閲覧スナップショット・共有画像（R2）・閲覧キャッシュも消す（失敗しても削除は成功扱い）。
   await purgeListArtifacts(env, slug, origin);
   return json({ ok: true, slug });

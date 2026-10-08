@@ -89,11 +89,59 @@ describe("管理画面からのリスト削除", () => {
       env.DB.prepare(`INSERT INTO list_views (slug, day, views) VALUES (?, '2026-10-01', 3)`).bind(slug),
       env.DB.prepare(`INSERT INTO list_view_seen (slug, day, visitor) VALUES (?, '2026-10-01', 'v')`).bind(slug),
     ]);
-    const res = await adminDeleteList(env, slug);
+    const res = await adminDeleteList(new Request("https://example.com/api/admin/lists"), env, slug);
     expect(res.status).toBe(200);
     for (const table of ["lists", "list_views", "list_view_seen", "list_item_events"]) {
       const row = await env.DB.prepare(`SELECT COUNT(*) AS n FROM ${table} WHERE slug = ?`).bind(slug).first<{ n: number }>();
       expect(row?.n, table).toBe(0);
     }
+    const audit = await env.DB.prepare(`SELECT action FROM publish_audit WHERE slug = ? ORDER BY id`)
+      .bind(slug)
+      .all<{ action: string }>();
+    expect(audit.results.map((r) => r.action)).toEqual(["create", "admin_delete"]);
+  });
+});
+
+function deleteList(slug: string, token: string | null): Promise<Response> {
+  const headers: Record<string, string> = token === null ? {} : { "x-edit-token": token };
+  return SELF.fetch(`https://example.com/api/lists/${slug}`, { method: "DELETE", headers });
+}
+
+describe("DELETE /api/lists/:slug（作成者による削除）", () => {
+  it("編集トークンが合えば付随データごと消え、監査ログに delete を残す", async () => {
+    const { slug, edit_token } = await createList();
+    await env.DB.prepare(`INSERT INTO list_views (slug, day, views) VALUES (?, '2026-10-01', 3)`).bind(slug).run();
+    const res = await deleteList(slug, edit_token);
+    expect(res.status).toBe(200);
+    for (const table of ["lists", "list_views", "list_view_seen", "list_item_events"]) {
+      const row = await env.DB.prepare(`SELECT COUNT(*) AS n FROM ${table} WHERE slug = ?`).bind(slug).first<{ n: number }>();
+      expect(row?.n, table).toBe(0);
+    }
+    expect((await SELF.fetch(`https://example.com/api/lists/${slug}`)).status).toBe(404);
+    const audit = await env.DB.prepare(`SELECT action FROM publish_audit WHERE slug = ? ORDER BY id`)
+      .bind(slug)
+      .all<{ action: string }>();
+    expect(audit.results.map((r) => r.action)).toEqual(["create", "delete"]);
+  });
+
+  it("本文の edit_token でも消せる", async () => {
+    const { slug, edit_token } = await createList();
+    const res = await SELF.fetch(`https://example.com/api/lists/${slug}`, {
+      method: "DELETE",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ edit_token }),
+    });
+    expect(res.status).toBe(200);
+  });
+
+  it("トークンが違う・無いなら 403 で消えない", async () => {
+    const { slug } = await createList();
+    expect((await deleteList(slug, "wrong")).status).toBe(403);
+    expect((await deleteList(slug, null)).status).toBe(403);
+    expect((await getList(slug)).items).toHaveLength(100);
+  });
+
+  it("存在しないリストは 404", async () => {
+    expect((await deleteList("no-such-list", "x")).status).toBe(404);
   });
 });

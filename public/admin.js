@@ -476,7 +476,14 @@ async function openDetail(slug) {
   }
 }
 
-const AUDIT_ACTION_LABEL = { create: "新規公開", update: "更新公開" };
+const AUDIT_ACTION_LABEL = {
+  create: "新規公開",
+  update: "更新公開",
+  delete: "作成者が削除",
+  account_delete: "退会で削除",
+  account_unlink: "退会で紐付け解除",
+  admin_delete: "管理者が削除",
+};
 
 // 公開リスト一覧から監査ログページへ移動し、その slug で絞り込む。
 function filterAuditBySlug(slug) {

@@ -4590,6 +4590,7 @@ function openPublishModal() {
     }
   }
   $("confirmPublish").textContent = state.editSlug ? "更新する" : "公開する";
+  $("deleteList").hidden = !(state.editSlug && state.editToken);
   $("publishModal").classList.add("open");
   $("ownerInput").focus();
 }
@@ -4644,6 +4645,7 @@ function setPublishing(on, label) {
   btn.disabled = on;
   btn.textContent = on ? label || `${verb}中…` : verb === "更新" ? "更新する" : "公開する";
   $("cancelPublish").disabled = on;
+  $("deleteList").disabled = on;
   $("publish").disabled = on || state.items.length !== TARGET;
   if (on) $("publish").textContent = label || `${verb}中…`;
 }
@@ -4723,6 +4725,31 @@ async function doPublish() {
     render();
     renderMyLists();
   }
+}
+
+// 公開済みリストの削除（DELETE /api/lists/:slug）。編集トークンを持つ作成者だけができる。
+// 消したら端末の編集リンク（MyLists）と編集中の下書きも捨てて、新規作成の画面に戻す。
+async function doDeleteList() {
+  if (publishing || !state.editSlug || !state.editToken) return;
+  const slug = state.editSlug;
+  if (!(await uiConfirm("このリストを削除します。公開ページ・共有画像・閲覧数も消え、元に戻せません。よろしいですか？", { danger: true, okLabel: "削除する" }))) return;
+  setPublishing(true, "削除中…");
+  try {
+    await apiFetch(`/api/lists/${encodeURIComponent(slug)}`, {
+      method: "DELETE",
+      headers: { "x-edit-token": state.editToken },
+    });
+  } catch (e) {
+    setPublishing(false);
+    uiAlert(apiErrorMessage(e, "削除に失敗しました。もう一度お試しください。"));
+    return;
+  }
+  clearEditDraft(slug);
+  window.MyLists?.remove(slug);
+  try { sessionStorage.removeItem(EDIT_TOKEN_KEY); } catch (e) {}
+  setPublishing(false);
+  // モーダルを閉じずに遷移する（goToPublished と同じ理由: ui-dialog の履歴戻しが遷移を打ち消す）。
+  location.href = "/";
 }
 
 // 更新した後は編集画面に留めず、公開ページ（/l/<slug>）へ送る。編集画面と公開ページは
@@ -4877,6 +4904,7 @@ function wireEvents() {
   $("confirmPublish").addEventListener("click", confirmPublish);
   $("publicInput").addEventListener("change", updatePublicHint);
   $("cancelPublish").addEventListener("click", closePublishModal);
+  $("deleteList").addEventListener("click", doDeleteList);
   $("ownerInput").addEventListener("keydown", (e) => { if (e.key === "Enter" && !e.isComposing) confirmPublish(); });
   $("cancelSearch").addEventListener("click", closeSearch);
   $("saveSlot").addEventListener("click", saveSlot);

@@ -655,7 +655,8 @@ CREATE INDEX IF NOT EXISTS idx_cover_suggestion_url ON cover_suggestion (cover_u
 CREATE TABLE IF NOT EXISTS publish_audit (
   id         INTEGER PRIMARY KEY AUTOINCREMENT,
   slug       TEXT NOT NULL,               -- 対象リストの slug
-  action     TEXT NOT NULL,               -- 'create' (新規公開) | 'update' (更新公開)
+  action     TEXT NOT NULL,               -- 'create' (新規公開) | 'update' (更新公開) | 'delete' (作成者が削除)
+                                          -- | 'account_delete' / 'account_unlink' (退会で削除 / 紐付け解除) | 'admin_delete'
   owner_name TEXT,                        -- 公開時点の owner_name スナップショット
   ip         TEXT,                        -- 接続元 IP (CF-Connecting-IP)
   user_agent TEXT,                        -- User-Agent ヘッダ (最大 512 文字)

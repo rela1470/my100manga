@@ -30,7 +30,7 @@ import {
 } from "./merge";
 import { handleBook, handleSortKeys } from "./book";
 import { readCachedCovers, resolveCovers } from "./covers";
-import { createList, updateList } from "./lists";
+import { createList, deleteList, updateList } from "./lists";
 import {
   adminCoverSummary,
   adminListCoverSuggestions,
@@ -145,6 +145,7 @@ import {
   bumpViewEpoch,
   getListSnapshot,
   ogpWorkTitles,
+  purgeListArtifacts,
   readViewCache,
   refreshListView,
   viewCacheKeys,
@@ -523,6 +524,12 @@ const worker = {
           }
           return res;
         }
+        if (request.method === "DELETE") {
+          const res = await deleteList(request, env, slug);
+          // DB から消せたら閲覧スナップショット・共有画像（R2）・閲覧キャッシュも消す。
+          if (res.ok) await purgeListArtifacts(env, slug, url.origin);
+          return res;
+        }
         return new Response("Method Not Allowed", { status: 405 });
       }
 
@@ -595,7 +602,7 @@ const worker = {
       if (adminListMatch) {
         const slug = adminListMatch[1];
         if (request.method === "GET") return await adminGetList(env, slug);
-        if (request.method === "DELETE") return await adminDeleteList(env, slug, url.origin);
+        if (request.method === "DELETE") return await adminDeleteList(request, env, slug, url.origin);
         return new Response("Method Not Allowed", { status: 405 });
       }
       if (path === "/api/admin/corrections" && request.method === "GET") {

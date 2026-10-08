@@ -3,6 +3,8 @@
 // 処理本体は public/account.js（window.Account.withdraw / logout）。
 (function () {
   const $ = (id) => document.getElementById(id);
+  // publish_audit.action の表示名（public/admin.js の AUDIT_ACTION_LABEL と揃える）。
+  const AUDIT_ACTION_LABEL = { create: "新規公開", update: "更新公開" };
   if (!window.Account) return;
   window.Account.ready.then((me) => {
     $("accountLoading").hidden = true;
@@ -79,7 +81,7 @@
               d.publish_audit.map((a) => [
                 when(a.created_at),
                 a.slug,
-                a.action === "create" ? "新規公開" : "更新公開",
+                AUDIT_ACTION_LABEL[a.action] || a.action,
                 a.owner_name || "（未入力）",
                 a.ip || "（記録なし）",
                 el("span", "ua", a.user_agent || "（記録なし）"),

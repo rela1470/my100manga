@@ -1,6 +1,6 @@
 import { Env } from "./types";
 import { User, clearSessionCookie, currentUser, loginEnabled, sameOrigin } from "./auth";
-import { deleteListStatements } from "./lists";
+import { deleteListStatements, recordPublishAudit } from "./lists";
 import { purgeListArtifacts } from "./viewSnapshot";
 import { badRequest, json, notFound, readJsonObject } from "./util";
 
@@ -292,13 +292,15 @@ export async function deleteAccount(request: Request, env: Env, user: User): Pro
   const listStmts: D1PreparedStatement[] = [];
   let deletedLists = 0;
   const purgeSlugs: string[] = []; // DB から消せたら R2 の閲覧スナップショット・共有画像も消す
-  if (body.delete_lists === true) {
-    const { results } = await env.DB.prepare(`SELECT slug FROM lists WHERE user_id = ?`)
-      .bind(user.id)
-      .all<{ slug: string }>();
-    deletedLists = results.length;
-    purgeSlugs.push(...results.map((r) => r.slug));
-    for (const r of results) listStmts.push(...deleteListStatements(env, r.slug));
+  const deleteLists = body.delete_lists === true;
+  // 監査ログ（publish_audit）に、退会で消えた／匿名に戻ったリストを 1 件ずつ残す。
+  const { results: owned } = await env.DB.prepare(`SELECT slug, owner_name FROM lists WHERE user_id = ?`)
+    .bind(user.id)
+    .all<{ slug: string; owner_name: string | null }>();
+  if (deleteLists) {
+    deletedLists = owned.length;
+    purgeSlugs.push(...owned.map((r) => r.slug));
+    for (const r of owned) listStmts.push(...deleteListStatements(env, r.slug));
   } else {
     listStmts.push(env.DB.prepare(`UPDATE lists SET user_id = NULL WHERE user_id = ?`).bind(user.id));
   }
@@ -309,6 +311,8 @@ export async function deleteAccount(request: Request, env: Env, user: User): Pro
     env.DB.prepare(`DELETE FROM users WHERE id = ?`).bind(user.id),
   ]);
   // batch はトランザクションなので、ここまで来れば purgeSlugs は全部 DB から消えている。
+  const action = deleteLists ? "account_delete" : "account_unlink";
+  await Promise.all(owned.map((r) => recordPublishAudit(request, env, r.slug, action, r.owner_name ?? "")));
   const origin = new URL(request.url).origin;
   await Promise.all(purgeSlugs.map((slug) => purgeListArtifacts(env, slug, origin)));
   return json({ ok: true, deleted_lists: deletedLists }, 200, {

@@ -98,13 +98,21 @@ async function recordItemAddEvents(
   }
 }
 
+/** publish_audit.action。公開（create / update）に加え、リストが消えた・持ち主が変わった経緯も
+ *  残す: 作成者の削除（delete）、退会に伴う削除（account_delete）と紐付け解除（account_unlink）、
+ *  管理者の削除（admin_delete）。管理画面の「直近の公開元」は PUBLISH_ACTIONS だけで見る。 */
+export type PublishAuditAction = "create" | "update" | "delete" | "account_delete" | "account_unlink" | "admin_delete";
+
+/** 「公開」にあたる action（SQL の IN 句用）。 */
+export const PUBLISH_ACTIONS_SQL = `('create', 'update')`;
+
 /** 公開の監査証跡を 1 行追記する。アカウントの無い匿名公開なので「誰が」は接続元 IP /
  *  User-Agent / CF 由来の国で残す。監査自体が公開処理を失敗させないよう握りつぶす。 */
-async function recordPublishAudit(
+export async function recordPublishAudit(
   request: Request,
   env: Env,
   slug: string,
-  action: "create" | "update",
+  action: PublishAuditAction,
   owner_name: string
 ): Promise<void> {
   const ip = clientIp(request);
@@ -275,6 +283,27 @@ export async function getList(env: Env, slug: string): Promise<Response> {
   const data = await getListData(env, slug);
   if (!data) return notFound("リストが見つかりません");
   return json(data);
+}
+
+/** DELETE /api/lists/:slug — 作成者による削除（規約第5条・プライバシーポリシーの「編集機能から
+ *  削除できる」）。edit_token は x-edit-token ヘッダか本文の edit_token。付随データは管理者削除・
+ *  退会時と同じ deleteListStatements で消す。R2・キャッシュの掃除は呼び出し側（src/index.ts）が
+ *  purgeListArtifacts で行う。公開の監査ログ（publish_audit）は濫用対応のため消さず（365 日で消える）、
+ *  削除したこと自体も 1 行足す。 */
+export async function deleteList(request: Request, env: Env, slug: string): Promise<Response> {
+  const list = await loadList(env, slug);
+  if (!list) return notFound("リストが見つかりません");
+  let token = request.headers.get("x-edit-token") ?? "";
+  if (!token) {
+    const body = await readJsonBody(request, 4096);
+    if (body && typeof body === "object" && !Array.isArray(body)) {
+      token = String((body as Record<string, unknown>).edit_token ?? "");
+    }
+  }
+  if (!timingSafeEqualStr(token, list.edit_token)) return json({ error: "編集権限がありません" }, 403);
+  await env.DB.batch(deleteListStatements(env, slug));
+  await recordPublishAudit(request, env, slug, "delete", list.owner_name);
+  return json({ ok: true, slug });
 }
 
 export async function updateList(request: Request, env: Env, slug: string): Promise<Response> {

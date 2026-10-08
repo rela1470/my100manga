@@ -63,6 +63,7 @@
       return false;
     }
     pushServerDraft(payload);
+    if (window.draftPing) window.draftPing(payload.items.length);
     return true;
   }
 

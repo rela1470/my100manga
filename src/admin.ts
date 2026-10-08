@@ -7,6 +7,7 @@ import { deleteListStatements, PUBLISH_ACTIONS_SQL, recordPublishAudit } from ".
 import { devBypassActive } from "./adminAuth";
 import { invalidateListView, purgeListArtifacts } from "./viewSnapshot";
 import { isGroupId, resolveGroup } from "./groups";
+import { DRAFT_DEVICE_WINDOW_MS } from "./draftDevices";
 
 // 管理画面用のエンドポイント群。認証は呼び出し側（src/index.ts）が Cloudflare Access +
 // JWT 検証（src/adminAuth.ts の requireAdmin）で /admin・/api/admin/* をまとめてガードする。
@@ -119,6 +120,8 @@ export async function adminStats(request: Request, env: Env): Promise<Response> 
     volume_reports,
     series_reports,
     cover_suggestions,
+    users,
+    draft_devices,
   ] = await Promise.all([
     count(`SELECT COUNT(*) AS n FROM lists`),
     count(`SELECT COUNT(*) AS n FROM series`),
@@ -129,6 +132,9 @@ export async function adminStats(request: Request, env: Env): Promise<Response> 
     count(`SELECT COUNT(*) AS n FROM volume_report`),
     count(`SELECT COUNT(*) AS n FROM series_report`),
     count(`SELECT COUNT(*) AS n FROM cover_suggestion`),
+    count(`SELECT COUNT(*) AS n FROM users`),
+    // 過去 30 日に「下書きがある」と知らせてきた端末の数（src/draftDevices.ts）。
+    count(`SELECT COUNT(*) AS n FROM draft_devices WHERE last_seen >= ${Date.now() - DRAFT_DEVICE_WINDOW_MS}`),
   ]);
 
   return json(
@@ -147,6 +153,8 @@ export async function adminStats(request: Request, env: Env): Promise<Response> 
       volume_reports,
       series_reports,
       cover_suggestions,
+      users,
+      draft_devices,
     },
     },
     200,

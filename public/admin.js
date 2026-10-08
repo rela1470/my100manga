@@ -52,6 +52,9 @@ const STAT_LABELS = [
   ["covers", "表紙キャッシュ"],
   ["corrections", "シリーズへの手動追加"],
   ["cover_suggestions", "表紙の修正"],
+  ["users", "Googleアカウント"],
+  // 過去 30 日に「本棚の下書きがある」と知らせてきた端末の数（src/draftDevices.ts）。人数ではない。
+  ["draft_devices", "ローカル保存の端末(30日)"],
 ];
 
 // 上部「やること」に出す未処理キュー。[API のキー, 表示名, 遷移先ページ, 結合ページの表示切替]

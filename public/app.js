@@ -695,6 +695,8 @@ function render() {
   const clearBtn = $("clearAll");
   clearBtn.textContent = `編集中の漫画を全削除（${filled}）`;
   clearBtn.style.display = filled > 0 ? "" : "none";
+  // 公開済みリストの削除は、編集トークン付きで既存リストを開いているときだけ（新規作成では出さない）。
+  $("deleteList").style.display = state.editSlug && state.editToken ? "" : "none";
 }
 
 async function clearAll() {
@@ -4595,7 +4597,6 @@ function openPublishModal() {
     }
   }
   $("confirmPublish").textContent = state.editSlug ? "更新する" : "公開する";
-  $("deleteList").hidden = !(state.editSlug && state.editToken);
   $("publishModal").classList.add("open");
   $("ownerInput").focus();
 }
@@ -4733,6 +4734,7 @@ async function doPublish() {
 }
 
 // 公開済みリストの削除（DELETE /api/lists/:slug）。編集トークンを持つ作成者だけができる。
+// 入口は本棚の下の「編集中の漫画を全削除」の横（#deleteList）。
 // 消したら端末の編集リンク（MyLists）と編集中の下書きも捨てて、新規作成の画面に戻す。
 async function doDeleteList() {
   if (publishing || !state.editSlug || !state.editToken) return;
@@ -4753,7 +4755,6 @@ async function doDeleteList() {
   window.MyLists?.remove(slug);
   try { sessionStorage.removeItem(EDIT_TOKEN_KEY); } catch (e) {}
   setPublishing(false);
-  // モーダルを閉じずに遷移する（goToPublished と同じ理由: ui-dialog の履歴戻しが遷移を打ち消す）。
   location.href = "/";
 }
 

@@ -696,7 +696,8 @@ button:disabled { opacity: .45; cursor: not-allowed; transform: none; box-shadow
 }
 .diff-bar button.ghost:hover { background: rgba(107, 114, 128, .12); filter: none; }
 
-.clear-bar { display: flex; flex-direction: column; align-items: center; gap: 12px; margin-top: 24px; }
+/* 控えめな削除系リンク（編集中の全削除・公開中のリストの削除）を横に並べる。狭い幅では折り返す。 */
+.clear-bar { display: flex; flex-wrap: wrap; justify-content: center; align-items: center; gap: 4px 12px; margin-top: 24px; }
 button.danger {
   background: transparent;
   border: var(--bw) solid var(--danger);

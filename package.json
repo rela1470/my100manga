@@ -33,15 +33,19 @@
     "db:bookmark:r18:prod": "wrangler d1 time-travel info DB --env r18"
   },
   "devDependencies": {
-    "@cloudflare/vitest-pool-workers": "^0.22.0",
+    "@cloudflare/vitest-pool-workers": "^0.23.0",
     "esbuild": "^0.28.1",
     "stream-json": "^3.7.0",
     "typescript": "^5.6.0",
     "vitest": "^4.1.11",
-    "wrangler": "^4.143.0"
+    "wrangler": "^4.148.0"
   },
   "dependencies": {
     "@jsquash/jpeg": "^1.6.0",
     "@resvg/resvg-wasm": "^2.6.2"
+  },
+  "overrides": {
+    "undici": "^7.29.1",
+    "sharp": "^0.35.5"
   }
 }

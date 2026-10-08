@@ -642,12 +642,17 @@ button:disabled { opacity: .45; cursor: not-allowed; transform: none; box-shadow
 
 .grid {
   display: grid;
-  /* 100 枠を一画面の流れで見せたいので、列数は幅に合わせて詰める（1240px でおよそ 9 列）。 */
+  /* 100 枠を一画面の流れで見せたいので、列数は幅に合わせて詰める。 */
   grid-template-columns: repeat(auto-fill, minmax(118px, 1fr));
   gap: 12px;
   /* × で 1 冊消すと後ろのカードが前に詰めるので、同じ場所を続けてタップしたとき 2 回目が
      ボタン以外（カードの隙間）に落ちることがある。グリッド全体でダブルタップ拡大を切る。 */
   touch-action: manipulation;
+}
+/* PC 幅では 100 枠が割り切れる 10 列に固定する（auto-fill のままだと 1240px で 9 列になり、
+   最後の段が 1 冊だけ余る）。1100px 未満は 1 枠が狭くなりすぎるので auto-fill に任せる。 */
+@media (min-width: 1100px) {
+  .grid { grid-template-columns: repeat(10, 1fr); }
 }
 @media (max-width: 560px) {
   .grid { grid-template-columns: repeat(auto-fill, minmax(92px, 1fr)); gap: 8px; }

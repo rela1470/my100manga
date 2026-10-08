@@ -2,7 +2,7 @@ import { SELF } from "cloudflare:test";
 import { env } from "cloudflare:workers";
 import { describe, expect, it } from "vitest";
 import { adminDeleteList } from "../src/admin";
-import { createList, items, updateList, view } from "./helpers";
+import { BROWSER_UA, createList, items, updateList, view } from "./helpers";
 
 async function getList(slug: string) {
   const res = await SELF.fetch(`https://example.com/api/lists/${slug}`);
@@ -143,5 +143,43 @@ describe("DELETE /api/lists/:slug（作成者による削除）", () => {
 
   it("存在しないリストは 404", async () => {
     expect((await deleteList("no-such-list", "x")).status).toBe(404);
+  });
+});
+
+describe("リストの ISBN のチェックディジット", () => {
+  // 978400000000x のチェックディジットをわざと 1 ずらした架空の ISBN。
+  function badIsbn(): string {
+    const good = items(1, 900)[0].isbn;
+    return good.slice(0, 12) + ((Number(good[12]) + 1) % 10);
+  }
+
+  it("チェックディジットが合わずマスタにも無い ISBN は公開できない", async () => {
+    const list = items();
+    list[5] = { ...list[5], isbn: badIsbn() };
+    const res = await SELF.fetch("https://example.com/api/lists", {
+      method: "POST",
+      headers: { "content-type": "application/json", "user-agent": BROWSER_UA },
+      body: JSON.stringify({ owner_name: "テスト", items: list }),
+    });
+    expect(res.status).toBe(400);
+    expect(((await res.json()) as { error: string }).error).toContain(badIsbn());
+  });
+
+  it("更新でも同じく弾く", async () => {
+    const { slug, edit_token } = await createList();
+    const list = items();
+    list[0] = { ...list[0], isbn: badIsbn() };
+    expect((await updateList(slug, { edit_token, items: list })).status).toBe(400);
+  });
+
+  it("マスタにある巻なら（MADB の誤りで）チェックディジットが合わなくても通す", async () => {
+    const isbn = badIsbn();
+    await env.DB.prepare(`INSERT OR IGNORE INTO volumes (isbn, series_id, volume_number, vol_sort, title) VALUES (?, 'C1', '1', 1, 'テスト')`)
+      .bind(isbn)
+      .run();
+    const list = items();
+    list[0] = { ...list[0], isbn };
+    const { slug } = await createList({ items: list });
+    expect(slug).toBeTruthy();
   });
 });

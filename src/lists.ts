@@ -9,6 +9,7 @@ import {
   randomSlug,
   randomToken,
   toIsbn13,
+  isValidIsbn,
   BODY_TOO_LARGE,
   readJsonBody,
   timingSafeEqualStr,
@@ -35,16 +36,19 @@ const MAX_BIO = 100;
  *  ISBN13) plus comment/spoiler. Title, author and cover are site-wide data resolved
  *  by ISBN on read (src/listItems.ts), so anything the client sends for them is
  *  ignored and never stored. Every book needs an ISBN — it's the only key we have. */
-function sanitizeItems(raw: unknown): { items: StoredListItem[] } | { error: string } {
+function sanitizeItems(raw: unknown): { items: StoredListItem[]; badCheck: string[] } | { error: string } {
   if (!Array.isArray(raw)) return { error: "作品リストが不正です" };
   // 件数超過は 1 件ずつの検証（ISBN 正規化・URL 除去）を回す前に弾く。
   if (raw.length > REQUIRED_ITEMS) return { error: `作品はちょうど${REQUIRED_ITEMS}件にしてください` };
   const items: StoredListItem[] = [];
+  const badCheck: string[] = []; // チェックディジットの合わない ISBN（正規化後）。invalidIsbnError で見る
   for (let i = 0; i < raw.length; i++) {
     const it = raw[i] as Record<string, unknown>;
     if (!it || typeof it !== "object") return { error: "作品リストが不正です" };
     const isbn = toIsbn13(String(it.isbn ?? ""));
     if (!isbn) return { error: `${i + 1}番目の作品に ISBN がありません` };
+    // toIsbn13 は 13 桁なら桁数しか見ず、ISBN-10 はチェックディジットを捨てて作り直すので、元の値で確かめる。
+    if (!isValidIsbn(String(it.isbn).replace(/[^0-9Xx]/g, "").toUpperCase())) badCheck.push(isbn);
     items.push({
       position: items.length + 1,
       isbn,
@@ -52,7 +56,28 @@ function sanitizeItems(raw: unknown): { items: StoredListItem[] } | { error: str
       spoiler: Boolean(it.spoiler),
     });
   }
-  return { items };
+  return { items, badCheck };
+}
+
+// チェックディジットが合わなくても通す ISBN の置き場（マスタ・補完巻）。MADB 由来の巻にはごく僅かに
+// 合わない ISBN がある（2026-10 時点で volumes 約 35 万件中 2 件）ので、マスタにあれば実在の本として扱う。
+const ISBN_MASTER_TABLES = ["volumes", "adult_volumes", "live_volumes", "series_supplement_isbn"];
+
+/** チェックディジットが合わず、マスタにも無い ISBN があれば拒否文言を返す。架空の ISBN を 100 件
+ *  詰めたリストを量産されないように（ふつうの操作では検索結果から選ぶので起きない）。 */
+async function invalidIsbnError(env: Env, badCheck: string[]): Promise<string | null> {
+  if (!badCheck.length) return null;
+  const uniq = [...new Set(badCheck)];
+  const marks = uniq.map(() => "?").join(",");
+  const known = new Set<string>();
+  for (const t of ISBN_MASTER_TABLES) {
+    const { results } = await env.DB.prepare(`SELECT isbn FROM ${t} WHERE isbn IN (${marks})`)
+      .bind(...uniq)
+      .all<{ isbn: string }>();
+    for (const r of results) known.add(r.isbn);
+  }
+  const bad = uniq.find((isbn) => !known.has(isbn));
+  return bad ? `ISBN ${bad} は正しい ISBN ではありません` : null;
 }
 
 // スキーム無しの URL（example.com/x, bit.ly/abc）。誤検知を避けるため、英数字のラベルが
@@ -163,6 +188,8 @@ export async function createList(request: Request, env: Env, userId: string | nu
   if ("error" in sanitized) return badRequest(sanitized.error);
   const items = sanitized.items;
   if (items.length !== REQUIRED_ITEMS) return badRequest(`作品はちょうど${REQUIRED_ITEMS}件にしてください`);
+  const isbnError = await invalidIsbnError(env, sanitized.badCheck);
+  if (isbnError) return badRequest(isbnError);
   const adultError = await adultItemError(env, items);
   if (adultError) return badRequest(adultError);
 
@@ -322,6 +349,8 @@ export async function updateList(request: Request, env: Env, slug: string): Prom
   if ("error" in sanitized) return badRequest(sanitized.error);
   const items = sanitized.items;
   if (items.length !== REQUIRED_ITEMS) return badRequest(`作品はちょうど${REQUIRED_ITEMS}件にしてください`);
+  const isbnError = await invalidIsbnError(env, sanitized.badCheck);
+  if (isbnError) return badRequest(isbnError);
   const adultError = await adultItemError(env, items);
   if (adultError) return badRequest(adultError);
 

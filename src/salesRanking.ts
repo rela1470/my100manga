@@ -5,6 +5,7 @@ import { resolveUnit } from "./merge";
 import { groupKey, isGroupId, loadGroup, NAME_NORM_PREFIX } from "./groups";
 import { tagsForLabels } from "./labels";
 import { edgeCacheKey, withEdgeCache } from "./edgeCache";
+import { siteVariant } from "./site";
 
 // 売上ランキング。楽天ブックスのコミックを「売れている順」（書籍検索API sort=sales）で毎日
 // 上位 300 件取得して sales_snapshot に貯め（Cron, see index.ts scheduled）、作品単位で
@@ -106,6 +107,12 @@ export function salesWorkTitle(title: string): string {
 export const workKey = (work: string): string => normTitle(work.normalize("NFKC"));
 
 export type SnapshotResult = { day: string; count: number; skipped?: "cron_done" };
+
+/** 日次 Cron で売上ランキングを取るか。SALES_RANKING_CRON="true"（本家の本番だけ）で、R18版では
+ *  設定を誤っても取らない（楽天ブックスの一般書籍のランキングは R18版では使わない）。 */
+export function salesRankingCronEnabled(env: Pick<Env, "SALES_RANKING_CRON" | "SITE_VARIANT">): boolean {
+  return env.SALES_RANKING_CRON === "true" && siteVariant(env) !== "adult";
+}
 
 /** 今日（JST）の上位 300 件を取得して sales_snapshot に保存し、集計を作り直す。同じ日に
  *  再実行すると、その日の分を置き換える。ただし手動（source = "manual"）は、その日の分を

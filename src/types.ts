@@ -103,6 +103,9 @@ export interface Env {
   // サイトの種別（src/site.ts）。"general"（本家・既定）か "adult"（R18版）。公開値なので vars。
   // 未設定・不明な値は本家扱い（成年向けを除外する側に倒す）。
   SITE_VARIANT?: string;
+  // 日次 Cron で売上ランキングを取るか（src/index.ts salesRankingCronEnabled）。"true" のときだけ。
+  // vars は env に継承されないので、本家の本番の vars にだけ書く。
+  SALES_RANKING_CRON?: string;
 }
 
 /** VIEW_QUEUE のメッセージ（閲覧ビーコン 1 件）。visitor は IP + 日付のハッシュ、userId は

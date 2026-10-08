@@ -1,7 +1,7 @@
 import { env } from "cloudflare:workers";
 import { beforeAll, describe, expect, it } from "vitest";
 import { makeIsbns } from "./helpers";
-import { resolveTargets, workKey, workVariants } from "../src/salesRanking";
+import { resolveTargets, salesRankingCronEnabled, workKey, workVariants } from "../src/salesRanking";
 import type { Env } from "../src/types";
 import { normTitle } from "../src/util";
 
@@ -111,5 +111,18 @@ describe("workVariants", () => {
   it("長音しか無い書名は切らない", () => {
     expect(workVariants("ワールドトリガー")).toEqual(["ワールドトリガー"]);
     expect(workVariants("名探偵コナン")).toEqual(["名探偵コナン"]);
+  });
+});
+
+describe("salesRankingCronEnabled（日次 Cron で売上ランキングを取るか）", () => {
+  it("SALES_RANKING_CRON=\"true\" の本家だけ取る", () => {
+    expect(salesRankingCronEnabled({ SALES_RANKING_CRON: "true", SITE_VARIANT: "general" })).toBe(true);
+    expect(salesRankingCronEnabled({ SALES_RANKING_CRON: "true" })).toBe(true);
+    expect(salesRankingCronEnabled({ SITE_VARIANT: "general" })).toBe(false);
+    expect(salesRankingCronEnabled({ SALES_RANKING_CRON: "false", SITE_VARIANT: "general" })).toBe(false);
+  });
+
+  it("R18版では設定を誤っても取らない", () => {
+    expect(salesRankingCronEnabled({ SALES_RANKING_CRON: "true", SITE_VARIANT: "adult" })).toBe(false);
   });
 });

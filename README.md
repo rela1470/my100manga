@@ -348,7 +348,7 @@ wrangler d1 execute DB --remote --file db/add-sales-snapshot.sql          # 本�
 wrangler d1 execute DB --env dev --remote --file db/add-sales-snapshot.sql # 開発
 ```
 
-データは Cron（`wrangler.jsonc` の `triggers`）が毎日貯める。初日分をすぐ入れたいときは管理者で
+データは Cron（`wrangler.jsonc` の `triggers`）が毎日貯める。取るのは `vars` の `SALES_RANKING_CRON` が `"true"` の env（本家の本番）だけ。初日分をすぐ入れたいときは管理者で
 `POST /api/admin/sales-ranking/snapshot` を叩く。
 
 発行部数ランキング (`/api/circulation`) は `circulation` テーブルが前提。表と中身を順に流す:

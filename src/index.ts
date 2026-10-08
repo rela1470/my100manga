@@ -85,7 +85,13 @@ import { currentUser, loginCallback, loginStart, logout, purgeExpiredSessions } 
 import { handleAccountApi } from "./account";
 import { handleRanking } from "./ranking";
 import { consumeViewBatch, handleListView, handlePublicLists, purgeListViewSeen } from "./publicLists";
-import { adminSalesSnapshot, adminSalesStatus, handleSalesRanking, runSalesSnapshot } from "./salesRanking";
+import {
+  adminSalesSnapshot,
+  adminSalesStatus,
+  handleSalesRanking,
+  runSalesSnapshot,
+  salesRankingCronEnabled,
+} from "./salesRanking";
 import {
   adminCirculationLink,
   adminCirculationRecompute,
@@ -913,14 +919,18 @@ const worker = {
     return injectAnalytics(await fetchSiteAsset(request, env, path), env, url.origin, path);
   },
 
-  // Cron（wrangler.jsonc triggers）: 売上ランキングの日次スナップショット。
+  // Cron（wrangler.jsonc triggers）: 売上ランキングの日次スナップショットと、保持期限の掃除。
+  // 掃除はプライバシーポリシーの保存期間を守るためなので全 env で走らせ、売上ランキングだけを
+  // salesRankingCronEnabled で絞る（dev / R18版では取らない）。
   async scheduled(_controller: ScheduledController, env: Env, ctx: ExecutionContext): Promise<void> {
-    ctx.waitUntil(
-      runSalesSnapshot(env, "cron").then(
-        (r) => console.log("sales snapshot", r),
-        (err) => console.error("sales snapshot failed", err)
-      )
-    );
+    if (salesRankingCronEnabled(env)) {
+      ctx.waitUntil(
+        runSalesSnapshot(env, "cron").then(
+          (r) => console.log("sales snapshot", r),
+          (err) => console.error("sales snapshot failed", err)
+        )
+      );
+    }
     // 公開リストのアクセス数の重複判定（list_view_seen）の古い記録を消す。
     ctx.waitUntil(purgeListViewSeen(env).catch((err) => console.error("list view purge failed", err)));
     // 公開の監査ログ（publish_audit, IP・UA を含む）は 365 日で消す。期限切れのログインセッションも掃除する。

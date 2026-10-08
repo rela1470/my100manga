@@ -76,7 +76,12 @@
     "DEV_TOOLS": "false",
     // サイトの種別（src/site.ts）。"general"＝本家（全年齢）、"adult"＝R18版。R18版は別の Worker
     // （別ドメイン・別 D1/R2/キュー）として env を足し、そちらで "adult" にする（docs/r18.md）。
-    "SITE_VARIANT": "general"
+    "SITE_VARIANT": "general",
+    // 日次 Cron で売上ランキング（楽天ブックス）を取るか（src/index.ts scheduled）。vars は env に
+    // 継承されないので、ここ（本家・本番）だけが "true"。dev / R18版は未設定 = 取らない
+    // （dev は毎日楽天を叩くだけで無駄、R18版は一般書籍のランキングを使わない）。dev で要るときは
+    // 管理画面の手動取得（POST /api/admin/sales-ranking/snapshot）で取る。
+    "SALES_RANKING_CRON": "true"
   },
   "d1_databases": [
     {
@@ -149,8 +154,10 @@
       }
     ]
   },
-  // 売上ランキングの日次スナップショット（src/salesRanking.ts）。毎日 05:00 JST（20:00 UTC）。
-  // triggers は env に継承されるので、dev は env.dev 側で空にして止めている。
+  // 日次の Cron（src/index.ts scheduled）。毎日 05:00 JST（20:00 UTC）。売上ランキングのスナップショット
+  // （SALES_RANKING_CRON が "true" の env だけ）と、保持期限の掃除（監査ログの IP・UA、閲覧者ハッシュ、
+  // 期限切れセッション）。掃除はプライバシーポリシーの保存期間を守るためなので全 env で要る。
+  // triggers は env に継承されるので、dev / R18版でも空で上書きしないこと。
   "triggers": { "crons": ["0 20 * * *"] },
   "routes": [
     { "pattern": "example.com", "custom_domain": true }
@@ -174,9 +181,6 @@
         "SITE_VARIANT": "general"
       },
       "version_metadata": { "binding": "CF_VERSION" },
-      // dev では売上ランキングの Cron を止める（毎日楽天を叩くだけで無駄なので）。
-      // 必要なら管理画面の手動取得（POST /api/admin/sales-ranking/snapshot）で取る。
-      "triggers": { "crons": [] },
       "d1_databases": [
         {
           "binding": "DB",
@@ -233,8 +237,8 @@
     // 本家と同じコードを別 Worker として出す（docs/r18.md）。SITE_VARIANT="adult" 以外の
     // 違いは「本家と混ざらないよう別の入れ物を持つ」だけ。非継承キー（name / vars /
     // d1_databases / r2_buckets / analytics_engine_datasets / durable_objects / migrations /
-    // ratelimits / queues / routes）は全部書く。triggers は**継承される**ので、売上ランキング
-    // の Cron を止めるために空で上書きする。
+    // ratelimits / queues / routes）は全部書く。triggers は**継承される**（保持期限の掃除に
+    // 要るので上書きしない）。売上ランキングは SALES_RANKING_CRON を書かないことで止まる。
     // 事前に作るもの: D1・R2 バケット・Queue 2 本（`wrangler queues create`）・R18 ドメイン用の
     // Cloudflare Access アプリ・Google OAuth クライアント・Turnstile のホスト名登録。
     // 閲覧ビーコンの consumer 振り分けは src/index.ts の VIEW_QUEUE_MARK（"-views"）で見ている
@@ -253,8 +257,6 @@
         "SITE_VARIANT": "adult"
       },
       "version_metadata": { "binding": "CF_VERSION" },
-      // 売上ランキング（楽天ブックスの一般書籍）は R18版では使わないので Cron を止める。
-      "triggers": { "crons": [] },
       "d1_databases": [
         {
           "binding": "DB",
@@ -321,7 +323,6 @@
         "SITE_VARIANT": "adult"
       },
       "version_metadata": { "binding": "CF_VERSION" },
-      "triggers": { "crons": [] },
       "d1_databases": [
         {
           "binding": "DB",

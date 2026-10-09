@@ -146,6 +146,7 @@ import {
   shareInventory,
   SHARE_IMAGE_SIZE,
   SHARE_VARIANTS,
+  type AdVariant,
   type ShareVariant,
 } from "./shareImage";
 import {
@@ -617,6 +618,11 @@ const worker = {
       }
       if (path === "/api/admin/users" && request.method === "GET") {
         return await adminListUsers(env, parsePage(url), url.searchParams.get("q") ?? "");
+      }
+      // X広告用の 4 枚画像（16:9, src/shareImage.ts の AD_VARIANTS）。公開側の /share/ には出さない。
+      const adminAdMatch = path.match(/^\/api\/admin\/lists\/([A-Za-z0-9_-]+)\/ad\/(a[1-4])\.jpg$/);
+      if (adminAdMatch && request.method === "GET") {
+        return await handleAdminAdImage(env, ctx, adminAdMatch[1], adminAdMatch[2] as AdVariant, url.host);
       }
       const adminListMatch = path.match(/^\/api\/admin\/lists\/([A-Za-z0-9_-]+)$/);
       if (adminListMatch) {
@@ -1101,6 +1107,16 @@ async function handleShareImage(
       "cache-control": new URL(request.url).searchParams.has("v") ? COVER_CACHE : "public, max-age=300",
     },
   });
+}
+
+// 管理画面の X広告用画像。管理者しか叩けないのでレート制限は掛けない（描画は renderLock で直列）。
+// 出来た画像は公開用と同じく R2 の share/<slug>/ に残る（リスト削除で一緒に消える）。
+async function handleAdminAdImage(env: Env, ctx: ExecutionContext, slug: string, variant: AdVariant, host: string): Promise<Response> {
+  const data = await getListSnapshot(env, ctx, slug);
+  if (!data) return new Response("not found", { status: 404 });
+  const body = await getShareImage(env, ctx, data, variant, host);
+  if (!body) return new Response("render failed", { status: 500 });
+  return new Response(body, { headers: { "content-type": "image/jpeg", "cache-control": "no-store" } });
 }
 
 // 作成/更新の直後に共有画像を描いておく。X 等のクローラは投稿直後に og:image を取りに来る

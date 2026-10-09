@@ -498,7 +498,7 @@ function reportValueCell(value, cls, isCover) {
   return td;
 }
 
-async function openDetail(slug) {
+async function openDetail(slug, autoAd = false) {
   const modal = $("detailModal");
   const grid = $("detailGrid");
   const meta = $("detailMeta");
@@ -510,6 +510,7 @@ async function openDetail(slug) {
   modal.classList.add("open");
 
   renderDetailAudit(slug);
+  renderDetailAd(slug, autoAd);
 
   let list;
   try {
@@ -552,6 +553,63 @@ async function openDetail(slug) {
       ])
     );
   }
+}
+
+// X広告用の 4 枚画像（1200×675 = 16:9, 25 冊ずつ）。X の 4 枚投稿は各タイルを横長に切り抜くので、
+// 公開側の 4 枚版（縦長）を添付すると上下が切れる。広告用はサーバで描く（src/shareImage.ts の
+// AD_VARIANTS）。1 枚ずつ順に読む（サーバの描画は直列なので、同時に投げても速くならない）。
+const AD_PARTS = ["a1", "a2", "a3", "a4"];
+
+function renderDetailAd(slug, auto) {
+  const box = $("detailAd");
+  box.textContent = "";
+  const btn = el("button", { textContent: "X広告用4枚画像を作る（16:9）" });
+  const note = el("span", {
+    className: "muted",
+    textContent: " 1〜25 / 26〜50 / 51〜75 / 76〜100 の4枚。投稿にこの順で添付してください。",
+  });
+  const out = el("div", { className: "ad-grid" });
+  box.append(btn, note, out);
+  btn.addEventListener("click", () => generateAdImages(slug, btn, out));
+  if (auto) generateAdImages(slug, btn, out);
+}
+
+async function generateAdImages(slug, btn, out) {
+  btn.disabled = true;
+  out.textContent = "";
+  const stamp = Date.now(); // 描き直した画像をブラウザのキャッシュから拾わないように
+  const cells = AD_PARTS.map((part, i) => {
+    const status = el("div", { className: "muted", textContent: `${i + 1}枚目: 待機中` });
+    const cell = el("div", { className: "ad-cell" }, [status]);
+    out.append(cell);
+    return { part, i, cell, status };
+  });
+  for (const { part, i, cell, status } of cells) {
+    if (!$("detailModal").classList.contains("open")) break; // 閉じたら残りは描かない
+    status.textContent = `${i + 1}枚目: 生成中…`;
+    try {
+      const res = await fetch(`/api/admin/lists/${encodeURIComponent(slug)}/ad/${part}.jpg?t=${stamp}`);
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const url = URL.createObjectURL(await res.blob());
+      const name = `my100manga-${slug}-ad${i + 1}.jpg`;
+      cell.textContent = "";
+      cell.append(
+        el("a", { href: url, target: "_blank", rel: "noopener" }, [el("img", { src: url, alt: `${i + 1}枚目` })]),
+        el("a", { href: url, download: name, textContent: `${i + 1}枚目をダウンロード` })
+      );
+    } catch (e) {
+      status.textContent = `${i + 1}枚目: 失敗しました（${e.message}）`;
+    }
+  }
+  btn.disabled = false;
+}
+
+// 「https://…/l/<slug>」「/l/<slug>?i=1」や slug そのものから slug を取り出す。
+function slugFromListUrl(text) {
+  const s = text.trim();
+  const m = s.match(/\/l\/([A-Za-z0-9_-]+)/);
+  if (m) return m[1];
+  return /^[A-Za-z0-9_-]+$/.test(s) ? s : null;
 }
 
 const AUDIT_ACTION_LABEL = {
@@ -4980,6 +5038,18 @@ $("purgeBookMetaEmpty").addEventListener("click", (e) => purgeBookMeta("empty", 
 $("purgeBookMetaAll").addEventListener("click", (e) => purgeBookMeta("all", e.currentTarget));
 $("delBookMeta").addEventListener("click", (e) => deleteBookMeta(e.currentTarget));
 $("detailClose").addEventListener("click", closeDetail);
+function openAdFromUrl() {
+  const slug = slugFromListUrl($("adListUrl").value);
+  if (!slug) {
+    uiAlert("公開本棚のURL（…/l/xxxx）か slug を入れてください");
+    return;
+  }
+  openDetail(slug, true);
+}
+$("adListGo").addEventListener("click", openAdFromUrl);
+$("adListUrl").addEventListener("keydown", (e) => {
+  if (e.key === "Enter") openAdFromUrl();
+});
 $("detailModal").addEventListener("click", (e) => {
   if (e.target === $("detailModal")) closeDetail();
 });

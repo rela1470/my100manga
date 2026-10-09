@@ -106,6 +106,9 @@
         <strong>公開リスト一覧</strong>
         <span class="count" id="listCount"></span>
         <div style="flex:1"></div>
+        <!-- 公開本棚の URL（または slug）から X広告用の 4 枚画像を作る。詳細モーダルの「X広告用画像」を開く。 -->
+        <input type="text" id="adListUrl" placeholder="公開本棚のURL または slug" size="34" autocomplete="off">
+        <button id="adListGo">X広告用画像</button>
         <button id="reload">再読み込み</button>
       </div>
       <p class="hint" id="listHint" style="display:none"></p>
@@ -1140,6 +1143,7 @@
       <h2 id="detailTitle">リスト詳細</h2>
       <p class="hint" id="detailMeta"></p>
       <div class="detail-audit" id="detailAudit"></div>
+      <div class="detail-ad" id="detailAd"></div>
       <div class="detail-grid" id="detailGrid"></div>
       <div class="modal-actions">
         <div style="flex:1"></div>

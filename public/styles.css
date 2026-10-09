@@ -1044,6 +1044,25 @@ a.stat-card.stat-link .k::after { content: " ›"; }
 
 /* リスト詳細モーダル */
 .detail-modal { max-width: 880px; width: 92vw; }
+/* 管理画面: X広告用 4 枚画像（public/admin.js renderDetailAd） */
+.detail-ad {
+  margin: 12px 0;
+}
+.detail-ad .ad-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+  margin-top: 8px;
+}
+.detail-ad .ad-grid:empty {
+  display: none;
+}
+.detail-ad .ad-cell img {
+  display: block;
+  width: 100%;
+  aspect-ratio: 16 / 9;
+  border: 1px solid #ccc;
+}
 .detail-grid {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(120px, 1fr));

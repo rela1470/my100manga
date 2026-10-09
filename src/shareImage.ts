@@ -5,6 +5,10 @@
 // portrait 10×10 grid, or "q1"–"q4": a quarter each, 25 covers on a 5×5 grid, for a
 // four-image post).
 //
+// "a1"–"a4" はX広告（4 枚添付の投稿）用。中身は q1–q4 と同じ 25 冊ずつだが、X の 4 枚投稿は
+// 各タイルを横長（約 16:9）に切り抜いて見せるので、縦長の q だと上下が落ちる。最初から
+// 1200×675 に描いて切られないようにする。管理画面からだけ描く（/api/admin/lists/<slug>/ad/）。
+//
 // Built server-side because the main cover host (thumbnail.image.rakuten.co.jp)
 // sends no CORS headers, so a browser canvas would be tainted (public/cover-fit.js).
 // The grid is fixed, so the SVG is laid out by hand (no layout engine), rasterised
@@ -35,14 +39,21 @@ import { escapeHtml } from "./util";
 import { site, SiteVariant, siteVariant } from "./site";
 import { Env, ListItem, MangaList } from "./types";
 
-export type ShareVariant = "og" | "full" | "q1" | "q2" | "q3" | "q4";
+export type ShareVariant = "og" | "full" | "q1" | "q2" | "q3" | "q4" | AdVariant;
+// 公開側で扱う variant。広告用（AD_VARIANTS）は含めない: shareImageHash がこれを回すので、
+// 足すと全リストのハッシュが変わって描き直しになる（広告用の出典は q と同じセルなので不要）。
 export const SHARE_VARIANTS: readonly ShareVariant[] = ["og", "full", "q1", "q2", "q3", "q4"];
+// X広告用の 4 枚（16:9）。管理画面からだけ描く。
+export type AdVariant = "a1" | "a2" | "a3" | "a4";
+export const AD_VARIANTS: readonly AdVariant[] = ["a1", "a2", "a3", "a4"];
 // 4 枚版（X の 1 投稿に添付できる上限）。公開時には描かず、「画像でポスト」で 4 枚版が
 // 選ばれたときだけ描く（src/index.ts queueShareImages）。
 export const QUARTERS: readonly ShareVariant[] = ["q1", "q2", "q3", "q4"];
 
 // Bump to regenerate every stored image after a design change.
 const LAYOUT_VERSION = 8;
+// 広告用（AD_VARIANTS）だけの版数。広告用のデザインを変えたらこちらを上げる。
+const AD_LAYOUT_VERSION = 1;
 const CELLS = 100;
 const COVER_CONCURRENCY = 10;
 const MAX_NAME_CHARS = 16;
@@ -101,38 +112,63 @@ interface Layout {
 }
 
 const QUARTER = 25;
+// 広告用（1200×675）を 2:1 で見せられたときに上下それぞれ切れる高さ。
+const AD_SAFE_Y = 38;
 
 function quarterIndex(variant: ShareVariant): number | null {
-  const m = variant.match(/^q([1-4])$/);
+  const m = variant.match(/^[qa]([1-4])$/);
   return m ? Number(m[1]) - 1 : null;
 }
 
 function layout(variant: ShareVariant): Layout {
+  const ad = variant.startsWith("a");
   const header =
     variant === "og"
       ? { width: 1200, pad: 16, gap: 4, gridTop: 56, headerY: 40, headerSize: 28, creditSize: 13 }
-      : { width: 1200, pad: 24, gap: variant === "full" ? 8 : 12, gridTop: 80, headerY: 54, headerSize: 36, creditSize: 18 };
+      : ad
+        ? // 左右の余白は広め: 7:4 で表示する環境だと左右が各 10px ほど切れる。上下も、2:1 で
+          // 切り抜かれても（上下各 37px 落ちる）ヘッダーとクレジットが残るよう内側に寄せる
+          // （AD_SAFE_Y）。表紙の大きさは横幅で決まるので、寄せても小さくならない。
+          { width: 1200, pad: 32, gap: 6, gridTop: 88, headerY: 72, headerSize: 30, creditSize: 15 }
+        : { width: 1200, pad: 24, gap: variant === "full" ? 8 : 12, gridTop: 80, headerY: 54, headerSize: 36, creditSize: 18 };
   // グリッドの下に出典クレジット 1 行ぶん（og は約 22px）を空ける。
   const creditH = Math.round(header.creditSize * 1.7);
   const areaW = header.width - header.pad * 2;
-  if (variant === "og") {
+  if (variant === "og" || ad) {
     // Fixed canvas: take whichever column count gives the biggest covers (3:4) in the
-    // area under the header, and centre the grid horizontally.
-    const height = 630;
-    const areaH = height - header.gridTop - creditH;
+    // area under the header, and centre the grid horizontally (and, for ads, vertically).
+    const height = ad ? 675 : 630;
+    const q = quarterIndex(variant);
+    const count = q === null ? CELLS : QUARTER;
+    const areaH = height - (ad ? AD_SAFE_Y : 0) - header.gridTop - creditH;
     let cols = 1;
     let cellW = 0;
-    for (let c = 1; c <= CELLS; c++) {
-      const rows = Math.ceil(CELLS / c);
+    for (let c = 1; c <= count; c++) {
+      const rows = Math.ceil(count / c);
       const w = Math.min((areaW - header.gap * (c - 1)) / c, (((areaH - header.gap * (rows - 1)) / rows) * 3) / 4);
       if (w > cellW) {
         cellW = w;
         cols = c;
       }
     }
+    const cellH = (cellW * 4) / 3;
     const gridW = cols * cellW + (cols - 1) * header.gap;
-    const creditY = height - Math.round((creditH - header.creditSize) / 2) - 2;
-    return { ...header, height, creditY, cols, cellW, cellH: (cellW * 4) / 3, gridLeft: (header.width - gridW) / 2, first: 0, count: CELLS };
+    const rows = Math.ceil(count / cols);
+    const gridH = rows * cellH + (rows - 1) * header.gap;
+    const gridTop = ad ? header.gridTop + Math.floor((areaH - gridH) / 2) : header.gridTop;
+    const creditY = height - (ad ? AD_SAFE_Y + 9 : Math.round((creditH - header.creditSize) / 2) + 2);
+    return {
+      ...header,
+      height,
+      creditY,
+      cols,
+      cellW,
+      cellH,
+      gridTop,
+      gridLeft: (header.width - gridW) / 2,
+      first: q === null ? 0 : q * QUARTER,
+      count,
+    };
   }
   // Portrait grid filling the width (10×10, or 5×5 for a quarter); the height follows.
   const q = quarterIndex(variant);
@@ -150,6 +186,8 @@ function layout(variant: ShareVariant): Layout {
 export const SHARE_IMAGE_SIZE = Object.fromEntries(
   SHARE_VARIANTS.map((v) => [v, { width: layout(v).width, height: layout(v).height }])
 ) as Record<ShareVariant, { width: number; height: number }>;
+
+export const AD_IMAGE_SIZE = { width: layout("a1").width, height: layout("a1").height };
 
 /** Identifies what a share image would show; changes whenever it would look different. */
 export async function shareImageHash(list: MangaList): Promise<string> {
@@ -522,7 +560,9 @@ export async function ensureShareImage(
 }
 
 async function shareImageKey(list: MangaList, variant: ShareVariant): Promise<string> {
-  return `share/${list.slug}/${variant}-${await shareImageHash(list)}.jpg`;
+  // 広告用は版数を別に持つ（LAYOUT_VERSION を上げると公開側の画像まで全部描き直しになるので）。
+  const ad = (AD_VARIANTS as readonly string[]).includes(variant) ? `-l${AD_LAYOUT_VERSION}` : "";
+  return `share/${list.slug}/${variant}-${await shareImageHash(list)}${ad}.jpg`;
 }
 
 export interface ShareInventory {

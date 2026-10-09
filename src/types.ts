@@ -1,3 +1,4 @@
+import type { WarmJob } from "./warmAuto";
 import type { RakutenRateLimiter } from "./ratelimiter";
 
 export interface Env {
@@ -100,6 +101,9 @@ export interface Env {
   // consumer（src/index.ts queue）が full/q1–q4 を 1 枚ずつ R2 に描いておく（og は公開時に
   // waitUntil で描く）。未設定（ローカル・キュー未作成）なら og だけ。
   SHARE_QUEUE?: Queue<ShareJob>;
+  // ランキング集計のあとの自動暖機（src/warmAuto.ts）。1 メッセージ = warmNext 1 回で、consumer が
+  // 次の歩を積み直す。本番だけに設定する。未設定（ローカル・dev・R18版）なら自動暖機はしない。
+  WARM_QUEUE?: Queue<WarmJob>;
   // サイトの種別（src/site.ts）。"general"（本家・既定）か "adult"（R18版）。公開値なので vars。
   // 未設定・不明な値は本家扱い（成年向けを除外する側に倒す）。
   SITE_VARIANT?: string;

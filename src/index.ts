@@ -102,6 +102,7 @@ import {
   handleCirculation,
 } from "./circulation";
 import { adminWarm, adminWarmStatus } from "./warm";
+import { runWarmStep, startAutoWarm, type WarmJob } from "./warmAuto";
 import {
   adminDeleteMasterFix,
   adminListMasterFixes,
@@ -946,7 +947,11 @@ const worker = {
     if (salesRankingCronEnabled(env)) {
       ctx.waitUntil(
         runSalesSnapshot(env, "cron").then(
-          (r) => console.log("sales snapshot", r),
+          async (r) => {
+            console.log("sales snapshot", r);
+            // 集計が入れ替わったら、ランキングに載ったシリーズの巻を温める（src/warmAuto.ts）。
+            if (r.count > 0) await startAutoWarm(env, "sales-cron").catch((err) => console.error("auto warm start failed", err));
+          },
           (err) => console.error("sales snapshot failed", err)
         )
       );
@@ -960,9 +965,22 @@ const worker = {
     ctx.waitUntil(purgeDraftDevices(env).catch((err) => console.error("draft device purge failed", err)));
   },
 
-  // キューの consumer。閲覧ビーコン（VIEW_QUEUE）と共有画像（SHARE_QUEUE）の 2 本を受ける。
+  // キューの consumer。閲覧ビーコン（VIEW_QUEUE）・自動暖機（WARM_QUEUE）・共有画像（SHARE_QUEUE）の 3 本を受ける。
   async queue(batch: MessageBatch<unknown>, env: Env, ctx: ExecutionContext): Promise<void> {
     if (batch.queue.includes(VIEW_QUEUE_MARK)) return await consumeViewBatch(batch, env);
+    if (batch.queue.includes(WARM_QUEUE_MARK)) {
+      // 自動暖機の連鎖の 1 歩（src/warmAuto.ts）。失敗したら同じ歩をやり直す。
+      for (const msg of batch.messages) {
+        try {
+          await runWarmStep(env, msg.body as WarmJob);
+          msg.ack();
+        } catch (err) {
+          console.error("auto warm step failed", err);
+          msg.retry();
+        }
+      }
+      return;
+    }
     // 共有画像の事前生成（SHARE_QUEUE, wrangler.jsonc queues）。max_batch_size 1 /
     // max_concurrency 1 で、1 リストの og/full/q1–q4 を 1 枚ずつ描いて R2 に置く（og は
     // 公開時に描き済みなので、R2 にあれば飛ばす）。
@@ -988,6 +1006,17 @@ const worker = {
 // 等）ので、プロジェクト名ではなく用途の部分だけを見る。wrangler.jsonc のキュー名はこれに
 // 合わせて付けること（閲覧ビーコン側に "-views" を含める）。
 const VIEW_QUEUE_MARK = "-views";
+// 自動暖機のキューも同じく名前で見分ける（"-warm" を含める）。
+const WARM_QUEUE_MARK = "-warm";
+
+// ランキングの集計が入れ替わる admin API。成功したら自動暖機を起動し直す（src/warmAuto.ts）。
+// 売上ランキングの日次分は Cron（scheduled）から起動する。
+const AUTO_WARM_TRIGGERS = new Set([
+  "/api/admin/sales-ranking/snapshot",
+  "/api/admin/circulation/recompute",
+  "/api/admin/circulation/suggest",
+  "/api/admin/circulation/link",
+]);
 
 export default {
   ...worker,
@@ -997,6 +1026,12 @@ export default {
     // admin の更新系 API が成功したら表示データの世代を上げる（src/viewSnapshot.ts）。
     if (res.ok && bumpsViewEpoch(request)) {
       ctx.waitUntil(bumpViewEpoch(env).catch((err) => console.error("view epoch bump failed", err)));
+    }
+    if (res.ok && request.method === "POST") {
+      const path = new URL(request.url).pathname;
+      if (AUTO_WARM_TRIGGERS.has(path)) {
+        ctx.waitUntil(startAutoWarm(env, path).catch((err) => console.error("auto warm start failed", err)));
+      }
     }
     return withSecurityHeaders(res, env);
   },

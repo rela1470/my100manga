@@ -307,6 +307,28 @@ describe("キャッシュ暖機", () => {
     expect(warmed.results?.map((x) => x.isbn)).toEqual([...isbnsA].sort());
   });
 
+  it("シリーズに紐付いていない巻も、巻一覧に出るなら温める", async () => {
+    // うるわしの宵の月: MADB では 1・2 巻だけが series_id を持ち、3 巻以降は持たない。
+    // 巻一覧は同じ書名の迷子巻を寄せて出すので、暖機もそれを対象にする。
+    const linked = await seedSeries("C1", "テスト作品A", 2);
+    const loose = makeIsbns(3, (nextIsbn += 1000));
+    await env.DB.batch(
+      loose.map((isbn, i) =>
+        env.DB.prepare(
+          `INSERT INTO volumes (isbn, series_id, volume_number, vol_sort, title, creator, publisher)
+           VALUES (?, NULL, ?, ?, 'テスト作品A', '作者', '出版社')`
+        ).bind(isbn, String(i + 3), i + 3)
+      )
+    );
+    await seedCirculation([{ title: "テスト作品A", copies: 100_000_000 }]);
+    await refreshCirculation(env);
+
+    const r = await warmNext(env, "circulation", "", 8);
+    expect(r.attempted).toBe(5);
+    const warmed = await env.DB.prepare(`SELECT isbn FROM covers ORDER BY isbn`).all<{ isbn: string }>();
+    expect(warmed.results?.map((x) => x.isbn)).toEqual([...linked, ...loose].sort());
+  });
+
   it("温め済みのシリーズは読み飛ばして終わる", async () => {
     const isbns = await seedSeries("C1", "テスト作品A", 3);
     await seedCirculation([{ title: "テスト作品A", copies: 100_000_000 }]);

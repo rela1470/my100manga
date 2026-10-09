@@ -4930,6 +4930,17 @@ async function loadWarm() {
       ])
     );
   }
+  $("warmAuto").textContent = autoWarmText(data.auto);
+}
+
+// ランキング集計のあとに自動で走る暖機（src/warmAuto.ts）の状態を 1 行で。
+function autoWarmText(a) {
+  if (!a) return "自動暖機: まだ走っていません（売上ランキングの日次集計・発行部数の再集計のあとに走ります）";
+  const at = (ms) => new Date(ms).toLocaleString("ja-JP", { month: "numeric", day: "numeric", hour: "2-digit", minute: "2-digit" });
+  const scope = { sales: "売上ランキング", circulation: "発行部数ランキング" }[a.scope] || "";
+  const state =
+    a.state === "running" ? `実行中（${scope}）` : a.state === "done" ? "完了" : "中断（表紙が取れない状態が続いた）";
+  return `自動暖機: ${state} / ${a.cached.toLocaleString("ja-JP")} 件 / ${at(a.started_at)} 開始・${at(a.updated_at)} 更新`;
 }
 
 async function warmLoop() {

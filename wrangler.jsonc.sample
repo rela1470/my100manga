@@ -133,7 +133,8 @@
   "queues": {
     "producers": [
       { "binding": "SHARE_QUEUE", "queue": "my100manga-share" },
-      { "binding": "VIEW_QUEUE", "queue": "my100manga-views" }
+      { "binding": "VIEW_QUEUE", "queue": "my100manga-views" },
+      { "binding": "WARM_QUEUE", "queue": "my100manga-warm" }
     ],
     "consumers": [
       {
@@ -149,6 +150,17 @@
         "queue": "my100manga-views",
         "max_batch_size": 100,
         "max_batch_timeout": 10,
+        "max_concurrency": 1,
+        "max_retries": 3
+      },
+      // ランキング集計のあとの自動暖機（src/warmAuto.ts）。1 メッセージ = 1 歩（warmNext 1 回）で、
+      // consumer が次の歩を積み直す。楽天の枠は全体共有なので並列にしない。キュー名には
+      // src/index.ts の WARM_QUEUE_MARK（"-warm"）を含めること。本番だけ（dev / R18版には書かない
+      // ＝ binding が無いので自動暖機は起動しない）。
+      {
+        "queue": "my100manga-warm",
+        "max_batch_size": 1,
+        "max_batch_timeout": 1,
         "max_concurrency": 1,
         "max_retries": 3
       }

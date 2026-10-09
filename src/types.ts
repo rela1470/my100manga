@@ -113,6 +113,11 @@ export interface Env {
   // 閲覧数の重複判定に使う訪問者 ID（IP + 日付）の HMAC 鍵（src/publicLists.ts visitorKey）。secret。
   // 未設定なら閲覧数を数えない。値を変えるとその日の重複判定がリセットされる（その日だけ多めに数える）。
   VIEW_HASH_SECRET?: string;
+  // 運用アラートの Slack 通知（src/alert.ts）。WEBHOOK_URL は Incoming Webhook の URL で secret
+  // （`wrangler secret put SLACK_WEBHOOK_URL`、dev は --env dev）。未設定の env は通知しない。
+  // ALERT_ENV は見出しに付ける環境名（prod / dev / r18 / r18dev）で vars、ローカルは .dev.vars で "local"。
+  SLACK_WEBHOOK_URL?: string;
+  ALERT_ENV?: string;
 }
 
 /** VIEW_QUEUE のメッセージ（閲覧ビーコン 1 件）。visitor は IP + 日付のハッシュ、userId は

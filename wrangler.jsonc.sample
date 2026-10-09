@@ -77,6 +77,9 @@
     // サイトの種別（src/site.ts）。"general"＝本家（全年齢）、"adult"＝R18版。R18版は別の Worker
     // （別ドメイン・別 D1/R2/キュー）として env を足し、そちらで "adult" にする（docs/r18.md）。
     "SITE_VARIANT": "general",
+    // Slack 通知（src/alert.ts）の見出しに付ける環境名。通知先の Webhook は secret の
+    // SLACK_WEBHOOK_URL（未設定の env は通知しない）。vars は継承されないので env ごとに書く。
+    "ALERT_ENV": "prod",
     // 日次 Cron で売上ランキング（楽天ブックス）を取るか（src/index.ts scheduled）。vars は env に
     // 継承されないので、ここ（本家・本番）だけが "true"。dev / R18版は未設定 = 取らない
     // （dev は毎日楽天を叩くだけで無駄、R18版は一般書籍のランキングを使わない）。dev で要るときは
@@ -190,7 +193,8 @@
         "GTM_CONTAINER_ID": "",
         "TURNSTILE_SITE_KEY": "",
         "DEV_TOOLS": "false",
-        "SITE_VARIANT": "general"
+        "SITE_VARIANT": "general",
+        "ALERT_ENV": "dev"
       },
       "version_metadata": { "binding": "CF_VERSION" },
       "d1_databases": [
@@ -266,7 +270,8 @@
         "GTM_CONTAINER_ID": "",
         "TURNSTILE_SITE_KEY": "",
         "DEV_TOOLS": "false",
-        "SITE_VARIANT": "adult"
+        "SITE_VARIANT": "adult",
+        "ALERT_ENV": "r18"
       },
       "version_metadata": { "binding": "CF_VERSION" },
       "d1_databases": [
@@ -332,7 +337,8 @@
         "GTM_CONTAINER_ID": "",
         "TURNSTILE_SITE_KEY": "",
         "DEV_TOOLS": "false",
-        "SITE_VARIANT": "adult"
+        "SITE_VARIANT": "adult",
+        "ALERT_ENV": "r18dev"
       },
       "version_metadata": { "binding": "CF_VERSION" },
       "d1_databases": [

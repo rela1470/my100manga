@@ -1,3 +1,4 @@
+import { formatError, notify } from "./alert";
 import { handleSearch, handleLiveSearch } from "./search";
 import { handleSuggest, rebuildSuggest } from "./suggest";
 import {
@@ -929,6 +930,14 @@ const worker = {
       }
     } catch (err) {
       console.error("request failed", err);
+      // 同じ例外メッセージは 10 分に 1 回だけ（src/alert.ts の抑止）。パスは slug を含むのでキーに入れない。
+      notify(env, ctx, {
+        level: "error",
+        title: "リクエスト処理で例外",
+        text: formatError(err),
+        fields: { path, method: request.method },
+        throttleKey: `request failed:${err instanceof Error ? err.message : String(err)}`,
+      });
       if (path.startsWith("/api/")) return json({ error: "サーバエラーが発生しました" }, 500);
       // ブラウザで開かれるページには素のテキストではなく簡単なエラー画面を返す。
       if ((request.headers.get("accept") ?? "").includes("text/html")) return errorPageHtml(site(env).name);

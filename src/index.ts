@@ -89,6 +89,7 @@ import { handleRanking } from "./ranking";
 import { consumeViewBatch, handleListView, handlePublicLists, purgeListViewSeen } from "./publicLists";
 import { handleDraftPing, purgeDraftDevices } from "./draftDevices";
 import {
+  adminSalesLink,
   adminSalesSnapshot,
   adminSalesStatus,
   handleSalesRanking,
@@ -104,7 +105,7 @@ import {
 } from "./circulation";
 import { adminWarm, adminWarmStatus } from "./warm";
 import { runWarmStep, startAutoWarm, type WarmJob } from "./warmAuto";
-import { adminLinkHealth, adminLinkHealthRecheck, adminLinkHealthStep, isLinkHealthJob, runLinkHealthStep, startLinkHealth } from "./salesLinkHealth";
+import { adminLinkHealth, adminLinkHealthRecheck, adminLinkHealthStep, isLinkHealthJob, rejudgeWork, runLinkHealthStep, startLinkHealth } from "./salesLinkHealth";
 import {
   adminDeleteMasterFix,
   adminListMasterFixes,
@@ -591,6 +592,15 @@ const worker = {
       if (path === "/api/admin/sales-ranking/link-health" && request.method === "POST") {
         return await adminLinkHealthStep(env, url.searchParams.get("run"));
       }
+      // 作品の寄せ先の手動指定（src/salesRanking.ts sales_link）。集計を作り直したうえで、
+      // リンク先の巻数チェックのその作品の行を新しい寄せ先で判定し直す。
+      if (path === "/api/admin/sales-ranking/link" && request.method === "POST") {
+        const res = await adminSalesLink(env, await readJsonBody(request, MAX_JSON_BODY));
+        if (!res.ok) return res;
+        const r = await res.json<{ work: string; series_id: string | null; manual_link: boolean }>();
+        const problem = await rejudgeWork(env, r.work, r.series_id, r.manual_link);
+        return json({ ...r, problem: problem ?? null }, 200, { "cache-control": "no-store" });
+      }
       // 補正した 1 作品だけの点検し直し（管理画面の補正ダイアログを閉じたとき）。
       if (path === "/api/admin/sales-ranking/link-health/recheck" && request.method === "POST") {
         return await adminLinkHealthRecheck(request, env);
@@ -1061,6 +1071,7 @@ const WARM_QUEUE_MARK = "-warm";
 // 売上ランキングの日次分は Cron（scheduled）から起動する。
 const AUTO_WARM_TRIGGERS = new Set([
   "/api/admin/sales-ranking/snapshot",
+  "/api/admin/sales-ranking/link",
   "/api/admin/circulation/recompute",
   "/api/admin/circulation/suggest",
   "/api/admin/circulation/link",

@@ -4442,7 +4442,16 @@ async function loadSales() {
         rank("d7"),
         rank("d30"),
         rank("year"),
-        el("td", {}, [search]),
+        el("td", {}, [
+          search,
+          el("div", { className: "muted", style: "font-size:12px", textContent: u.manual ? "（寄せないと指定）" : "" }),
+          el("button", {
+            type: "button",
+            textContent: "寄せ先を選ぶ",
+            style: "margin-top:4px",
+            onclick: () => openSalesLink({ work: u.work, series_id: null, manual: u.manual }),
+          }),
+        ]),
       ])
     );
   }
@@ -4501,7 +4510,10 @@ async function loadSalesHealth(data) {
           el("div", { textContent: p.work }),
           el("div", { className: "muted", style: "font-size:12px", textContent: p.rakuten_title }),
         ]),
-        el("td", { className: "wrap" }, [link, el("div", { className: "muted slug", textContent: p.series_id })]),
+        el("td", { className: "wrap" }, [
+          link,
+          el("div", { className: "muted slug", textContent: p.series_id + (p.manual ? "（手動で指定）" : "") }),
+        ]),
         el("td", { textContent: HEALTH_KIND[p.kind] || p.kind }),
         el("td", { className: "num", textContent: p.expected == null ? "-" : `${p.expected}巻` }),
         el("td", { className: "num", textContent: `${p.have}巻` + (p.total !== p.have ? `（全${p.total}）` : "") }),
@@ -4639,6 +4651,125 @@ async function addHealthVolume(isbn, vol, btn) {
   }
 }
 
+/* ---------- 売上ランキング: 作品の寄せ先の手動指定（POST /api/admin/sales-ranking/link） ----------
+   作品名からの自動照合では見分けられない同名作品（無印版と続編など）を正しいシリーズに寄せる。
+   補正ダイアログと、リンクの付かなかった作品の一覧から開く。 */
+let salesLinkWork = null; // { work, series_id, series_title, manual }
+
+function openSalesLink(w) {
+  salesLinkWork = w;
+  $("salesLinkTitle").textContent = `「${w.work}」の寄せ先を選ぶ`;
+  $("salesLinkMeta").textContent =
+    "今の寄せ先: " +
+    (w.series_id ? `${w.series_id}${w.series_title ? `「${w.series_title}」` : ""}` : "なし") +
+    (w.manual ? "（手動で指定）" : "（自動の照合）");
+  $("salesLinkAuto").disabled = !w.manual;
+  $("salesLinkQuery").value = w.work;
+  $("salesLinkHint").textContent = "";
+  $("salesLinkBody").textContent = "";
+  $("salesLinkTable").style.display = "none";
+  $("salesLinkDlg").showModal();
+  runSalesLinkSearch();
+}
+
+async function runSalesLinkSearch() {
+  const q = $("salesLinkQuery").value.trim();
+  const hint = $("salesLinkHint");
+  const body = $("salesLinkBody");
+  body.textContent = "";
+  $("salesLinkTable").style.display = "none";
+  // ID の直接指定（C451915 / U000034 / G978…）は検索せずにその 1 件を出す。
+  const direct = /^(?:[CU]\d+|G\d{13})$/i.test(q) ? q.toUpperCase() : "";
+  if (!direct && q.length < 2) {
+    hint.textContent = "検索語を 2 文字以上で入力してください";
+    return;
+  }
+  hint.textContent = "検索中…";
+  let results;
+  try {
+    if (direct) {
+      const res = await fetch(`/api/series/${encodeURIComponent(direct)}/volumes`);
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
+      results = [{ series_id: direct, title: data.title || direct, creator: data.creator || "", label: "", volume_count: (data.volumes || []).length }];
+    } else {
+      const res = await fetch(`/api/search?q=${encodeURIComponent(q)}`);
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
+      results = (data.results || []).filter((x) => x.series_id);
+    }
+  } catch (e) {
+    hint.textContent = "検索に失敗しました: " + e.message;
+    return;
+  }
+  hint.textContent = results.length ? "" : "見つかりませんでした。語を短くするか、シリーズ ID を直接入れてください。";
+  for (const r of results) {
+    const labelCell = el("td", { className: "wrap muted", textContent: r.label || "" });
+    const tag = labelTagBadge(r.label_tag);
+    if (tag) labelCell.append(tag);
+    const current = salesLinkWork && r.series_id === salesLinkWork.series_id;
+    body.append(
+      el("tr", {}, [
+        el("td", { className: "wrap" }, [
+          el("div", { textContent: r.title }),
+          el("div", { className: "muted slug", textContent: r.series_id + (current ? "（今の寄せ先）" : "") }),
+        ]),
+        el("td", { className: "wrap muted", textContent: r.creators || r.creator || "" }),
+        labelCell,
+        el("td", { className: "num", textContent: String(r.volume_count ?? "") }),
+        el("td", {}, [
+          el("button", { type: "button", textContent: "巻", title: "このシリーズの巻を見る", onclick: () => openCircVols(r.series_id, r.title) }),
+          el("button", {
+            type: "button",
+            textContent: "これにする",
+            style: "margin-left:6px",
+            disabled: current && salesLinkWork.manual,
+            onclick: (e) => setSalesLink(r.series_id, e.currentTarget),
+          }),
+        ]),
+      ])
+    );
+  }
+  $("salesLinkTable").style.display = results.length ? "" : "none";
+}
+
+// seriesId: 寄せ先の ID、"" で寄せない、null で自動に戻す。
+async function setSalesLink(seriesId, btn) {
+  const w = salesLinkWork;
+  if (seriesId === "" && !(await uiConfirm(`「${w.work}」を寄せない（リンク無し）にしますか？`, { okLabel: "寄せない" }))) return;
+  if (seriesId === null && !(await uiConfirm(`「${w.work}」の指定を外して、自動の照合に戻しますか？`, { okLabel: "戻す" }))) return;
+  const orig = btn.textContent;
+  btn.disabled = true;
+  btn.textContent = "反映中…";
+  try {
+    const res = await fetch("/api/admin/sales-ranking/link", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ work: w.work, series_id: seriesId }),
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
+    $("salesLinkDlg").close();
+    // 寄せ先が変わったので、開いていた補正ダイアログ（前の寄せ先のもの）は閉じる。点検し直しは
+    // サーバが済ませている（新しい寄せ先で判定し直した）ので、閉じたときの recheck は止める。
+    if (healthFix && healthFix.p.work === w.work && $("healthFixDlg").open) {
+      healthFix.changed = false;
+      $("healthFixDlg").close();
+    }
+    const where = data.series_id ? `${data.series_id} に寄せました` : "寄せないようにしました";
+    uiToast(
+      `「${w.work}」: ${where}` +
+        (data.series_id ? (data.problem ? `（まだ問題があります: ${HEALTH_KIND[data.problem.kind] || data.problem.kind}）` : "（巻数チェックは正常）") : "")
+    );
+    loadSales();
+    loadSalesHealth();
+  } catch (e) {
+    uiAlert("寄せ先の変更に失敗しました: " + e.message);
+    btn.disabled = false;
+    btn.textContent = orig;
+  }
+}
+
 // 補正ダイアログを閉じたら、補正した作品だけを点検し直して一覧を更新する（直っていれば消える）。
 async function recheckHealthFix() {
   if (!healthFix || !healthFix.changed) return;
@@ -4648,7 +4779,7 @@ async function recheckHealthFix() {
     const res = await fetch("/api/admin/sales-ranking/link-health/recheck", {
       method: "POST",
       headers: { "content-type": "application/json" },
-      body: JSON.stringify({ work: p.work, series_id: p.series_id }),
+      body: JSON.stringify({ work: p.work, series_id: p.series_id, manual: !!p.manual }),
     });
     const data = await res.json().catch(() => ({}));
     if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
@@ -5352,6 +5483,19 @@ $("salesSnapshot").addEventListener("click", (e) => runSales(false, e.currentTar
 $("salesRecompute").addEventListener("click", (e) => runSales(true, e.currentTarget));
 $("salesHealthRun").addEventListener("click", (e) => runSalesHealth(e.currentTarget));
 $("healthFixDlg").addEventListener("close", () => recheckHealthFix());
+$("healthFixRelink").addEventListener("click", () => {
+  const p = healthFix.p;
+  openSalesLink({ work: p.work, series_id: p.series_id, series_title: p.series_title, manual: !!p.manual });
+});
+$("salesLinkSearch").addEventListener("click", () => runSalesLinkSearch());
+$("salesLinkQuery").addEventListener("keydown", (e) => {
+  if (e.key === "Enter" && !e.isComposing) {
+    e.preventDefault();
+    runSalesLinkSearch();
+  }
+});
+$("salesLinkNone").addEventListener("click", (e) => setSalesLink("", e.currentTarget));
+$("salesLinkAuto").addEventListener("click", (e) => setSalesLink(null, e.currentTarget));
 $("healthFixVols").addEventListener("click", () => openCircVols(healthFix.p.series_id, healthFix.p.series_title || healthFix.p.work));
 $("healthFixAdd").addEventListener("click", (e) => addHealthVolume($("healthFixIsbn").value, $("healthFixVol").value, e.currentTarget));
 // dialog の form の中で Enter を押すと既定のボタン（閉じる）で閉じてしまうので、各欄の操作に読み替える。

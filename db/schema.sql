@@ -695,6 +695,15 @@ CREATE TABLE IF NOT EXISTS sales_snapshot (
 );
 CREATE INDEX IF NOT EXISTS idx_sales_snapshot_work ON sales_snapshot (work_norm, day);
 
+-- 売上ランキングの寄せ先の手動指定（管理画面）。作品名からの自動照合（src/salesRanking.ts
+-- resolveTargets）では見分けられない同名作品（「信長を殺した男」の無印版と〜日輪のデマルカシオン〜）
+-- を直す。集計のたびに自動照合の結果より優先する。'' は「寄せない」（リンク無しで出す）。
+CREATE TABLE IF NOT EXISTS sales_link (
+  work_norm  TEXT PRIMARY KEY,   -- sales_snapshot.work_norm（集計の単位）
+  series_id  TEXT NOT NULL,      -- 寄せ先（C-id / U-id / G-id）。'' は「寄せない」
+  created_at INTEGER NOT NULL
+);
+
 -- 発行部数ランキング（src/circulation.ts）。英語版 Wikipedia「List of best-selling manga」
 -- （累計 2000 万部以上の約 200 作品）から、作品名・著者・出版社・累計発行部数・出典の時点
 -- という事実の列だけを取り込んだもの。中身は scripts/wikipedia-circulation.mjs が生成する

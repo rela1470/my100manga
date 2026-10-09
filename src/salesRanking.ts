@@ -1,5 +1,5 @@
 import { Env } from "./types";
-import { baseTitle, escapeLikeClamped, hiraToKata, json, LIKE_MAX_BYTES, normTitle, searchKey, vuFold } from "./util";
+import { badRequest, baseTitle, escapeLikeClamped, hiraToKata, json, notFound, LIKE_MAX_BYTES, normTitle, searchKey, vuFold } from "./util";
 import { rakutenBestsellers, rakutenReady, type RakutenBestseller } from "./rakuten";
 import { resolveUnit } from "./merge";
 import { groupKey, isGroupId, loadGroup, NAME_NORM_PREFIX } from "./groups";
@@ -19,6 +19,8 @@ import { siteVariant } from "./site";
 // 集計の単位は楽天の書名から巻数・版の表記を除いた作品名（salesWorkTitle）。発売前・直近の
 // 巻はまだマスタ（MADB）に無いので ISBN ではほとんど引けず、作品名でシリーズ / まとまり
 // （G-id）に寄せる（resolveTargets）。寄せ先が無い作品もランキングには出す（リンク無し）。
+// 作品名では見分けられない同名作品は、管理者が寄せ先を手で指定できる（sales_link、
+// applyManualLinks）。指定は自動照合の結果より優先する。
 
 const PAGES = 10;
 const HITS = 30;
@@ -46,6 +48,7 @@ export interface SalesEntry {
   rank: number;
   work: string; // 作品名（巻数・版の表記を除いた楽天の書名）
   series_id: string | null; // 巻一覧を開く先（C-id / U-id / G-id）。寄せ先が無ければ null
+  manual_link?: boolean; // 寄せ先（または寄せない）を管理者が指定した（sales_link）
   search_q: string; // 寄せ先が無いときの検索語（/?q=、headWord）。寄せ先があれば ""
   isbn: string; // 代表の巻（窓の中で最後に取得した日の最高順位の巻）
   title: string; // 代表の巻の楽天の書名
@@ -300,6 +303,8 @@ async function computeSalesRanking(env: Env, now = Date.now()): Promise<SalesPay
     }))
   );
 
+  const manual = await applyManualLinks(env, keys, targets);
+
   // 書影のある巻がランキングに無い作品（予約中の新刊だけが並んでいる等）は、寄せ先のシリーズ /
   // まとまりの最新巻のキャッシュ済み表紙で代える。
   const coverIsbns = new Map<string, string>();
@@ -319,6 +324,7 @@ async function computeSalesRanking(env: Env, now = Date.now()): Promise<SalesPay
         rank: i + 1,
         work: rep?.work ?? r.work_norm,
         series_id: targets.get(r.work_norm) ?? null,
+        ...(manual.has(r.work_norm) ? { manual_link: true } : {}),
         // マスタの書名は英数記号が半角（「もやしもん+」）なので全角を寄せる。
         search_q: targets.has(r.work_norm) ? "" : headWord(rep?.work ?? r.work_norm).normalize("NFKC"),
         isbn: rep?.isbn ?? "",
@@ -341,6 +347,72 @@ async function computeSalesRanking(env: Env, now = Date.now()): Promise<SalesPay
     year,
     computed_at: now,
   };
+}
+
+/** 管理者の寄せ先の指定（sales_link）を自動照合の結果（targets）に上書きする。'' は寄せない。
+ *  指定先は結合・まとまりの読み替え（resolveUnit）を通す。指定先が消えていたら自動照合のまま。
+ *  指定が効いた作品の集計キーを返す。 */
+async function applyManualLinks(env: Env, keys: string[], targets: Map<string, string>): Promise<Set<string>> {
+  const manual = new Set<string>();
+  for (let i = 0; i < keys.length; i += CHUNK) {
+    const chunk = keys.slice(i, i + CHUNK);
+    const r = await env.DB.prepare(
+      `SELECT work_norm, series_id FROM sales_link WHERE work_norm IN (${chunk.map(() => "?").join(",")})`
+    )
+      .bind(...chunk)
+      .all<{ work_norm: string; series_id: string }>();
+    for (const row of r.results ?? []) {
+      if (!row.series_id) {
+        targets.delete(row.work_norm);
+        manual.add(row.work_norm);
+        continue;
+      }
+      const unit = await resolveUnit(env, row.series_id);
+      if (!unit) continue;
+      targets.set(row.work_norm, unit);
+      manual.add(row.work_norm);
+    }
+  }
+  return manual;
+}
+
+/** POST /api/admin/sales-ranking/link。作品の寄せ先を指定する。body: { work, series_id }。
+ *  series_id は寄せ先の ID、'' で寄せない、null で指定を外して自動照合に戻す。集計を作り直して、
+ *  その作品の今の寄せ先を返す（巻数チェックの行の差し替えは呼び出し側, src/index.ts）。 */
+export async function adminSalesLink(env: Env, body: unknown): Promise<Response> {
+  const b = (body ?? {}) as { work?: unknown; series_id?: unknown };
+  const work = typeof b.work === "string" ? b.work.trim() : "";
+  if (!work) return badRequest("work を指定してください");
+  const key = workKey(work);
+  const exists = await env.DB.prepare(`SELECT 1 AS x FROM sales_snapshot WHERE work_norm = ? LIMIT 1`).bind(key).first();
+  if (!exists) return notFound("その作品はランキングにありません");
+  if (b.series_id === null) {
+    await env.DB.prepare(`DELETE FROM sales_link WHERE work_norm = ?`).bind(key).run();
+  } else {
+    const id = typeof b.series_id === "string" ? b.series_id.trim() : null;
+    if (id === null) return badRequest("series_id は文字列か null で指定してください");
+    if (id && !(await unitExists(env, id))) return badRequest("そのシリーズが見つかりません");
+    await env.DB.prepare(
+      `INSERT INTO sales_link (work_norm, series_id, created_at) VALUES (?, ?, ?)
+       ON CONFLICT(work_norm) DO UPDATE SET series_id = excluded.series_id, created_at = excluded.created_at`
+    )
+      .bind(key, id, Date.now())
+      .run();
+  }
+  const payload = await computeSalesRanking(env);
+  await storePayload(env, payload);
+  const entry = WINDOWS.flatMap((w) => payload.windows[w]).find((e) => workKey(e.work) === key);
+  return json(
+    { ok: true, work: entry?.work ?? work, series_id: entry?.series_id ?? null, manual_link: Boolean(entry?.manual_link) },
+    200,
+    { "cache-control": "no-store" }
+  );
+}
+
+/** 指定先が実在するか。C-id / U-id は series、まとまり（G-id）は resolveUnit で確かめる。 */
+async function unitExists(env: Env, id: string): Promise<boolean> {
+  if (isGroupId(id)) return Boolean(await resolveUnit(env, id));
+  return Boolean(await env.DB.prepare(`SELECT 1 AS x FROM series WHERE id = ?`).bind(id).first());
 }
 
 /** 寄せ先の最新巻の表紙。キャッシュに表紙が無ければ url は "" で、最新巻の ISBN だけ返す
@@ -748,12 +820,26 @@ export async function adminSalesStatus(env: Env): Promise<Response> {
   // 作品ごとに、載っている窓の順位をまとめる（日次の順位が高い順 → 30日の順位順）。
   const unlinked = new Map<
     string,
-    { work: string; search_q: string; title: string; author: string; ranks: Partial<Record<SalesWindow, number>> }
+    {
+      work: string;
+      search_q: string;
+      title: string;
+      author: string;
+      manual: boolean; // 管理者が「寄せない」と指定した
+      ranks: Partial<Record<SalesWindow, number>>;
+    }
   >();
   for (const w of WINDOWS) {
     for (const e of payload?.windows[w] ?? []) {
       if (e.series_id) continue;
-      const u = unlinked.get(e.work) ?? { work: e.work, search_q: e.search_q, title: e.title, author: e.author, ranks: {} };
+      const u = unlinked.get(e.work) ?? {
+        work: e.work,
+        search_q: e.search_q,
+        title: e.title,
+        author: e.author,
+        manual: Boolean(e.manual_link),
+        ranks: {},
+      };
       u.ranks[w] = e.rank;
       unlinked.set(e.work, u);
     }

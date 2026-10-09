@@ -47,6 +47,7 @@ interface Target {
   series_id: string;
   rank: number; // 窓をまたいだ最高順位
   window: SalesWindow; // その順位の窓
+  manual?: boolean; // 寄せ先を管理者が指定した（src/salesRanking.ts sales_link）
 }
 
 export type ProblemKind =
@@ -71,6 +72,7 @@ export interface LinkProblem {
   series_title: string;
   rank: number;
   window: SalesWindow;
+  manual?: boolean; // 寄せ先を管理者が指定した
   expected: number | null; // 楽天で出ている巻数（最大）。巻数の無い作品は null
   rakuten_title: string; // expected の巻の楽天の書名
   have: number; // 巻一覧にある、1〜expected の巻の数（巻番号の無い一覧は巻の総数）
@@ -127,7 +129,9 @@ export async function startLinkHealth(
     for (const e of payload?.windows[w] ?? []) {
       if (!e.series_id) continue;
       const cur = best.get(e.work);
-      if (!cur || e.rank < cur.rank) best.set(e.work, { work: e.work, series_id: e.series_id, rank: e.rank, window: w });
+      if (!cur || e.rank < cur.rank) {
+        best.set(e.work, { work: e.work, series_id: e.series_id, rank: e.rank, window: w, ...(e.manual_link ? { manual: true } : {}) });
+      }
     }
   }
   const prev = await readLinkHealth(env);
@@ -235,6 +239,7 @@ export function judge(
     series_title: d?.title ?? "",
     rank: t.rank,
     window: t.window,
+    ...(t.manual ? { manual: true } : {}),
     expected: rakuten.vol,
     rakuten_title: rakuten.title,
     max_vol: d?.numbers.length ? d.numbers[d.numbers.length - 1] : null,
@@ -303,27 +308,57 @@ export async function adminLinkHealthStep(env: Env, run: string | null): Promise
   return json(s ? publicState(s) : null, 200, { "cache-control": "no-store" });
 }
 
-/** POST /api/admin/sales-ranking/link-health/recheck。管理画面で補正した 1 作品だけを点検し直し、
- *  最後の点検の結果のその行を差し替える（直っていれば消す）。body: { work, series_id }。
- *  点検中（running）は、結果の画面に出している前回の点検（prev_problems）の行を差し替える。
- *  前回の点検に無かった問題が出ても Slack には送らない（補正した本人が画面で見ている）。 */
-export async function adminLinkHealthRecheck(request: Request, env: Env, now = Date.now()): Promise<Response> {
-  const body = (await readJsonObject(request)) as { work?: unknown; series_id?: unknown };
+/** 1 作品だけ判定し直し、最後の点検の結果のその行を差し替える（直っていれば・寄せ先が無くなれば
+ *  消す）。補正ダイアログを閉じたとき（巻の追加・結合）と、寄せ先を指定し直したときに使う。
+ *  seriesId はその作品の今の寄せ先（null は寄せ先なし）。点検中（running）は、結果の画面に出している
+ *  前回の点検（prev_problems）の行を差し替える。結果に無い作品（前は正常だった）は、問題が出たら
+ *  足す（順位は今の集計から）。前回に無かった問題でも Slack には送らない（直した本人が画面で見ている）。
+ *  返り値は判定（正常なら null）。点検の結果がまだ無ければ undefined。 */
+export async function rejudgeWork(
+  env: Env,
+  work: string,
+  seriesId: string | null,
+  manual = false,
+  now = Date.now()
+): Promise<LinkProblem | null | undefined> {
+  const s = await readLinkHealth(env);
+  if (!s) return undefined;
+  const field = s.state === "done" ? "problems" : "prev_problems";
+  const list = [...s[field]];
+  const i = list.findIndex((p) => p.work === work);
+  let place: { rank: number; window: SalesWindow } | null = i >= 0 ? list[i] : null;
+  if (!place && seriesId) place = await bestRank(env, work);
+  let problem: LinkProblem | null = null;
+  if (seriesId && place) {
+    const target: Target = { work, series_id: seriesId, rank: place.rank, window: place.window, ...(manual ? { manual } : {}) };
+    problem = judge(target, await displayedVolumes(env, seriesId), await rakutenVolume(env, work));
+  }
+  if (i >= 0) list.splice(i, 1);
+  if (problem) list.push(problem);
+  await writeState(env, { ...s, [field]: sortProblems(list), updated_at: now });
+  return problem;
+}
+
+/** 今の集計での作品の最高順位（窓をまたいで。startLinkHealth と同じ選び方）。 */
+async function bestRank(env: Env, work: string): Promise<{ rank: number; window: SalesWindow } | null> {
+  const payload = await readPayload(env);
+  let best: { rank: number; window: SalesWindow } | null = null;
+  for (const w of WINDOWS) {
+    const e = payload?.windows[w]?.find((x) => x.work === work);
+    if (e && (!best || e.rank < best.rank)) best = { rank: e.rank, window: w };
+  }
+  return best;
+}
+
+/** POST /api/admin/sales-ranking/link-health/recheck。body: { work, series_id }（series_id は今の
+ *  寄せ先）。補正した 1 作品だけを点検し直す（rejudgeWork）。 */
+export async function adminLinkHealthRecheck(request: Request, env: Env): Promise<Response> {
+  const body = (await readJsonObject(request)) as { work?: unknown; series_id?: unknown; manual?: unknown };
   const work = typeof body.work === "string" ? body.work : "";
   const seriesId = typeof body.series_id === "string" ? body.series_id : "";
   if (!work || !seriesId) return badRequest("work / series_id を指定してください");
-  const s = await readLinkHealth(env);
-  if (!s) return notFound("点検の結果がありません");
-  const field = s.state === "done" ? "problems" : "prev_problems";
-  const i = s[field].findIndex((p) => p.work === work && p.series_id === seriesId);
-  if (i < 0) return notFound("この作品は点検の結果にありません");
-  const old = s[field][i];
-  const target: Target = { work, series_id: seriesId, rank: old.rank, window: old.window };
-  const problem = judge(target, await displayedVolumes(env, seriesId), await rakutenVolume(env, work));
-  const list = [...s[field]];
-  if (problem) list[i] = problem;
-  else list.splice(i, 1);
-  await writeState(env, { ...s, [field]: sortProblems(list), updated_at: now });
+  const problem = await rejudgeWork(env, work, seriesId, body.manual === true);
+  if (problem === undefined) return notFound("点検の結果がありません");
   return json({ problem }, 200, { "cache-control": "no-store" });
 }
 

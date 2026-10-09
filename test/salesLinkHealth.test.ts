@@ -1,9 +1,10 @@
 import { env } from "cloudflare:workers";
 import { beforeAll, describe, expect, it } from "vitest";
-import { adminSalesSnapshot, workKey } from "../src/salesRanking";
+import { adminSalesLink, adminSalesSnapshot, readPayload, workKey } from "../src/salesRanking";
 import {
   adminLinkHealthRecheck,
   readLinkHealth,
+  rejudgeWork,
   runLinkHealthStep,
   startLinkHealth,
   type LinkHealthJob,
@@ -138,7 +139,9 @@ describe("salesLinkHealth", () => {
     expect(await res.json()).toEqual({ problem: null });
     const s = (await readLinkHealth(e))!;
     expect(s.problems.map((p) => p.series_id)).toEqual(["CLH006", "CLH002"]);
-    expect((await recheck("テスト虫食い", "CLH003")).status).toBe(404);
+    // 結果に無い（正常な）作品を点検し直しても、問題が無ければ何も足さない
+    expect(await (await recheck("テスト虫食い", "CLH003")).json()).toEqual({ problem: null });
+    expect((await readLinkHealth(e))!.problems).toHaveLength(2);
   });
 
   it("起動し直されたら古い run の歩は何もしない", async () => {
@@ -151,5 +154,34 @@ describe("salesLinkHealth", () => {
     expect(s.run).toBe(b.run);
     expect(s.state).toBe("running");
     expect(s.cursor).toBe(0);
+  });
+
+  it("寄せ先の手動指定は自動照合より優先し、'' で寄せない、null で自動に戻す", async () => {
+    const e = testEnv();
+    sent = [];
+    await startLinkHealth(e, "test", true);
+    while (sent.length) await runLinkHealthStep(e, sent.shift()!.run, true);
+    const entry = async () => (await readPayload(e))!.windows.day.find((x) => x.work === "テスト短足")!;
+    const link = async (series_id: string | null) =>
+      (await (await adminSalesLink(e, { work: "テスト短足", series_id })).json()) as {
+        series_id: string | null;
+        manual_link: boolean;
+      };
+
+    // 巻の足りない CLH002 に寄っている → 全巻ある CLH001 に寄せ直す
+    expect(await entry()).toMatchObject({ series_id: "CLH002" });
+    expect(await link("CLH001")).toMatchObject({ series_id: "CLH001", manual_link: true });
+    expect(await entry()).toMatchObject({ series_id: "CLH001", manual_link: true });
+    // 巻数チェックの行も新しい寄せ先で判定し直す（CLH001 は 32 巻あるので消える）
+    expect(await rejudgeWork(e, "テスト短足", "CLH001", true)).toBeNull();
+    expect((await readLinkHealth(e))!.problems.some((p) => p.work === "テスト短足")).toBe(false);
+
+    expect(await link("")).toMatchObject({ series_id: null, manual_link: true });
+    expect((await entry()).series_id).toBeNull();
+    expect(await link(null)).toMatchObject({ series_id: "CLH002", manual_link: false });
+    expect((await entry()).manual_link).toBeUndefined();
+
+    expect((await adminSalesLink(e, { work: "テスト短足", series_id: "C999999" })).status).toBe(400);
+    expect((await adminSalesLink(e, { work: "ランキングに無い作品", series_id: "CLH001" })).status).toBe(404);
   });
 });

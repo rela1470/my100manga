@@ -923,7 +923,7 @@
       </div>
       <p class="hint">
         ランキングには出ていますが、作品名に合うシリーズ・まとまりが見つからなかったものです（公開ページでは作品名から検索結果へリンク）。「検索」でトップの検索画面を作品名で開けます。
-        マスタにまだ無い新作か、楽天とマスタで書名の表記が違うものです。
+        マスタにまだ無い新作か、楽天とマスタで書名の表記が違うものです。マスタに居れば「寄せ先を選ぶ」で手で指定できます（自動の照合より優先）。
       </p>
       <p class="hint" id="salesHint" style="display:none"></p>
       <table class="admin-table" id="salesUnlinkedTable" style="display:none">
@@ -980,6 +980,7 @@
           <p class="hint" id="healthFixMeta"></p>
           <div class="dlg-row">
             <button type="button" id="healthFixVols">巻一覧を見る</button>
+            <button type="button" id="healthFixRelink">リンク先を変える…</button>
           </div>
 
           <h4>足りない巻を追加</h4>
@@ -1221,6 +1222,35 @@
       <h3 id="circVolsTitle">巻一覧</h3>
       <p class="hint" id="circVolsMeta"></p>
       <div class="detail-grid" id="circVolsGrid"></div>
+      <div class="cover-actions">
+        <button value="cancel">閉じる</button>
+      </div>
+    </form>
+  </dialog>
+
+  <!-- 売上ランキングの作品の寄せ先を手で指定する（src/salesRanking.ts sales_link）。補正ダイアログと
+       リンクの付かなかった作品の一覧の両方から開くので、ページの section の外に置く。 -->
+  <dialog id="salesLinkDlg" class="admin-dialog">
+    <form method="dialog">
+      <h3 id="salesLinkTitle">寄せ先を選ぶ</h3>
+      <p class="hint" id="salesLinkMeta"></p>
+      <p class="hint">
+        作品名が同じ別作品（無印版と続編・外伝など）に寄っているときに、正しいシリーズを指定します。指定は毎日の集計で自動の照合より優先し、
+        「自動に戻す」まで残ります。「寄せない」はリンク無し（公開ページでは作品名の検索）で出します。
+      </p>
+      <div class="dlg-row">
+        <input type="search" id="salesLinkQuery" placeholder="シリーズ名で検索（ID を直接入れても可）" style="flex:1">
+        <button type="button" id="salesLinkSearch">検索</button>
+      </div>
+      <p class="hint" id="salesLinkHint"></p>
+      <table class="admin-table" id="salesLinkTable" style="display:none">
+        <thead><tr><th>シリーズ名</th><th>著者</th><th>レーベル</th><th class="num">巻数</th><th></th></tr></thead>
+        <tbody id="salesLinkBody"></tbody>
+      </table>
+      <div class="dlg-row">
+        <button type="button" id="salesLinkNone">寄せない</button>
+        <button type="button" id="salesLinkAuto">自動に戻す</button>
+      </div>
       <div class="cover-actions">
         <button value="cancel">閉じる</button>
       </div>

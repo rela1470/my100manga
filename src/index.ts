@@ -104,6 +104,7 @@ import {
 } from "./circulation";
 import { adminWarm, adminWarmStatus } from "./warm";
 import { runWarmStep, startAutoWarm, type WarmJob } from "./warmAuto";
+import { adminLinkHealth, adminLinkHealthStep, isLinkHealthJob, runLinkHealthStep, startLinkHealth } from "./salesLinkHealth";
 import {
   adminDeleteMasterFix,
   adminListMasterFixes,
@@ -583,6 +584,13 @@ const worker = {
       if (path === "/api/admin/sales-ranking/snapshot" && request.method === "POST") {
         return await adminSalesSnapshot(env, url.searchParams.get("recompute") === "1");
       }
+      // リンク先の巻一覧の点検（src/salesLinkHealth.ts）。POST は ?run= が無ければ開始、あれば続きの 1 歩。
+      if (path === "/api/admin/sales-ranking/link-health" && request.method === "GET") {
+        return await adminLinkHealth(env);
+      }
+      if (path === "/api/admin/sales-ranking/link-health" && request.method === "POST") {
+        return await adminLinkHealthStep(env, url.searchParams.get("run"));
+      }
       // 発行部数ランキングの取り込み状況と、作品 → シリーズの寄せ直し。
       if (path === "/api/admin/circulation" && request.method === "GET") {
         return await adminCirculationStatus(env);
@@ -960,6 +968,8 @@ const worker = {
             console.log("sales snapshot", r);
             // 集計が入れ替わったら、ランキングに載ったシリーズの巻を温める（src/warmAuto.ts）。
             if (r.count > 0) await startAutoWarm(env, "sales-cron").catch((err) => console.error("auto warm start failed", err));
+            // リンク先の巻一覧が楽天の巻数に足りているかを点検し、新しい問題を Slack に送る（src/salesLinkHealth.ts）。
+            if (r.count > 0) await startLinkHealth(env, "sales-cron", true).catch((err) => console.error("link health start failed", err));
           },
           (err) => console.error("sales snapshot failed", err)
         )
@@ -978,10 +988,12 @@ const worker = {
   async queue(batch: MessageBatch<unknown>, env: Env, ctx: ExecutionContext): Promise<void> {
     if (batch.queue.includes(VIEW_QUEUE_MARK)) return await consumeViewBatch(batch, env);
     if (batch.queue.includes(WARM_QUEUE_MARK)) {
-      // 自動暖機の連鎖の 1 歩（src/warmAuto.ts）。失敗したら同じ歩をやり直す。
+      // 自動暖機の連鎖の 1 歩（src/warmAuto.ts）と、売上ランキングのリンク先の点検の 1 歩
+      // （src/salesLinkHealth.ts）。失敗したら同じ歩をやり直す。
       for (const msg of batch.messages) {
         try {
-          await runWarmStep(env, msg.body as WarmJob);
+          if (isLinkHealthJob(msg.body)) await runLinkHealthStep(env, msg.body.run, true);
+          else await runWarmStep(env, msg.body as WarmJob);
           msg.ack();
         } catch (err) {
           console.error("auto warm step failed", err);

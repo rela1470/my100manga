@@ -1,4 +1,5 @@
 import type { WarmJob } from "./warmAuto";
+import type { LinkHealthJob } from "./salesLinkHealth";
 import type { RakutenRateLimiter } from "./ratelimiter";
 
 export interface Env {
@@ -103,7 +104,8 @@ export interface Env {
   SHARE_QUEUE?: Queue<ShareJob>;
   // ランキング集計のあとの自動暖機（src/warmAuto.ts）。1 メッセージ = warmNext 1 回で、consumer が
   // 次の歩を積み直す。本番だけに設定する。未設定（ローカル・dev・R18版）なら自動暖機はしない。
-  WARM_QUEUE?: Queue<WarmJob>;
+  // 売上ランキングのリンク先の点検（src/salesLinkHealth.ts）も同じキューで 1 歩ずつ回す。
+  WARM_QUEUE?: Queue<WarmJob | LinkHealthJob>;
   // サイトの種別（src/site.ts）。"general"（本家・既定）か "adult"（R18版）。公開値なので vars。
   // 未設定・不明な値は本家扱い（成年向けを除外する側に倒す）。
   SITE_VARIANT?: string;

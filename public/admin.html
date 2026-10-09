@@ -940,6 +940,34 @@
         </thead>
         <tbody id="salesUnlinkedBody"></tbody>
       </table>
+
+      <div class="toolbar" style="margin-top:20px">
+        <strong>リンク先の巻数チェック</strong>
+        <span class="count" id="salesHealthCount"></span>
+        <div style="flex:1"></div>
+        <button id="salesHealthRun">今すぐ点検</button>
+      </div>
+      <p class="hint">
+        リンクが付いた作品について、楽天で出ている巻数（ランキングに載った書名の巻数の最大）と、リンク先の巻一覧にある巻を突き合わせます。
+        例:「転生したらスライムだった件（33）」なら、リンク先に 1〜33 巻のうち 32 巻以上あれば正常です（最新巻はマスタにまだ無いのが普通なので 1 巻は許容）。
+        毎日の Cron の取得のあとに自動で点検し、前回に無かった問題だけを Slack に通知します。
+        「巻が足りない」は同名の別版（文庫版・総集編など）に寄っているか、最新の巻がマスタに無いもの、「途中の巻が抜けている」は抜け巻の補完が要るものです。
+      </p>
+      <p class="hint" id="salesHealthHint" style="display:none"></p>
+      <table class="admin-table" id="salesHealthTable" style="display:none">
+        <thead>
+          <tr>
+            <th class="num">順位</th>
+            <th>作品名（楽天の書名）</th>
+            <th>リンク先</th>
+            <th>状態</th>
+            <th class="num">楽天</th>
+            <th class="num">巻一覧</th>
+            <th>抜けている巻</th>
+          </tr>
+        </thead>
+        <tbody id="salesHealthBody"></tbody>
+      </table>
     </section>
 
     <!-- 発行部数ランキング（Wikipedia 由来の累計部数, src/circulation.ts） -->

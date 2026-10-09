@@ -80,6 +80,16 @@ const VOLUME_RE = /(?:[\s　]+(?:第)?[0-9０-９]{1,4}(?:巻)?|[（(][\s　]*(?
  *  （特装版・愛蔵版…）、【特典】、〜サブタイトル〜、（※注記）を除く。巻数は 1 つだけ除く
  *  （「金色のガッシュ!! 2（7）」の「2」は作品名の一部）。 */
 export function salesWorkTitle(title: string): string {
+  return splitSalesTitle(title).work;
+}
+
+/** 楽天の書名 → 巻数（salesWorkTitle が除いた巻数）。巻数の無い書名（単巻・画集など）は null。
+ *  リンク先の巻一覧の点検（src/salesLinkHealth.ts）が「何巻まで出ているはずか」に使う。 */
+export function salesVolumeNumber(title: string): number | null {
+  return splitSalesTitle(title).vol;
+}
+
+function splitSalesTitle(title: string): { work: string; vol: number | null } {
   let t = title
     .replace(/【[^】]*】/g, " ")
     .replace(/[〜～~][^〜～~]*[〜～~]/g, " ")
@@ -97,10 +107,11 @@ export function salesWorkTitle(title: string): string {
   // 長音「ー」は書名の一部（ワールドトリガー）なので末尾の記号に含めない。
   // 空白・括弧の無い巻数（「ブレイド＆バスタード9」）は、和文の直後に付いた数字だけ除く
   // （「らんま1/2」「ARMS」のような英数字の続きは書名の一部とみなす）。
-  const vol = t.replace(VOLUME_RE, "");
-  t = vol !== t ? vol : t.replace(/(?<=[ぁ-んァ-ヶー一-龠々])[0-9０-９]{1,3}$/, "");
+  const m = t.match(VOLUME_RE) ?? t.match(/(?<=[ぁ-んァ-ヶー一-龠々])[0-9０-９]{1,3}$/);
+  if (m) t = t.slice(0, m.index);
+  const digits = m?.[0].normalize("NFKC").match(/\d+/)?.[0];
   t = t.replace(/[\s　\-－‐:：]+$/, "").replace(/([\s　])[\s　]+/g, "$1").trim();
-  return t || title.trim();
+  return { work: t || title.trim(), vol: digits ? Number(digits) : null };
 }
 
 /** 集計キー。normTitle に加えて全角英数・記号を半角に寄せる（楽天とマスタで表記が揺れる）。 */
@@ -711,7 +722,7 @@ export async function adminSalesSnapshot(env: Env, recompute: boolean): Promise<
   return json({ ok: r.count > 0, ...r }, 200, { "cache-control": "no-store" });
 }
 
-async function readPayload(env: Env): Promise<SalesPayload | null> {
+export async function readPayload(env: Env): Promise<SalesPayload | null> {
   const row = await env.DB.prepare(`SELECT value FROM meta WHERE key = ?`)
     .bind(META_JSON_KEY)
     .first<{ value: string }>();

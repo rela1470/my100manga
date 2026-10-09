@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { salesWorkTitle } from "../src/salesRanking";
+import { salesVolumeNumber, salesWorkTitle } from "../src/salesRanking";
 
 describe("salesWorkTitle", () => {
   it("空白・括弧の巻数を 1 つ除く", () => {
@@ -17,5 +17,19 @@ describe("salesWorkTitle", () => {
   });
   it("先頭の「〜付き」の特典表記を除く", () => {
     expect(salesWorkTitle("ミニクリアファイル付き　転生したらスライムだった件（33）　特装版")).toBe("転生したらスライムだった件");
+  });
+});
+
+describe("salesVolumeNumber", () => {
+  it("salesWorkTitle が除いた巻数を返す", () => {
+    expect(salesVolumeNumber("ミニクリアファイル付き　転生したらスライムだった件（33）　特装版")).toBe(33);
+    expect(salesVolumeNumber("名探偵コナン 108")).toBe(108);
+    expect(salesVolumeNumber("金色のガッシュ!! 2（7）")).toBe(7);
+    expect(salesVolumeNumber("ブレイド＆バスタード９")).toBe(9);
+    expect(salesVolumeNumber("ONE PIECE 第111巻")).toBe(111);
+  });
+  it("巻数の無い書名は null", () => {
+    expect(salesVolumeNumber("らんま1/2")).toBeNull();
+    expect(salesVolumeNumber("ルックバック")).toBeNull();
   });
 });

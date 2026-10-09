@@ -4339,7 +4339,10 @@ const PAGES = {
     loadBookMetaSummary();
     loadBookMeta(1);
   },
-  "sales-ranking": () => loadSales(),
+  "sales-ranking": () => {
+    loadSales();
+    loadSalesHealth();
+  },
   circulation: () => loadCirculation(),
   warm: () => loadWarm(),
   "dev-tools": () => {},
@@ -4443,6 +4446,95 @@ async function loadSales() {
     );
   }
   $("salesUnlinkedTable").style.display = "";
+}
+
+/* ---------- 売上ランキング: リンク先の巻数チェック（src/salesLinkHealth.ts） ---------- */
+const HEALTH_WINDOW = { day: "日次", d7: "7日", d30: "30日", year: "年間" };
+const HEALTH_KIND = {
+  broken: "巻一覧が開けない",
+  empty: "巻一覧が空",
+  short: "巻が足りない",
+  gaps: "途中の巻が抜けている",
+};
+
+async function loadSalesHealth(data) {
+  const hint = $("salesHealthHint");
+  const body = $("salesHealthBody");
+  body.textContent = "";
+  $("salesHealthTable").style.display = "none";
+  hint.style.display = "none";
+  if (data === undefined) {
+    try {
+      const res = await fetch("/api/admin/sales-ranking/link-health");
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      data = await res.json();
+    } catch {
+      hint.textContent = "点検結果の取得に失敗しました";
+      hint.style.display = "";
+      return;
+    }
+  }
+  if (!data) {
+    $("salesHealthCount").textContent = "";
+    hint.textContent = "まだ点検していません。";
+    hint.style.display = "";
+    return;
+  }
+  const running = data.state === "running";
+  $("salesHealthCount").textContent = running
+    ? `点検中 ${data.cursor} / ${data.total}（下は前回の結果）`
+    : `${data.problems.length} 件 / ${data.total} 作品（${data.day} の集計、${fmtDate(data.updated_at)} に点検）`;
+  if (!data.problems.length) {
+    hint.textContent = running ? "" : "問題はありません。";
+    hint.style.display = running ? "none" : "";
+    return;
+  }
+  for (const p of data.problems) {
+    const link = el("a", { className: "detail", textContent: p.series_title || p.series_id, title: "このシリーズの巻一覧を表示" });
+    link.addEventListener("click", () => openSeriesVolumes(p.series_id, p.series_title || p.series_id));
+    const missing = p.missing.length ? p.missing.join(", ") + (p.missing.length >= 20 ? " …" : "") : "-";
+    body.append(
+      el("tr", {}, [
+        el("td", { className: "num", textContent: `${HEALTH_WINDOW[p.window]} ${p.rank}位` }),
+        el("td", { className: "wrap" }, [
+          el("div", { textContent: p.work }),
+          el("div", { className: "muted", style: "font-size:12px", textContent: p.rakuten_title }),
+        ]),
+        el("td", { className: "wrap" }, [link, el("div", { className: "muted slug", textContent: p.series_id })]),
+        el("td", { textContent: HEALTH_KIND[p.kind] || p.kind }),
+        el("td", { className: "num", textContent: p.expected == null ? "-" : `${p.expected}巻` }),
+        el("td", { className: "num", textContent: `${p.have}巻` + (p.total !== p.have ? `（全${p.total}）` : "") }),
+        el("td", { className: "wrap muted", textContent: missing }),
+      ])
+    );
+  }
+  $("salesHealthTable").style.display = "";
+}
+
+// 点検は 1 回の要求で 20 作品ずつしか進まない（D1 のクエリ上限）ので、done になるまで呼び続ける。
+async function runSalesHealth(btn) {
+  const orig = btn.textContent;
+  btn.disabled = true;
+  try {
+    let run = "";
+    for (;;) {
+      const res = await fetch(`/api/admin/sales-ranking/link-health${run ? `?run=${encodeURIComponent(run)}` : ""}`, { method: "POST" });
+      const data = await res.json().catch(() => null);
+      if (!res.ok || !data) throw new Error((data && data.error) || `HTTP ${res.status}`);
+      if (run && data.run !== run) throw new Error("別の点検が始まったため中断しました");
+      run = data.run;
+      btn.textContent = `点検中… ${data.cursor} / ${data.total}`;
+      if (data.state === "done") {
+        await loadSalesHealth(data);
+        break;
+      }
+    }
+  } catch (e) {
+    uiAlert("点検に失敗しました: " + e.message);
+  } finally {
+    btn.disabled = false;
+    btn.textContent = orig;
+  }
 }
 
 async function runSales(recompute, btn) {
@@ -4994,9 +5086,13 @@ async function warmLoop() {
 
 $("purgeSupAll").addEventListener("click", (e) => purgeSupplements("all", e.currentTarget));
 $("delSup").addEventListener("click", (e) => deleteSupplement(e.currentTarget));
-$("reloadSales").addEventListener("click", () => loadSales());
+$("reloadSales").addEventListener("click", () => {
+  loadSales();
+  loadSalesHealth();
+});
 $("salesSnapshot").addEventListener("click", (e) => runSales(false, e.currentTarget));
 $("salesRecompute").addEventListener("click", (e) => runSales(true, e.currentTarget));
+$("salesHealthRun").addEventListener("click", (e) => runSalesHealth(e.currentTarget));
 $("reloadCirc").addEventListener("click", () => loadCirculation());
 $("suggestRebuild").addEventListener("click", (e) => rebuildSuggestIndex(e.currentTarget));
 $("circRecompute").addEventListener("click", (e) => runCirculationRecompute(e.currentTarget));

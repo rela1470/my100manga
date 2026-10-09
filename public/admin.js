@@ -1806,7 +1806,8 @@ function mergeGroupCard(r) {
   ]);
 }
 
-async function mergeSeries(target, absorbed, series, btn) {
+// onDone を渡すと、結合できたあと結合ページの再読み込み（loadMerge）の代わりにそれを呼ぶ。
+async function mergeSeries(target, absorbed, series, btn, onDone) {
   if (!target || !absorbed.length) {
     uiAlert("「残す」以外に「含める」シリーズを1つ以上選んでください");
     return;
@@ -1842,7 +1843,7 @@ async function mergeSeries(target, absorbed, series, btn) {
     });
     const data = await res.json().catch(() => ({}));
     if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
-    await loadMerge(pageState.merge);
+    await (onDone ? onDone(data) : loadMerge(pageState.merge));
   } catch (e) {
     uiAlert("結合に失敗しました: " + e.message);
     btn.disabled = false;
@@ -4453,8 +4454,8 @@ const HEALTH_WINDOW = { day: "日次", d7: "7日", d30: "30日", year: "年間" 
 const HEALTH_KIND = {
   broken: "巻一覧が開けない",
   empty: "巻一覧が空",
-  short: "巻が足りない",
   gaps: "途中の巻が抜けている",
+  short: "新しい巻が無い",
 };
 
 async function loadSalesHealth(data) {
@@ -4505,10 +4506,241 @@ async function loadSalesHealth(data) {
         el("td", { className: "num", textContent: p.expected == null ? "-" : `${p.expected}巻` }),
         el("td", { className: "num", textContent: `${p.have}巻` + (p.total !== p.have ? `（全${p.total}）` : "") }),
         el("td", { className: "wrap muted", textContent: missing }),
+        el("td", {}, [el("button", { type: "button", textContent: "補正", onclick: () => openHealthFix(p) })]),
       ])
     );
   }
   $("salesHealthTable").style.display = "";
+}
+
+/* ---------- 売上ランキング: リンク先の補正（足りない巻の追加・シリーズの結合） ----------
+   閲覧者の「DBから抜けていそうな巻」（POST /api/series/:id/corrections）と「シリーズが分かれている？」
+   （POST /api/series/:id/merge-request）と同じ操作を、管理者の確定として行う。巻の追加は
+   POST /api/admin/series/:id/corrections（追加と同時に確定）、結合は POST /api/admin/series-merges。
+   候補は閲覧者と同じ公開 API（/api/volume-candidates・/api/series/:id/merge-candidates）を使う。 */
+let healthFix = null; // { p: 点検の問題, merge: Map<series_id, 候補>, keep: 残す series_id, include: Set }
+
+function openHealthFix(p) {
+  healthFix = { p, merge: new Map(), keep: p.series_id, include: new Set() };
+  $("healthFixTitle").textContent = `「${p.work}」のリンク先を補正`;
+  $("healthFixMeta").textContent =
+    `${p.series_id}${p.series_title ? `「${p.series_title}」` : ""} ｜ ${HEALTH_KIND[p.kind] || p.kind}` +
+    (p.expected == null ? "" : ` ｜ 楽天 ${p.expected}巻 / 巻一覧 ${p.have}巻`) +
+    (p.rakuten_title ? ` ｜ 楽天の書名: ${p.rakuten_title}` : "");
+  $("healthFixCandHint").textContent = "";
+  $("healthFixCandBody").textContent = "";
+  $("healthFixCandTable").style.display = "none";
+  $("healthFixAdded").textContent = "";
+  $("healthFixIsbn").value = "";
+  $("healthFixVol").value = p.missing.length ? String(p.missing[0]) : "";
+  const gaps = $("healthFixGaps");
+  gaps.textContent = "";
+  for (const n of p.missing) {
+    gaps.append(el("button", { type: "button", textContent: `${n}巻`, dataset: { vol: String(n) }, onclick: () => searchHealthVolume(n) }));
+  }
+  if (!p.missing.length) gaps.append(el("span", { className: "hint", textContent: "抜けている巻の番号は分かりません。ISBN を直接指定してください。" }));
+  $("healthMergeQuery").value = p.series_title || p.work;
+  $("healthMergeHint").textContent = "候補を読み込み中…";
+  renderHealthMerge();
+  $("healthFixDlg").showModal();
+  loadHealthMergeCandidates(p.series_id);
+}
+
+// 1 巻ぶんの候補を楽天で探す。書名は楽天の作品名（ランキングの書名から巻数を外したもの）で引く。
+async function searchHealthVolume(n) {
+  const p = healthFix.p;
+  const hint = $("healthFixCandHint");
+  const body = $("healthFixCandBody");
+  body.textContent = "";
+  $("healthFixCandTable").style.display = "none";
+  $("healthFixVol").value = String(n);
+  hint.textContent = `${n}巻の候補を検索中…`;
+  let cands;
+  try {
+    const res = await fetch(
+      `/api/volume-candidates?title=${encodeURIComponent(p.work)}&volume=${n}&series=${encodeURIComponent(p.series_id)}`
+    );
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
+    cands = data.candidates || [];
+  } catch (e) {
+    hint.textContent = "検索に失敗しました: " + e.message;
+    return;
+  }
+  if (healthFix.p !== p) return; // 検索中に別の作品を開いた
+  hint.textContent = cands.length
+    ? `${n}巻の候補（版違いに注意して選んでください）`
+    : `${n}巻の候補が見つかりませんでした。ISBN を直接指定してください。`;
+  for (const c of cands) {
+    // 候補自身の巻番号があればそれで追加する（検索した巻の前後の巻も混ざる）。
+    const vol = parseInt(c.volume, 10) > 0 ? String(parseInt(c.volume, 10)) : String(n);
+    const btn = el("button", { type: "button", textContent: `${vol}巻として追加` });
+    btn.addEventListener("click", () => addHealthVolume(c.isbn, vol, btn));
+    body.append(
+      el("tr", {}, [
+        el("td", null, [coverThumb(c.cover_url, "corr-thumb", "corr-noimg", c.title)]),
+        el("td", { className: "wrap", textContent: c.title }),
+        el("td", {
+          className: "wrap muted",
+          textContent: [(c.author || "").split("/").filter(Boolean).join("、"), c.publisher, c.pubdate].filter(Boolean).join(" / "),
+        }),
+        el("td", { className: "wrap muted", textContent: [c.volume ? `${c.volume}巻` : "", c.isbn].filter(Boolean).join(" / ") }),
+        el("td", {}, [btn]),
+      ])
+    );
+  }
+  $("healthFixCandTable").style.display = cands.length ? "" : "none";
+}
+
+async function addHealthVolume(isbn, vol, btn) {
+  const p = healthFix.p;
+  isbn = String(isbn || "").replace(/[^0-9]/g, "");
+  vol = String(vol || "").trim();
+  if (isbn.length !== 13) {
+    uiAlert("ISBN は13桁（978…）で入力してください");
+    return;
+  }
+  if (!vol) {
+    uiAlert("巻番号を入力してください");
+    return;
+  }
+  const orig = btn.textContent;
+  btn.disabled = true;
+  btn.textContent = "追加中…";
+  try {
+    const res = await fetch(`/api/admin/series/${encodeURIComponent(p.series_id)}/corrections`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ isbn, volume_number: vol }),
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
+    const label = (data.volume && data.volume.volume_number) || vol;
+    const added = $("healthFixAdded");
+    added.textContent = `${added.textContent ? added.textContent + "、" : "追加しました: "}${label}（${isbn}）`;
+    // 直接指定の欄は続けて使うので戻す。候補の行のボタンは済みにしておく。
+    if (btn.id === "healthFixAdd") {
+      $("healthFixIsbn").value = "";
+      btn.disabled = false;
+      btn.textContent = orig;
+    } else {
+      btn.textContent = "追加済み";
+    }
+    const gapBtn = $("healthFixGaps").querySelector(`button[data-vol="${CSS.escape(vol.replace(/^巻/, ""))}"]`);
+    if (gapBtn) {
+      gapBtn.disabled = true;
+      gapBtn.textContent = `${gapBtn.dataset.vol}巻 ✓`;
+    }
+  } catch (e) {
+    uiAlert("追加に失敗しました: " + e.message);
+    btn.disabled = false;
+    btn.textContent = orig;
+  }
+}
+
+async function loadHealthMergeCandidates(seriesId) {
+  const p = healthFix.p;
+  try {
+    const res = await fetch(`/api/series/${encodeURIComponent(seriesId)}/merge-candidates`);
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
+    if (healthFix.p !== p) return;
+    // 自分（リンク先）を先頭に。結合済みなら残す側の ID で返ってくるので、それを「残す」にする。
+    if (data.series) {
+      healthFix.merge.set(data.series.series_id, data.series);
+      healthFix.keep = data.series.series_id;
+    }
+    for (const c of data.candidates || []) healthFix.merge.set(c.series_id, c);
+    $("healthMergeHint").textContent =
+      (data.candidates || []).length ? "" : "同じ書名・著者の別シリーズは見つかりませんでした。検索で足せます。";
+  } catch (e) {
+    if (healthFix.p !== p) return;
+    $("healthMergeHint").textContent = "候補の取得に失敗しました: " + e.message;
+  }
+  renderHealthMerge();
+}
+
+// 検索結果を候補に足す（既にあるものは足さない）。
+async function searchHealthMerge() {
+  const q = $("healthMergeQuery").value.trim();
+  const hint = $("healthMergeHint");
+  if (q.length < 2) {
+    hint.textContent = "検索語を 2 文字以上で入力してください";
+    return;
+  }
+  hint.textContent = "検索中…";
+  try {
+    const res = await fetch(`/api/search?q=${encodeURIComponent(q)}`);
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
+    let n = 0;
+    for (const r of (data.results || []).filter((x) => x.series_id)) {
+      if (healthFix.merge.has(r.series_id)) continue;
+      healthFix.merge.set(r.series_id, {
+        series_id: r.series_id,
+        title: r.title,
+        creator: r.creators || r.creator || "",
+        publisher: r.publisher || "",
+        label: r.label || "",
+        volume_count: r.volume_count,
+      });
+      n++;
+    }
+    hint.textContent = n ? `${n} 件を候補に足しました。` : "新しい候補は見つかりませんでした。";
+  } catch (e) {
+    hint.textContent = "検索に失敗しました: " + e.message;
+  }
+  renderHealthMerge();
+}
+
+function renderHealthMerge() {
+  const body = $("healthMergeBody");
+  body.textContent = "";
+  const rows = [...healthFix.merge.values()];
+  for (const c of rows) {
+    const id = c.series_id;
+    const keep = el("input", { type: "radio", name: "healthMergeKeep", checked: healthFix.keep === id });
+    keep.addEventListener("change", () => {
+      healthFix.keep = id;
+      healthFix.include.delete(id);
+      renderHealthMerge();
+    });
+    const inc = el("input", { type: "checkbox", checked: healthFix.include.has(id), disabled: healthFix.keep === id });
+    inc.addEventListener("change", () => (inc.checked ? healthFix.include.add(id) : healthFix.include.delete(id)));
+    const labels = c.labels && c.labels.length ? `（${c.labels[0]}〜${c.labels[c.labels.length - 1]}）` : "";
+    body.append(
+      el("tr", {}, [
+        el("td", {}, [keep]),
+        el("td", {}, [inc]),
+        el("td", { className: "wrap" }, [
+          el("div", { textContent: c.title || id }),
+          el("div", { className: "muted slug", textContent: id + (id === healthFix.p.series_id ? "（リンク先）" : "") }),
+        ]),
+        el("td", { className: "wrap muted", textContent: c.creator || "" }),
+        el("td", { className: "wrap muted", textContent: [c.publisher, c.label].filter(Boolean).join(" / ") }),
+        el("td", { className: "num", textContent: `${c.volume_count ?? ""}${labels}` }),
+        el("td", {}, [
+          el("button", { type: "button", textContent: "巻", title: "このシリーズの巻を見る", onclick: () => openCircVols(id, c.title) }),
+        ]),
+      ])
+    );
+  }
+  $("healthMergeTable").style.display = rows.length ? "" : "none";
+}
+
+async function runHealthMerge(btn) {
+  const { keep, include, merge } = healthFix;
+  const absorbed = [...include].filter((id) => id !== keep);
+  // 結合の本体（確認・独自シリーズ名の入力・POST）はシリーズ結合ページと同じ mergeSeries を使い、
+  // 終わったら一覧の再読み込みの代わりに候補を取り直す。
+  await mergeSeries(keep, absorbed, [...merge.values()], btn, async () => {
+    healthFix.include.clear();
+    healthFix.merge.clear();
+    $("healthMergeHint").textContent = "結合しました。「今すぐ点検」で結果を確かめてください。";
+    await loadHealthMergeCandidates(healthFix.p.series_id);
+    btn.disabled = false;
+    btn.textContent = "結合";
+  });
 }
 
 // 点検は 1 回の要求で 20 作品ずつしか進まない（D1 のクエリ上限）ので、done になるまで呼び続ける。
@@ -5093,6 +5325,25 @@ $("reloadSales").addEventListener("click", () => {
 $("salesSnapshot").addEventListener("click", (e) => runSales(false, e.currentTarget));
 $("salesRecompute").addEventListener("click", (e) => runSales(true, e.currentTarget));
 $("salesHealthRun").addEventListener("click", (e) => runSalesHealth(e.currentTarget));
+$("healthFixVols").addEventListener("click", () => openCircVols(healthFix.p.series_id, healthFix.p.series_title || healthFix.p.work));
+$("healthFixAdd").addEventListener("click", (e) => addHealthVolume($("healthFixIsbn").value, $("healthFixVol").value, e.currentTarget));
+// dialog の form の中で Enter を押すと既定のボタン（閉じる）で閉じてしまうので、各欄の操作に読み替える。
+for (const id of ["healthFixIsbn", "healthFixVol"]) {
+  $(id).addEventListener("keydown", (e) => {
+    if (e.key === "Enter" && !e.isComposing) {
+      e.preventDefault();
+      $("healthFixAdd").click();
+    }
+  });
+}
+$("healthMergeSearch").addEventListener("click", () => searchHealthMerge());
+$("healthMergeQuery").addEventListener("keydown", (e) => {
+  if (e.key === "Enter" && !e.isComposing) {
+    e.preventDefault();
+    searchHealthMerge();
+  }
+});
+$("healthMergeRun").addEventListener("click", (e) => runHealthMerge(e.currentTarget));
 $("reloadCirc").addEventListener("click", () => loadCirculation());
 $("suggestRebuild").addEventListener("click", (e) => rebuildSuggestIndex(e.currentTarget));
 $("circRecompute").addEventListener("click", (e) => runCirculationRecompute(e.currentTarget));

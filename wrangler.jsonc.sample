@@ -4,7 +4,7 @@
   // セットアップ: `cp wrangler.jsonc.sample wrangler.jsonc` してから下記を自分の値へ:
   //   - "name" / "database_name" … 任意のプロジェクト名
   //   - "database_id" … `wrangler d1 create` で発行された ID（REPLACE_WITH_...）
-  //   - "RAKUTEN_REFERER" と "routes" の "pattern" … 自分のドメイン（example.com を置換）
+  //   - "RAKUTEN_REFERER" / "SITE_ORIGIN" と "routes" の "pattern" … 自分のドメイン（example.com を置換）
   //   - env.r18 / env.r18dev の "name" とリソース名（my100r18*）・ドメイン（r18.example.com）
   //     … R18版を出すなら自分の値へ。閲覧ビーコン側のキュー名の "-views" だけは残すこと
   // 個人設定（アフィリ ID / ACCESS_* / ADMIN_EMAILS / 楽天 API キー）は vars ではなく
@@ -80,6 +80,8 @@
     // Slack 通知（src/alert.ts）の見出しに付ける環境名。通知先の Webhook は secret の
     // SLACK_WEBHOOK_URL（未設定の env は通知しない）。vars は継承されないので env ごとに書く。
     "ALERT_ENV": "prod",
+    // このサイトのオリジン（src/types.ts SITE_ORIGIN、末尾の / なし）。Slack 通知から管理画面へのリンクに使う。
+    "SITE_ORIGIN": "https://example.com",
     // 日次 Cron で売上ランキング（楽天ブックス）を取るか（src/index.ts scheduled）。vars は env に
     // 継承されないので、ここ（本家・本番）だけが "true"。dev / R18版は未設定 = 取らない
     // （dev は毎日楽天を叩くだけで無駄、R18版は一般書籍のランキングを使わない）。dev で要るときは
@@ -194,7 +196,8 @@
         "TURNSTILE_SITE_KEY": "",
         "DEV_TOOLS": "false",
         "SITE_VARIANT": "general",
-        "ALERT_ENV": "dev"
+        "ALERT_ENV": "dev",
+        "SITE_ORIGIN": "https://dev.example.com"
       },
       "version_metadata": { "binding": "CF_VERSION" },
       "d1_databases": [
@@ -271,7 +274,8 @@
         "TURNSTILE_SITE_KEY": "",
         "DEV_TOOLS": "false",
         "SITE_VARIANT": "adult",
-        "ALERT_ENV": "r18"
+        "ALERT_ENV": "r18",
+        "SITE_ORIGIN": "https://r18.example.com"
       },
       "version_metadata": { "binding": "CF_VERSION" },
       "d1_databases": [
@@ -338,7 +342,8 @@
         "TURNSTILE_SITE_KEY": "",
         "DEV_TOOLS": "false",
         "SITE_VARIANT": "adult",
-        "ALERT_ENV": "r18dev"
+        "ALERT_ENV": "r18dev",
+        "SITE_ORIGIN": "https://dev.r18.example.com"
       },
       "version_metadata": { "binding": "CF_VERSION" },
       "d1_databases": [

@@ -2911,6 +2911,18 @@ button.copied { border-color: var(--ok-strong); color: var(--ok-strong); }
 .admin-dialog::backdrop { background: rgba(0, 0, 0, .45); }
 .admin-dialog h3 { margin: 0 0 8px; font-size: 16px; }
 .admin-dialog .admin-table { margin-top: 8px; }
+.admin-dialog h4 { margin: 20px 0 6px; font-size: 15px; }
+/* ダイアログ内の入力・ボタンの横並び（.toolbar は枠付きの帯なので、ダイアログの中では重い）。 */
+.admin-dialog .dlg-row { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin: 8px 0; }
+.admin-dialog .dlg-row input[type="text"],
+.admin-dialog .dlg-row input[type="search"] {
+  background: #fff;
+  border: var(--bw) solid var(--ink);
+  color: var(--text);
+  border-radius: var(--radius-sm);
+  padding: 8px 12px;
+  font-size: 14px;
+}
 
 /* ── マスタ行の修正フォーム（admin #master-fixes）─────────────────────────────
    表の見た目の 2 列フォーム。1 行に複数の入力が並ぶ欄があるので、td を flex にして

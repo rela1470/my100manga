@@ -3,7 +3,7 @@ import { json, plainVolumeNumber } from "./util";
 import { readPayload, salesVolumeNumber, workKey, type SalesWindow } from "./salesRanking";
 import { getSeriesVolumes, getMasterUpdatedAt } from "./series";
 import { getGroupVolumes } from "./groups";
-import { sendAlert } from "./alert";
+import { adminUrl, sendAlert } from "./alert";
 
 // 売上ランキングのリンク先の点検。ランキングの作品は楽天の書名から作品名で寄せ先（シリーズ /
 // まとまり）を決める（src/salesRanking.ts resolveTargets）ので、同名の別版（文庫版・総集編）や
@@ -21,6 +21,10 @@ import { sendAlert } from "./alert";
 // D1 クエリ上限（1000）に収まるよう STEP 件ずつ区切る。Cron からは自動暖機と同じ WARM_QUEUE に
 // 「1 歩」のメッセージを積んで連鎖させ、管理画面からは画面が歩を繰り返し呼ぶ。終わったら、前回の
 // 点検に無かった問題だけを Slack に送る（src/alert.ts）。
+//
+// 問題は直す優先度の順に並べる（sortProblems）。巻一覧が開けない・空 → 途中の巻が抜けている
+// （閲覧者がそのシリーズで本を選べない穴）→ 新しい巻だけが無い（最新巻がマスタにまだ無いのは
+// 待てば埋まることが多い）。同じ優先度の中はランキングの順位順。
 
 const META_KEY = "sales_link_health";
 const STEP = 20; // 1 歩で巻一覧を組み立てる作品数
@@ -48,8 +52,17 @@ interface Target {
 export type ProblemKind =
   | "broken" // 巻一覧が開けない（寄せ先が消えた）
   | "empty" // 巻一覧に 1 冊も無い
-  | "short" // 楽天の巻数まで届いていない（最新の巻が無い・別版に寄っている）
-  | "gaps"; // 最新の巻はあるが途中が抜けている
+  | "gaps" // 巻一覧の最大の巻より前に抜けがある（新しい巻も無いことがある）
+  | "short"; // 抜けは新しい側だけ（最新の巻が無い・巻の少ない別版に寄っている）
+
+const PRIORITY: Record<ProblemKind, number> = { broken: 0, empty: 0, gaps: 1, short: 2 };
+
+/** 直す優先度の順（PRIORITY）、同じなら順位の順に並べ替えた新しい配列。 */
+export function sortProblems(ps: LinkProblem[]): LinkProblem[] {
+  return [...ps].sort(
+    (a, b) => PRIORITY[a.kind] - PRIORITY[b.kind] || a.rank - b.rank || WINDOWS.indexOf(a.window) - WINDOWS.indexOf(b.window)
+  );
+}
 
 export interface LinkProblem {
   kind: ProblemKind;
@@ -164,8 +177,9 @@ export async function runLinkHealthStep(
   }
 
   const prevKeys = new Set(state.prev_problems.map(problemKey));
-  const fresh = problems.filter((p) => !prevKeys.has(problemKey(p)));
-  const final: LinkHealthState = { ...state, state: "done", cursor, problems, new_problems: fresh.length, updated_at: now };
+  const sorted = sortProblems(problems);
+  const fresh = sorted.filter((p) => !prevKeys.has(problemKey(p)));
+  const final: LinkHealthState = { ...state, state: "done", cursor, problems: sorted, new_problems: fresh.length, updated_at: now };
   await writeState(env, final);
   if (fresh.length) await alertProblems(env, final, fresh);
   return final;
@@ -239,15 +253,17 @@ export function judge(
   const present = new Set(inRange);
   const missing: number[] = [];
   for (let i = 1; i <= n && missing.length < MAX_MISSING_SHOWN; i++) if (!present.has(i)) missing.push(i);
-  const reached = base.max_vol !== null && base.max_vol >= n - TOLERANCE;
-  return { ...base, kind: d.numbers.length && reached ? "gaps" : "short", have, missing: d.numbers.length ? missing : [] };
+  // 巻一覧の最大の巻より前に抜けがあれば「途中の巻が抜けている」、抜けが新しい側だけなら「巻が
+  // 足りない」。巻番号の無い一覧は抜けの位置が分からないので後者に入れる。
+  const holes = base.max_vol !== null && missing.some((x) => x < base.max_vol!);
+  return { ...base, kind: holes ? "gaps" : "short", have, missing: d.numbers.length ? missing : [] };
 }
 
 const KIND_LABEL: Record<ProblemKind, string> = {
   broken: "巻一覧が開けない",
   empty: "巻一覧が空",
-  short: "巻が足りない",
   gaps: "途中の巻が抜けている",
+  short: "新しい巻が無い",
 };
 const WINDOW_LABEL: Record<SalesWindow, string> = { day: "日次", d7: "7日", d30: "30日", year: "年間" };
 
@@ -262,12 +278,14 @@ export function describeProblem(p: LinkProblem): string {
 async function alertProblems(env: Env, s: LinkHealthState, fresh: LinkProblem[]): Promise<void> {
   const lines = fresh.slice(0, ALERT_LINES).map((p) => `• ${describeProblem(p)}`);
   if (fresh.length > ALERT_LINES) lines.push(`…ほか ${fresh.length - ALERT_LINES} 件`);
+  const url = adminUrl(env, "sales-ranking");
   await sendAlert(env, {
     level: "warning",
     title: "売上ランキングのリンク先に巻の足りないシリーズがある",
     text: lines.join("\n"),
     fields: { 集計日: s.day, 新しい問題: fresh.length, 問題の総数: s.problems.length, 点検した作品: s.targets.length },
     throttleKey: `sales-link-health:${s.run}`,
+    link: url ? { url, label: "管理画面の売上ランキングで確認・補正する" } : undefined,
   });
 }
 
@@ -289,5 +307,5 @@ export async function adminLinkHealthStep(env: Env, run: string | null): Promise
 // 前回の点検の結果を見せたいので、problems は前回のものにしておく。
 function publicState(s: LinkHealthState) {
   const { targets, prev_problems, problems, ...rest } = s;
-  return { ...rest, total: targets.length, problems: s.state === "done" ? problems : prev_problems };
+  return { ...rest, total: targets.length, problems: sortProblems(s.state === "done" ? problems : prev_problems) };
 }

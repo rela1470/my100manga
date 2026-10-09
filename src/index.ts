@@ -721,7 +721,30 @@ const worker = {
         return await adminListMerges(env, parsePage(url));
       }
       if (path === "/api/admin/series-merges" && request.method === "POST") {
-        return await adminMergeSeries(request, env);
+        const res = await adminMergeSeries(request, env);
+        // 結合は巻一覧の中身を変える。管理画面ですぐ開き直すので、この colo の分を消す。
+        if (res.ok) {
+          const r = await res.clone().json<{ target_id: string; absorbed_ids: string[] }>();
+          await Promise.all([r.target_id, ...r.absorbed_ids].map((k) => purgeSeriesVolumesCache(env, k)));
+        }
+        return res;
+      }
+      // 管理画面からの抜け巻・新刊の追加（閲覧者の POST /api/series/:id/corrections と同じ検査で、
+      // 追加と同時に確定する。src/corrections.ts addCorrection）。まとまり（G-id）は閲覧者の経路と
+      // 同じく、寄せ先のシリーズがあればそちら、無ければまとまりの正規 ID に記録する。
+      const adminAddCorrMatch = path.match(/^\/api\/admin\/series\/([A-Za-z0-9]+)\/corrections$/);
+      if (adminAddCorrMatch && request.method === "POST") {
+        const raw = adminAddCorrMatch[1];
+        let id = raw;
+        let group = null;
+        if (/^G\d{13}$/.test(raw)) {
+          const r = await resolveGroup(env, raw);
+          if (!r) return notFound("シリーズが見つかりません");
+          [id, group] = "seriesId" in r ? [r.seriesId, null] : [r.group.id, r.group];
+        }
+        const res = await addCorrection(request, env, id, group, { admin: true });
+        if (res.ok) await Promise.all([...new Set([raw, id])].map((k) => purgeSeriesVolumesCache(env, k)));
+        return res;
       }
       // シリーズに属さない巻の紐付け（グループの結合）の一覧と解除。
       if (path === "/api/admin/series-links" && request.method === "GET") {

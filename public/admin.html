@@ -951,7 +951,9 @@
         リンクが付いた作品について、楽天で出ている巻数（ランキングに載った書名の巻数の最大）と、リンク先の巻一覧にある巻を突き合わせます。
         例:「転生したらスライムだった件（33）」なら、リンク先に 1〜33 巻のうち 32 巻以上あれば正常です（最新巻はマスタにまだ無いのが普通なので 1 巻は許容）。
         毎日の Cron の取得のあとに自動で点検し、前回に無かった問題だけを Slack に通知します。
-        「巻が足りない」は同名の別版（文庫版・総集編など）に寄っているか、最新の巻がマスタに無いもの、「途中の巻が抜けている」は抜け巻の補完が要るものです。
+        直す優先度の順に並べています: 巻一覧が開けない・空 → 「途中の巻が抜けている」（巻一覧の最後の巻より前に抜けがある。抜け巻の追加が要る）→
+        「新しい巻が無い」（抜けは新しい側だけ。最新の巻がマスタにまだ無いか、巻の少ない同名の別版（文庫版・総集編など）に寄っている）。
+        「補正」から、閲覧者と同じ操作（足りない巻の追加・シリーズの結合）を管理者として確定で行えます。直したら「今すぐ点検」で結果を確かめてください。
       </p>
       <p class="hint" id="salesHealthHint" style="display:none"></p>
       <table class="admin-table" id="salesHealthTable" style="display:none">
@@ -964,10 +966,65 @@
             <th class="num">楽天</th>
             <th class="num">巻一覧</th>
             <th>抜けている巻</th>
+            <th></th>
           </tr>
         </thead>
         <tbody id="salesHealthBody"></tbody>
       </table>
+
+      <!-- リンク先の補正（足りない巻の追加・シリーズの結合）。閲覧者の「DBから抜けていそうな巻」と
+           「シリーズが分かれている？」と同じ操作を、管理者の確定として行う。 -->
+      <dialog id="healthFixDlg" class="admin-dialog">
+        <form method="dialog">
+          <h3 id="healthFixTitle">リンク先の補正</h3>
+          <p class="hint" id="healthFixMeta"></p>
+          <div class="dlg-row">
+            <button type="button" id="healthFixVols">巻一覧を見る</button>
+          </div>
+
+          <h4>足りない巻を追加</h4>
+          <p class="hint">
+            巻番号を押すと楽天で候補を探します。候補に無ければ ISBN13 と巻番号を直接指定してください（書影が見つかる ISBN のみ）。
+            追加はその場で確定し、全ての閲覧者の巻一覧に出ます（手動追加の「確定済み」に入ります）。
+          </p>
+          <div class="dlg-row" id="healthFixGaps"></div>
+          <p class="hint" id="healthFixCandHint"></p>
+          <table class="admin-table" id="healthFixCandTable" style="display:none">
+            <thead><tr><th>表紙</th><th>書名</th><th>著者 / 出版社 / 発行日</th><th>巻 / ISBN</th><th></th></tr></thead>
+            <tbody id="healthFixCandBody"></tbody>
+          </table>
+          <div class="dlg-row">
+            <input type="text" id="healthFixIsbn" inputmode="numeric" placeholder="ISBN13（例: 9784088528113）" style="flex:1">
+            <input type="text" id="healthFixVol" placeholder="巻番号" style="width:110px" title="「5」「巻5」、部立てのシリーズは「第4部9」">
+            <button type="button" id="healthFixAdd">このISBNで追加</button>
+          </div>
+          <p class="hint" id="healthFixAdded"></p>
+
+          <h4>シリーズを結合</h4>
+          <p class="hint">
+            同じ作品なのに別シリーズに分かれているものを「含める」にチェックして結合します。「残す」はリンク先が既定です。
+            候補は同じ書名・同じ著者のシリーズと、どのシリーズにも寄っていない同名の巻のまとまり。足りなければ検索で足せます。
+            版違い（文庫版・新装版など）を混ぜないよう、「巻」で中身を確かめてから結合してください。
+          </p>
+          <div class="dlg-row">
+            <input type="search" id="healthMergeQuery" placeholder="シリーズ名で検索して候補に足す" style="flex:1">
+            <button type="button" id="healthMergeSearch">検索</button>
+          </div>
+          <p class="hint" id="healthMergeHint"></p>
+          <table class="admin-table" id="healthMergeTable" style="display:none">
+            <thead><tr><th>残す</th><th>含める</th><th>シリーズ名</th><th>著者</th><th>出版社 / レーベル</th><th class="num">巻数</th><th></th></tr></thead>
+            <tbody id="healthMergeBody"></tbody>
+          </table>
+          <div class="dlg-row">
+            <div style="flex:1"></div>
+            <button type="button" id="healthMergeRun">結合</button>
+          </div>
+
+          <div class="cover-actions">
+            <button value="cancel">閉じる</button>
+          </div>
+        </form>
+      </dialog>
     </section>
 
     <!-- 発行部数ランキング（Wikipedia 由来の累計部数, src/circulation.ts） -->
@@ -1035,18 +1092,6 @@
         </form>
       </dialog>
 
-      <!-- 寄せ先を選ぶ前に中身を確かめる巻一覧。寄せ先モーダルに重ねて開くので、div の
-           オーバーレイ（リスト詳細モーダル）ではなく dialog にしてある（top layer）。 -->
-      <dialog id="circVolsDlg" class="admin-dialog">
-        <form method="dialog">
-          <h3 id="circVolsTitle">巻一覧</h3>
-          <p class="hint" id="circVolsMeta"></p>
-          <div class="detail-grid" id="circVolsGrid"></div>
-          <div class="cover-actions">
-            <button value="cancel">閉じる</button>
-          </div>
-        </form>
-      </dialog>
 
     </section>
 
@@ -1167,6 +1212,21 @@
   </div>
 
   <!-- リスト詳細モーダル -->
+  <!-- 寄せ先を選ぶ前・結合の前に中身を確かめる巻一覧（openCircVols）。寄せ先モーダル・補正モーダルに
+       重ねて開くので、div のオーバーレイ（リスト詳細モーダル）ではなく dialog にしてある（top layer）。
+       発行部数・売上ランキングの両方のページから開くので、ページの section の外に置く
+       （hidden の section の中だと開いても描画されない）。 -->
+  <dialog id="circVolsDlg" class="admin-dialog">
+    <form method="dialog">
+      <h3 id="circVolsTitle">巻一覧</h3>
+      <p class="hint" id="circVolsMeta"></p>
+      <div class="detail-grid" id="circVolsGrid"></div>
+      <div class="cover-actions">
+        <button value="cancel">閉じる</button>
+      </div>
+    </form>
+  </dialog>
+
   <div class="modal-backdrop" id="detailModal">
     <div class="modal detail-modal">
       <h2 id="detailTitle">リスト詳細</h2>

@@ -120,6 +120,10 @@ export interface Env {
   // ALERT_ENV は見出しに付ける環境名（prod / dev / r18 / r18dev）で vars、ローカルは .dev.vars で "local"。
   SLACK_WEBHOOK_URL?: string;
   ALERT_ENV?: string;
+  // このサイトのオリジン（例 "https://my100manga.com"、末尾の / なし）。Cron・キューのように
+  // リクエストの無いところから自サイトの URL を組むとき（Slack 通知の管理画面へのリンク）に使う。
+  // vars は継承されないので env ごとに書く。未設定ならリンクを付けない。
+  SITE_ORIGIN?: string;
 }
 
 /** VIEW_QUEUE のメッセージ（閲覧ビーコン 1 件）。visitor は IP + 日付のハッシュ、userId は

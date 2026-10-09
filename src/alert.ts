@@ -22,6 +22,8 @@ export interface Alert {
   title: string;
   /** 本文（任意）。Slack の mrkdwn として送るので、コードやスタックは ``` で囲む。 */
   text?: string;
+  /** 対応する画面へのリンク（例: 管理画面の該当ページ）。attachment の見出しリンクとして出す。 */
+  link?: { url: string; label: string };
   /** 付記する key/value。undefined / null の項目は省く。 */
   fields?: Record<string, string | number | boolean | null | undefined>;
   /** 抑止のキー。省略時は level + title。 */
@@ -71,6 +73,12 @@ export function notify(env: Env, ctx: Pick<ExecutionContext, "waitUntil">, alert
   ctx.waitUntil(sendAlert(env, alert));
 }
 
+/** 管理画面のページ（public/admin.js の PAGES、#以降）への URL。SITE_ORIGIN が無い env では undefined。 */
+export function adminUrl(env: Env, page: string): string | undefined {
+  const origin = env.SITE_ORIGIN?.replace(/\/+$/, "");
+  return origin ? `${origin}/admin#${page}` : undefined;
+}
+
 /** 例外を error レベルで送る。where は「どこで落ちたか」の見出し（抑止キーにもなる）。 */
 export function notifyError(
   env: Env,
@@ -106,6 +114,8 @@ export function buildSlackPayload(env: Env, alert: Alert): unknown {
     attachments: [
       {
         color: COLORS[alert.level],
+        title: alert.link ? escapeSlack(alert.link.label) : undefined,
+        title_link: alert.link?.url,
         text: alert.text ? truncate(escapeSlack(alert.text), MAX_TEXT) : undefined,
         fields: fields.length ? fields : undefined,
         footer: `${site(env).name} · ${label}${version}`,

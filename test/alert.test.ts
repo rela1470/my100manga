@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { buildSlackPayload, formatError, sendAlert } from "../src/alert";
+import { adminUrl, buildSlackPayload, formatError, sendAlert } from "../src/alert";
 import type { Env } from "../src/types";
 
 const HOOK = "https://hooks.slack.test/services/T/B/x";
@@ -56,6 +56,25 @@ describe("buildSlackPayload", () => {
     expect(p.attachments[0].color).toBe("#d0021b");
     expect(p.attachments[0].fields.map((f) => f.title)).toEqual(["slug", "count"]);
     expect(p.attachments[0].fields[1].value).toBe("3");
+  });
+
+  it("link は attachment の見出しリンクにする", () => {
+    const p = buildSlackPayload(makeEnv(), {
+      level: "warning",
+      title: "x",
+      link: { url: "https://example.com/admin#sales-ranking", label: "管理画面で開く" },
+    }) as { attachments: { title?: string; title_link?: string }[] };
+    expect(p.attachments[0].title).toBe("管理画面で開く");
+    expect(p.attachments[0].title_link).toBe("https://example.com/admin#sales-ranking");
+  });
+});
+
+describe("adminUrl", () => {
+  it("SITE_ORIGIN から管理画面のページの URL を作る（無ければ undefined）", () => {
+    expect(adminUrl(makeEnv({ SITE_ORIGIN: "https://example.com/" }), "sales-ranking")).toBe(
+      "https://example.com/admin#sales-ranking"
+    );
+    expect(adminUrl(makeEnv(), "sales-ranking")).toBeUndefined();
   });
 });
 

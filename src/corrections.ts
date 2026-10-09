@@ -176,11 +176,16 @@ export async function ownersOfOtherSeries(
  *  既に別シリーズの巻として登録されている ISBN も入れない（ownersOfOtherSeries）。
  *  `group` is set for a series-less group (G-id, src/groups.ts): the correction is
  *  stored under the group's canonical id and merged by getGroupVolumes. */
+/** 抜け巻・新刊の手動追加（POST /api/series/:id/corrections）。opts.admin は管理画面からの追加
+ *  （POST /api/admin/series/:id/corrections）: 追加と同時に確定（reviewed_at）し、荒らし対策の
+ *  件数上限（MAX_CORRECTIONS）は掛けない。検査（巻番号の形式・成年向け・別シリーズの巻・書影）は
+ *  閲覧者と同じ。 */
 export async function addCorrection(
   request: Request,
   env: Env,
   seriesId: string,
-  group: UnlinkedGroup | null = null
+  group: UnlinkedGroup | null = null,
+  opts: { admin?: boolean } = {}
 ): Promise<Response> {
   const meta = group
     ? { id: group.id, name: group.name, creator: group.creator }
@@ -220,13 +225,15 @@ export async function addCorrection(
     );
   }
 
-  const count = await env.DB.prepare(
-    `SELECT COUNT(*) AS n FROM series_correction WHERE series_id = ?`
-  )
-    .bind(seriesId)
-    .first<{ n: number }>();
-  if ((count?.n ?? 0) >= MAX_CORRECTIONS) {
-    return badRequest("このシリーズの手動追加が上限に達しています");
+  if (!opts.admin) {
+    const count = await env.DB.prepare(
+      `SELECT COUNT(*) AS n FROM series_correction WHERE series_id = ?`
+    )
+      .bind(seriesId)
+      .first<{ n: number }>();
+    if ((count?.n ?? 0) >= MAX_CORRECTIONS) {
+      return badRequest("このシリーズの手動追加が上限に達しています");
+    }
   }
 
   // Require a real cover so a fabricated ISBN can't be injected into the master.
@@ -234,12 +241,13 @@ export async function addCorrection(
   if (!cover) return badRequest("この ISBN の書影が見つかりませんでした");
 
   const vol_sort = volSort(volume);
+  const now = Date.now();
   await env.DB.prepare(
     `INSERT OR REPLACE INTO series_correction
-       (series_id, isbn, volume_number, vol_sort, cover_url, created_at)
-     VALUES (?, ?, ?, ?, ?, ?)`
+       (series_id, isbn, volume_number, vol_sort, cover_url, created_at, reviewed_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?)`
   )
-    .bind(seriesId, isbn, volume, vol_sort, cover, Date.now())
+    .bind(seriesId, isbn, volume, vol_sort, cover, now, opts.admin ? now : 0)
     .run();
 
   // Echo the label in the series' style so the client's immediate re-render matches

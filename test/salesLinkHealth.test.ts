@@ -46,7 +46,16 @@ beforeAll(async () => {
   // 素の巻番号でない表記（黒執事の「1　／　Ⅰ」）は並び順のキーで数える
   const roman = ["Ⅰ", "Ⅱ", "Ⅲ"];
   await seedSeries("CLH005", "テスト執事", range(1, 10), (n) => (n <= 3 ? `${n}　／　${roman[n - 1]}` : String(n)));
-  const titles = ["テスト粘体転生（33）", "テスト短足 33", "テスト虫食い 33", "テスト単巻", "テスト執事(10)", "テスト粘体転生（32）"];
+  await seedSeries("CLH006", "テスト両抜け", [...range(1, 3), ...range(6, 20)]); // 4・5 巻と 21 巻以降が抜け
+  const titles = [
+    "テスト粘体転生（33）",
+    "テスト短足 33",
+    "テスト虫食い 33",
+    "テスト単巻",
+    "テスト執事(10)",
+    "テスト両抜け 30",
+    "テスト粘体転生（32）",
+  ];
   const isbns = makeIsbns(titles.length, 990000);
   await env.DB.batch(
     titles.map((t, i) => {
@@ -65,19 +74,22 @@ describe("salesLinkHealth", () => {
     const e = testEnv();
     sent = [];
     const started = await startLinkHealth(e, "test", true);
-    expect(started.targets.map((t) => t.series_id)).toEqual(["CLH001", "CLH002", "CLH003", "CLH004", "CLH005"]);
+    expect(started.targets.map((t) => t.series_id)).toEqual(["CLH001", "CLH002", "CLH003", "CLH004", "CLH005", "CLH006"]);
     for (let i = 0; i < 10 && sent.length; i++) {
       const job = sent.shift()!;
       await runLinkHealthStep(e, job.run, true);
     }
     const s = (await readLinkHealth(e))!;
     expect(s.state).toBe("done");
-    expect(s.cursor).toBe(5);
+    expect(s.cursor).toBe(6);
     const byId = Object.fromEntries(s.problems.map((p) => [p.series_id, p]));
-    expect(Object.keys(byId).sort()).toEqual(["CLH002", "CLH003"]);
     expect(byId.CLH002).toMatchObject({ kind: "short", expected: 33, have: 20, max_vol: 20 });
     expect(byId.CLH003).toMatchObject({ kind: "gaps", expected: 33, have: 28, missing: [5, 6, 7, 8, 9] });
-    expect(s.new_problems).toBe(2);
+    // 途中の抜けがあれば、新しい巻も無くても「途中の巻が抜けている」に入れる
+    expect(byId.CLH006).toMatchObject({ kind: "gaps", expected: 30, have: 18, max_vol: 20 });
+    // 途中の抜け（順位順）→ 新しい巻が無いだけ、の順に並ぶ
+    expect(s.problems.map((p) => p.series_id)).toEqual(["CLH003", "CLH006", "CLH002"]);
+    expect(s.new_problems).toBe(3);
   });
 
   it("前回と同じ問題は新しい問題に数えない", async () => {
@@ -86,7 +98,7 @@ describe("salesLinkHealth", () => {
     await startLinkHealth(e, "test", true);
     while (sent.length) await runLinkHealthStep(e, sent.shift()!.run, true);
     const s = (await readLinkHealth(e))!;
-    expect(s.problems).toHaveLength(2);
+    expect(s.problems).toHaveLength(3);
     expect(s.new_problems).toBe(0);
   });
 

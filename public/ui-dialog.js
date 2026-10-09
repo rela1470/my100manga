@@ -72,8 +72,25 @@
     resolve(result);
   }
 
+  // ネイティブの <dialog>（showModal）が開いていると、その外の要素は top layer の下に隠れ、
+  // 操作もできない（inert）。管理画面の補正ダイアログから uiPrompt 等を呼ぶとこうなるので、
+  // 最前面のモーダル dialog（フォーカスのあるもの。無ければ文書順で最後）の中に移して出す。
+  // 無ければ body に戻す。
+  function placeHost() {
+    let modal = null;
+    try {
+      const active = document.activeElement;
+      modal = (active && active.closest("dialog:modal")) || [...document.querySelectorAll("dialog:modal")].pop() || null;
+    } catch (e) {
+      modal = null; // :modal 未対応のブラウザ
+    }
+    const parent = modal || document.body;
+    if (host.parentNode !== parent) parent.appendChild(host);
+  }
+
   function open(mode, message, opts) {
     build();
+    placeHost();
     opts = opts || {};
     msgEl.textContent = message == null ? "" : String(message);
 

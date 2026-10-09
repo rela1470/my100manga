@@ -1,5 +1,5 @@
 import { Env } from "./types";
-import { json, plainVolumeNumber } from "./util";
+import { badRequest, json, notFound, plainVolumeNumber, readJsonObject } from "./util";
 import { readPayload, salesVolumeNumber, workKey, type SalesWindow } from "./salesRanking";
 import { getSeriesVolumes, getMasterUpdatedAt } from "./series";
 import { getGroupVolumes } from "./groups";
@@ -301,6 +301,30 @@ export async function adminLinkHealthStep(env: Env, run: string | null): Promise
   const started = run ? null : await startLinkHealth(env, "admin", false);
   const s = await runLinkHealthStep(env, run ?? started!.run, false);
   return json(s ? publicState(s) : null, 200, { "cache-control": "no-store" });
+}
+
+/** POST /api/admin/sales-ranking/link-health/recheck。管理画面で補正した 1 作品だけを点検し直し、
+ *  最後の点検の結果のその行を差し替える（直っていれば消す）。body: { work, series_id }。
+ *  点検中（running）は、結果の画面に出している前回の点検（prev_problems）の行を差し替える。
+ *  前回の点検に無かった問題が出ても Slack には送らない（補正した本人が画面で見ている）。 */
+export async function adminLinkHealthRecheck(request: Request, env: Env, now = Date.now()): Promise<Response> {
+  const body = (await readJsonObject(request)) as { work?: unknown; series_id?: unknown };
+  const work = typeof body.work === "string" ? body.work : "";
+  const seriesId = typeof body.series_id === "string" ? body.series_id : "";
+  if (!work || !seriesId) return badRequest("work / series_id を指定してください");
+  const s = await readLinkHealth(env);
+  if (!s) return notFound("点検の結果がありません");
+  const field = s.state === "done" ? "problems" : "prev_problems";
+  const i = s[field].findIndex((p) => p.work === work && p.series_id === seriesId);
+  if (i < 0) return notFound("この作品は点検の結果にありません");
+  const old = s[field][i];
+  const target: Target = { work, series_id: seriesId, rank: old.rank, window: old.window };
+  const problem = judge(target, await displayedVolumes(env, seriesId), await rakutenVolume(env, work));
+  const list = [...s[field]];
+  if (problem) list[i] = problem;
+  else list.splice(i, 1);
+  await writeState(env, { ...s, [field]: sortProblems(list), updated_at: now });
+  return json({ problem }, 200, { "cache-control": "no-store" });
 }
 
 // 管理画面に返す形。targets は件数だけ、前回の問題は出さない（どちらも長い）。running の間は

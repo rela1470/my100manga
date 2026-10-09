@@ -4518,10 +4518,10 @@ async function loadSalesHealth(data) {
    （POST /api/series/:id/merge-request）と同じ操作を、管理者の確定として行う。巻の追加は
    POST /api/admin/series/:id/corrections（追加と同時に確定）、結合は POST /api/admin/series-merges。
    候補は閲覧者と同じ公開 API（/api/volume-candidates・/api/series/:id/merge-candidates）を使う。 */
-let healthFix = null; // { p: 点検の問題, merge: Map<series_id, 候補>, keep: 残す series_id, include: Set }
+let healthFix = null; // { p: 点検の問題, merge: Map<series_id, 候補>, keep: 残す series_id, include: Set, changed: 補正したか }
 
 function openHealthFix(p) {
-  healthFix = { p, merge: new Map(), keep: p.series_id, include: new Set() };
+  healthFix = { p, merge: new Map(), keep: p.series_id, include: new Set(), changed: false };
   $("healthFixTitle").textContent = `「${p.work}」のリンク先を補正`;
   $("healthFixMeta").textContent =
     `${p.series_id}${p.series_title ? `「${p.series_title}」` : ""} ｜ ${HEALTH_KIND[p.kind] || p.kind}` +
@@ -4615,6 +4615,7 @@ async function addHealthVolume(isbn, vol, btn) {
     });
     const data = await res.json().catch(() => ({}));
     if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
+    healthFix.changed = true;
     const label = (data.volume && data.volume.volume_number) || vol;
     const added = $("healthFixAdded");
     added.textContent = `${added.textContent ? added.textContent + "、" : "追加しました: "}${label}（${isbn}）`;
@@ -4636,6 +4637,30 @@ async function addHealthVolume(isbn, vol, btn) {
     btn.disabled = false;
     btn.textContent = orig;
   }
+}
+
+// 補正ダイアログを閉じたら、補正した作品だけを点検し直して一覧を更新する（直っていれば消える）。
+async function recheckHealthFix() {
+  if (!healthFix || !healthFix.changed) return;
+  const { p } = healthFix;
+  healthFix.changed = false;
+  try {
+    const res = await fetch("/api/admin/sales-ranking/link-health/recheck", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ work: p.work, series_id: p.series_id }),
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
+    uiToast(
+      data.problem
+        ? `「${p.work}」はまだ問題があります（${HEALTH_KIND[data.problem.kind] || data.problem.kind}）`
+        : `「${p.work}」は直りました`
+    );
+  } catch (e) {
+    uiAlert("点検し直しに失敗しました: " + e.message);
+  }
+  await loadSalesHealth();
 }
 
 async function loadHealthMergeCandidates(seriesId) {
@@ -4734,9 +4759,10 @@ async function runHealthMerge(btn) {
   // 結合の本体（確認・独自シリーズ名の入力・POST）はシリーズ結合ページと同じ mergeSeries を使い、
   // 終わったら一覧の再読み込みの代わりに候補を取り直す。
   await mergeSeries(keep, absorbed, [...merge.values()], btn, async () => {
+    healthFix.changed = true;
     healthFix.include.clear();
     healthFix.merge.clear();
-    $("healthMergeHint").textContent = "結合しました。「今すぐ点検」で結果を確かめてください。";
+    $("healthMergeHint").textContent = "結合しました。閉じるとこの作品を点検し直します。";
     await loadHealthMergeCandidates(healthFix.p.series_id);
     btn.disabled = false;
     btn.textContent = "結合";
@@ -5325,6 +5351,7 @@ $("reloadSales").addEventListener("click", () => {
 $("salesSnapshot").addEventListener("click", (e) => runSales(false, e.currentTarget));
 $("salesRecompute").addEventListener("click", (e) => runSales(true, e.currentTarget));
 $("salesHealthRun").addEventListener("click", (e) => runSalesHealth(e.currentTarget));
+$("healthFixDlg").addEventListener("close", () => recheckHealthFix());
 $("healthFixVols").addEventListener("click", () => openCircVols(healthFix.p.series_id, healthFix.p.series_title || healthFix.p.work));
 $("healthFixAdd").addEventListener("click", (e) => addHealthVolume($("healthFixIsbn").value, $("healthFixVol").value, e.currentTarget));
 // dialog の form の中で Enter を押すと既定のボタン（閉じる）で閉じてしまうので、各欄の操作に読み替える。

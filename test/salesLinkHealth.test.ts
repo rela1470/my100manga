@@ -1,7 +1,13 @@
 import { env } from "cloudflare:workers";
 import { beforeAll, describe, expect, it } from "vitest";
 import { adminSalesSnapshot, workKey } from "../src/salesRanking";
-import { readLinkHealth, runLinkHealthStep, startLinkHealth, type LinkHealthJob } from "../src/salesLinkHealth";
+import {
+  adminLinkHealthRecheck,
+  readLinkHealth,
+  runLinkHealthStep,
+  startLinkHealth,
+  type LinkHealthJob,
+} from "../src/salesLinkHealth";
 import type { Env } from "../src/types";
 import { normTitle } from "../src/util";
 import { makeIsbns } from "./helpers";
@@ -100,6 +106,39 @@ describe("salesLinkHealth", () => {
     const s = (await readLinkHealth(e))!;
     expect(s.problems).toHaveLength(3);
     expect(s.new_problems).toBe(0);
+  });
+
+  it("補正した 1 作品だけ点検し直し、直っていれば結果から消す", async () => {
+    const e = testEnv();
+    sent = [];
+    await startLinkHealth(e, "test", true);
+    while (sent.length) await runLinkHealthStep(e, sent.shift()!.run, true);
+    const recheck = (work: string, series_id: string) =>
+      adminLinkHealthRecheck(
+        new Request("https://x/api/admin/sales-ranking/link-health/recheck", {
+          method: "POST",
+          body: JSON.stringify({ work, series_id }),
+        }),
+        e
+      );
+    // まだ直していない → 同じ問題が返り、行は残る
+    let res = await recheck("テスト虫食い", "CLH003");
+    expect(((await res.json()) as { problem: { kind: string } }).problem.kind).toBe("gaps");
+    // 抜けていた 5〜9 巻をマスタに足す（補正の代わり）
+    const isbns = makeIsbns(5, 960000);
+    await env.DB.batch(
+      [5, 6, 7, 8, 9].map((n, i) =>
+        env.DB.prepare(
+          `INSERT INTO volumes (isbn, series_id, volume_number, vol_sort, title, creator, publisher, label)
+           VALUES (?, 'CLH003', ?, ?, 'テスト虫食い', '作者', '出版社', 'テストコミックス')`
+        ).bind(isbns[i], String(n), n)
+      )
+    );
+    res = await recheck("テスト虫食い", "CLH003");
+    expect(await res.json()).toEqual({ problem: null });
+    const s = (await readLinkHealth(e))!;
+    expect(s.problems.map((p) => p.series_id)).toEqual(["CLH006", "CLH002"]);
+    expect((await recheck("テスト虫食い", "CLH003")).status).toBe(404);
   });
 
   it("起動し直されたら古い run の歩は何もしない", async () => {

@@ -104,7 +104,7 @@ import {
 } from "./circulation";
 import { adminWarm, adminWarmStatus } from "./warm";
 import { runWarmStep, startAutoWarm, type WarmJob } from "./warmAuto";
-import { adminLinkHealth, adminLinkHealthStep, isLinkHealthJob, runLinkHealthStep, startLinkHealth } from "./salesLinkHealth";
+import { adminLinkHealth, adminLinkHealthRecheck, adminLinkHealthStep, isLinkHealthJob, runLinkHealthStep, startLinkHealth } from "./salesLinkHealth";
 import {
   adminDeleteMasterFix,
   adminListMasterFixes,
@@ -590,6 +590,10 @@ const worker = {
       }
       if (path === "/api/admin/sales-ranking/link-health" && request.method === "POST") {
         return await adminLinkHealthStep(env, url.searchParams.get("run"));
+      }
+      // 補正した 1 作品だけの点検し直し（管理画面の補正ダイアログを閉じたとき）。
+      if (path === "/api/admin/sales-ranking/link-health/recheck" && request.method === "POST") {
+        return await adminLinkHealthRecheck(request, env);
       }
       // 発行部数ランキングの取り込み状況と、作品 → シリーズの寄せ直し。
       if (path === "/api/admin/circulation" && request.method === "GET") {

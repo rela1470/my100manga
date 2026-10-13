@@ -377,21 +377,35 @@ async function applyManualLinks(env: Env, keys: string[], targets: Map<string, s
 }
 
 /** POST /api/admin/sales-ranking/link。作品の寄せ先を指定する。body: { work, series_id }。
- *  series_id は寄せ先の ID、'' で寄せない、null で指定を外して自動照合に戻す。集計を作り直して、
- *  その作品の今の寄せ先を返す（巻数チェックの行の差し替えは呼び出し側, src/index.ts）。 */
+ *  series_id は寄せ先の ID、'' で寄せない、null で指定を外して自動照合に戻す。
+ *
+ *  集計をまるごと作り直すと本番で 25 秒ほどかかる（300 件ぶんの作品名の照合）ので、保存済みの
+ *  集計（meta）のその作品の行だけを書き換える（patchPayloadLink）。表紙は次の集計（毎朝の Cron・
+ *  「集計し直す」）まで前のまま。集計がまだ無ければ作る。その作品の今の寄せ先を返す（巻数チェック
+ *  の行の差し替えは呼び出し側, src/index.ts）。 */
 export async function adminSalesLink(env: Env, body: unknown): Promise<Response> {
   const b = (body ?? {}) as { work?: unknown; series_id?: unknown };
   const work = typeof b.work === "string" ? b.work.trim() : "";
   if (!work) return badRequest("work を指定してください");
   const key = workKey(work);
-  const exists = await env.DB.prepare(`SELECT 1 AS x FROM sales_snapshot WHERE work_norm = ? LIMIT 1`).bind(key).first();
-  if (!exists) return notFound("その作品はランキングにありません");
+  const rows = await env.DB.prepare(`SELECT work, author, isbn FROM sales_snapshot WHERE work_norm = ? ORDER BY day DESC, rank ASC`)
+    .bind(key)
+    .all<{ work: string; author: string | null; isbn: string }>();
+  const snap = rows.results ?? [];
+  if (!snap.length) return notFound("その作品はランキングにありません");
+
+  let target: string | null;
+  let manual = true;
   if (b.series_id === null) {
     await env.DB.prepare(`DELETE FROM sales_link WHERE work_norm = ?`).bind(key).run();
+    manual = false;
+    const ref: WorkRef = { key, work: snap[0].work, author: snap[0].author ?? "", isbns: [...new Set(snap.map((r) => r.isbn))] };
+    target = (await resolveTargets(env, [ref])).get(key) ?? null;
   } else {
     const id = typeof b.series_id === "string" ? b.series_id.trim() : null;
     if (id === null) return badRequest("series_id は文字列か null で指定してください");
-    if (id && !(await unitExists(env, id))) return badRequest("そのシリーズが見つかりません");
+    target = id ? await resolveUnit(env, id) : null;
+    if (id && (!target || !(await unitExists(env, id)))) return badRequest("そのシリーズが見つかりません");
     await env.DB.prepare(
       `INSERT INTO sales_link (work_norm, series_id, created_at) VALUES (?, ?, ?)
        ON CONFLICT(work_norm) DO UPDATE SET series_id = excluded.series_id, created_at = excluded.created_at`
@@ -399,14 +413,28 @@ export async function adminSalesLink(env: Env, body: unknown): Promise<Response>
       .bind(key, id, Date.now())
       .run();
   }
-  const payload = await computeSalesRanking(env);
-  await storePayload(env, payload);
-  const entry = WINDOWS.flatMap((w) => payload.windows[w]).find((e) => workKey(e.work) === key);
-  return json(
-    { ok: true, work: entry?.work ?? work, series_id: entry?.series_id ?? null, manual_link: Boolean(entry?.manual_link) },
-    200,
-    { "cache-control": "no-store" }
-  );
+
+  const payload = await readPayload(env);
+  if (payload) {
+    patchPayloadLink(payload, key, target, manual);
+    await storePayload(env, payload);
+  } else {
+    await storePayload(env, await computeSalesRanking(env));
+  }
+  return json({ ok: true, work: snap[0].work, series_id: target, manual_link: manual }, 200, { "cache-control": "no-store" });
+}
+
+/** 保存済みの集計で、作品（集計キー）の行の寄せ先を書き換える（computeSalesRanking の build と同じ形に）。 */
+export function patchPayloadLink(payload: SalesPayload, key: string, target: string | null, manual: boolean): void {
+  for (const w of WINDOWS) {
+    for (const e of payload.windows[w] ?? []) {
+      if (workKey(e.work) !== key) continue;
+      e.series_id = target;
+      e.search_q = target ? "" : headWord(e.work).normalize("NFKC");
+      if (manual) e.manual_link = true;
+      else delete e.manual_link;
+    }
+  }
 }
 
 /** 指定先が実在するか。C-id / U-id は series、まとまり（G-id）は resolveUnit で確かめる。 */

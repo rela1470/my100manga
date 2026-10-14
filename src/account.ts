@@ -300,7 +300,7 @@ export async function deleteAccount(request: Request, env: Env, user: User): Pro
   if (deleteLists) {
     deletedLists = owned.length;
     purgeSlugs.push(...owned.map((r) => r.slug));
-    for (const r of owned) listStmts.push(...deleteListStatements(env, r.slug));
+    for (const r of owned) listStmts.push(...deleteListStatements(env, r.slug, "account_delete"));
   } else {
     listStmts.push(env.DB.prepare(`UPDATE lists SET user_id = NULL WHERE user_id = ?`).bind(user.id));
   }

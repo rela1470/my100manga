@@ -3,7 +3,7 @@ import { parseStoredItems, resolveBooks, resolveListItems } from "./listItems";
 import { badRequest, json, notFound, normTitle, readJsonObject, searchKey, toIsbn13, seriesNameSql, volSort } from "./util";
 import { normalizeCorrectionVolume } from "./corrections";
 import { getMostCommonVolumeTitle } from "./series";
-import { deleteListStatements, PUBLISH_ACTIONS_SQL, recordPublishAudit } from "./lists";
+import { archiveListStatement, deleteListStatements, PUBLISH_ACTIONS_SQL, recordPublishAudit } from "./lists";
 import { devBypassActive } from "./adminAuth";
 import { invalidateListView, purgeListArtifacts } from "./viewSnapshot";
 import { isGroupId, resolveGroup } from "./groups";
@@ -324,6 +324,7 @@ const DEV_RESET_TABLES = [
   "cover_suggestion",
   "reports",
   "publish_audit",
+  "list_history",
   "user_drafts",
   "sessions",
   "users",
@@ -421,13 +422,88 @@ export async function adminDeleteList(request: Request, env: Env, slug: string, 
   const owner = await env.DB.prepare(`SELECT owner_name FROM lists WHERE slug = ?`)
     .bind(slug)
     .first<{ owner_name: string | null }>();
-  const [res] = await env.DB.batch(deleteListStatements(env, slug));
-  if (!(res.meta?.changes ?? 0)) return notFound("リストが見つかりません");
+  if (!owner) return notFound("リストが見つかりません");
+  const [archived] = await env.DB.batch(deleteListStatements(env, slug, "admin_delete"));
+  // 先頭は控えの INSERT ... SELECT。先に引いてから消すまでの間に作成者が消していたら 0 件なので、
+  // 監査ログも足さない（list_views 等は閲覧ビーコンが消えた slug にも書くことがあり、件数の当てにならない）。
+  if (!(archived.meta?.changes ?? 0)) return notFound("リストが見つかりません");
   // 監査ログに管理者削除として残す（作成者の削除・退会と見分けられるように）。
   await recordPublishAudit(request, env, slug, "admin_delete", owner?.owner_name ?? "");
   // 閲覧スナップショット・共有画像（R2）・閲覧キャッシュも消す（失敗しても削除は成功扱い）。
   await purgeListArtifacts(env, slug, origin);
   return json({ ok: true, slug });
+}
+
+interface ListHistoryRow {
+  id: number;
+  slug: string;
+  owner_name: string | null;
+  bio: string;
+  items_json: string;
+  user_id: string | null;
+  unlisted: number;
+  created_at: number;
+  updated_at: number;
+  archived_at: number;
+  reason: string;
+}
+
+// リストの控え（list_history, src/lists.ts archiveListStatement）。控えた新しい順。slug で絞り込める
+// （同じ slug が再利用されて別のリストの控えが並ぶこともある）。一覧には中身を載せず、作品数だけ
+// 出す。中身は adminGetListHistory で 1 件ずつ見る。読み取り専用（復元はしない）。
+export async function adminListListHistory(env: Env, opts: PageOpts, slug?: string): Promise<Response> {
+  const where = slug ? `WHERE slug = ?` : ``;
+  const binds = slug ? [slug] : [];
+  const total = await countRows(env, `SELECT COUNT(*) AS n FROM list_history ${where}`, binds);
+  const { results } = await env.DB.prepare(
+    `SELECT id, slug, owner_name, unlisted, created_at, updated_at, archived_at, reason,
+            CASE WHEN json_valid(items_json) THEN json_array_length(items_json) ELSE 0 END AS item_count
+       FROM list_history ${where} ORDER BY id DESC LIMIT ? OFFSET ?`
+  )
+    .bind(...binds, opts.per, opts.offset)
+    .all<Omit<ListHistoryRow, "bio" | "items_json" | "user_id"> & { item_count: number }>();
+  const history = (results ?? []).map((r) => ({
+    id: r.id,
+    slug: r.slug,
+    owner_name: r.owner_name ?? "",
+    item_count: r.item_count,
+    unlisted: r.unlisted === 1,
+    created_at: r.created_at,
+    updated_at: r.updated_at,
+    archived_at: r.archived_at,
+    reason: r.reason,
+  }));
+  return json({ history, total, page: opts.page, per: opts.per }, 200, { "cache-control": "no-store" });
+}
+
+export async function adminGetListHistory(env: Env, id: number): Promise<Response> {
+  const row = await env.DB.prepare(
+    `SELECT id, slug, owner_name, bio, items_json, user_id, unlisted, created_at, updated_at, archived_at, reason
+       FROM list_history WHERE id = ?`
+  )
+    .bind(id)
+    .first<ListHistoryRow>();
+  if (!row) return notFound("リストの控えが見つかりません");
+  const items = await resolveListItems(env, parseStoredItems(row.items_json));
+  return json(
+    {
+      list: {
+        id: row.id,
+        slug: row.slug,
+        owner_name: row.owner_name ?? "",
+        bio: row.bio ?? "",
+        items,
+        user_id: row.user_id ?? "",
+        unlisted: row.unlisted === 1,
+        created_at: row.created_at,
+        updated_at: row.updated_at,
+        archived_at: row.archived_at,
+        reason: row.reason,
+      },
+    },
+    200,
+    { "cache-control": "no-store" }
+  );
 }
 
 interface AdminCorrectionRow {
@@ -1659,13 +1735,15 @@ export async function adminRedactReport(env: Env, id: number, origin?: string): 
   // 伏字で表示が変わるリスト。最後に閲覧スナップショット・閲覧キャッシュを消す。
   const redactedSlugs = new Set<string>([rep.slug]);
   if (rep.target_type === "owner_name") {
-    await env.DB.prepare(`UPDATE lists SET owner_name = '', updated_at = ? WHERE slug = ?`)
-      .bind(now, rep.slug)
-      .run();
+    await env.DB.batch([
+      archiveListStatement(env, rep.slug, "admin_redact"),
+      env.DB.prepare(`UPDATE lists SET owner_name = '', updated_at = ? WHERE slug = ?`).bind(now, rep.slug),
+    ]);
   } else if (rep.target_type === "bio") {
-    await env.DB.prepare(`UPDATE lists SET bio = '', updated_at = ? WHERE slug = ?`)
-      .bind(now, rep.slug)
-      .run();
+    await env.DB.batch([
+      archiveListStatement(env, rep.slug, "admin_redact"),
+      env.DB.prepare(`UPDATE lists SET bio = '', updated_at = ? WHERE slug = ?`).bind(now, rep.slug),
+    ]);
   } else if (rep.target_type === "comment" || rep.target_type === "cover") {
     const items = parseStoredItems(list.items_json);
     const idx = items.findIndex((i) => i.position === rep.position);
@@ -1710,9 +1788,14 @@ export async function adminRedactReport(env: Env, id: number, origin?: string): 
       }
     } else {
       if (target) target.comment = "";
-      await env.DB.prepare(`UPDATE lists SET items_json = ?, updated_at = ? WHERE slug = ?`)
-        .bind(JSON.stringify(items), now, rep.slug)
-        .run();
+      await env.DB.batch([
+        archiveListStatement(env, rep.slug, "admin_redact"),
+        env.DB.prepare(`UPDATE lists SET items_json = ?, updated_at = ? WHERE slug = ?`).bind(
+          JSON.stringify(items),
+          now,
+          rep.slug
+        ),
+      ]);
     }
   }
 

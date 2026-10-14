@@ -21,6 +21,7 @@ const PER = 50;
 // 一覧ごとの現在ページ（1-origin）。再読み込み・変更後の再取得で位置を保つ。
 const pageState = {
   reports: 1,
+  history: 1,
   lists: 1,
   users: 1,
   audit: 1,
@@ -505,16 +506,27 @@ async function openDetail(slug, autoAd = false) {
   const titleEl = $("detailTitle");
   grid.textContent = "";
   $("detailAudit").textContent = "";
+  $("detailHistory").textContent = "";
   meta.textContent = "読み込み中…";
   titleEl.textContent = slug;
   modal.classList.add("open");
 
   renderDetailAudit(slug);
+  renderDetailHistory(slug);
   renderDetailAd(slug, autoAd);
 
   let list;
   try {
     const res = await fetch(`/api/admin/lists/${encodeURIComponent(slug)}`);
+    if (res.status === 404) {
+      // 通報・監査ログから開いたリストが既に削除されていたら、削除したリストの控えへ案内する。
+      $("detailAd").textContent = "";
+      const link = el("a", { className: "slug detail", textContent: "リストの控えを見る" });
+      link.addEventListener("click", () => filterHistoryBySlug(slug));
+      meta.textContent = "";
+      meta.append(document.createTextNode("このリストは削除されています ｜ "), link);
+      return;
+    }
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
     list = (await res.json()).list;
   } catch (e) {
@@ -537,10 +549,15 @@ async function openDetail(slug, autoAd = false) {
     meta.append(el("br"), document.createTextNode(`ひとこと: ${list.bio}`));
   }
 
-  for (const it of list.items) {
+  renderDetailItems(grid, list.items);
+}
+
+// withComments: リストの控えでは、何が書かれていたかを確かめるのが目的なのでコメント本文も出す。
+function renderDetailItems(grid, items, withComments = false) {
+  for (const it of items) {
     const flags = [];
     if (it.spoiler) flags.push("ネタバレ");
-    if (it.comment) flags.push("コメント有");
+    if (it.comment && !withComments) flags.push("コメント有");
     grid.append(
       el("div", { className: "detail-item" }, [
         coverThumb(it.cover_url, "di-cover", "di-noimg", it.title),
@@ -549,10 +566,60 @@ async function openDetail(slug, autoAd = false) {
           el("div", { className: "di-title", textContent: it.title }),
           el("div", { className: "di-author", textContent: it.author || "" }),
           flags.length ? el("div", { className: "di-flags", textContent: flags.join(" / ") }) : "",
+          withComments && it.comment ? el("div", { className: "di-meta", textContent: it.comment }) : "",
         ].filter(Boolean)),
       ])
     );
   }
+}
+
+// リストの控え（削除・更新前・伏字前の版）を、公開リストと同じ詳細モーダルに読み取り専用で出す。
+// 編集リンク・X広告用画像は出さない。
+async function openHistoryDetail(id) {
+  const modal = $("detailModal");
+  const grid = $("detailGrid");
+  const meta = $("detailMeta");
+  const titleEl = $("detailTitle");
+  grid.textContent = "";
+  $("detailAudit").textContent = "";
+  $("detailHistory").textContent = "";
+  $("detailAd").textContent = "";
+  meta.textContent = "読み込み中…";
+  titleEl.textContent = `リストの控え #${id}`;
+  modal.classList.add("open");
+
+  let list;
+  try {
+    const res = await fetch(`/api/admin/list-history/${encodeURIComponent(id)}`);
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    list = (await res.json()).list;
+  } catch (e) {
+    meta.textContent = "読み込みに失敗しました: " + e.message;
+    return;
+  }
+  renderDetailAudit(list.slug);
+
+  const owner = list.owner_name || "（名前なし）";
+  titleEl.textContent = `【${HISTORY_REASON_LABEL[list.reason] || list.reason}】${owner} — ${list.slug}`;
+  meta.textContent = "";
+  meta.append(
+    document.createTextNode(
+      `控えた時刻 ${fmtDate(list.archived_at)} ｜ ` +
+        (list.unlisted ? "限定公開 ｜ " : "みんなに公開 ｜ ") +
+        `${list.items.length}作品 ｜ 作成 ${fmtDate(list.created_at)} ｜ この版の更新 ${fmtDate(list.updated_at)}` +
+        (list.user_id ? ` ｜ アカウント ${list.user_id}` : "")
+    )
+  );
+  if (!DELETE_ACTIONS.has(list.reason)) {
+    meta.append(
+      document.createTextNode(" ｜ "),
+      el("a", { href: `/l/${encodeURIComponent(list.slug)}`, target: "_blank", rel: "noopener", textContent: "今の公開ページ" })
+    );
+  }
+  if (list.bio) {
+    meta.append(el("br"), document.createTextNode(`ひとこと: ${list.bio}`));
+  }
+  renderDetailItems(grid, list.items, true);
 }
 
 // X広告用の 4 枚画像（1200×675 = 16:9, 25 冊ずつ）。X の 4 枚投稿は各タイルを横長に切り抜くので、
@@ -621,6 +688,84 @@ const AUDIT_ACTION_LABEL = {
   admin_delete: "管理者が削除",
 };
 
+// 削除の理由（src/lists.ts ListDeleteReason）。消えたリストは控えにしか残らない。
+const DELETE_ACTIONS = new Set(["delete", "account_delete", "admin_delete"]);
+
+// list_history.reason（src/lists.ts ListArchiveReason）。
+const HISTORY_REASON_LABEL = {
+  delete: "作成者が削除",
+  account_delete: "退会で削除",
+  admin_delete: "管理者が削除",
+  update: "更新前の版",
+  admin_redact: "伏字前の版",
+};
+
+function filterHistoryBySlug(slug) {
+  closeDetail();
+  $("historySlug").value = slug || "";
+  if (location.hash === "#list-history") loadListHistory(1);
+  else location.hash = "#list-history";
+}
+
+async function loadListHistory(page = pageState.history) {
+  const table = $("historyTable");
+  const body = $("historyBody");
+  const hint = $("historyHint");
+  const count = $("historyCount");
+  body.textContent = "";
+  hint.style.display = "none";
+  table.style.display = "none";
+  $("historyPager").style.display = "none";
+
+  const slug = $("historySlug").value.trim();
+  const slugQs = slug ? `&slug=${encodeURIComponent(slug)}` : "";
+
+  let data;
+  try {
+    const res = await fetch(`/api/admin/list-history?page=${page}&per=${PER}${slugQs}`);
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    data = await res.json();
+  } catch {
+    hint.textContent = "リストの控えの取得に失敗しました";
+    hint.style.display = "";
+    return;
+  }
+
+  const history = data.history || [];
+  const total = data.total ?? history.length;
+  if (history.length === 0 && page > 1 && total > 0) {
+    return loadListHistory(Math.min(page - 1, Math.max(1, Math.ceil(total / PER))));
+  }
+  pageState.history = page;
+  count.textContent = `${total.toLocaleString("ja-JP")}件`;
+
+  if (total === 0) {
+    hint.textContent = slug ? "この slug の控えはありません。" : "リストの控えはありません。";
+    hint.style.display = "";
+    return;
+  }
+
+  for (const h of history) {
+    const slugLink = el("a", { className: "slug detail", textContent: h.slug, title: "中身を表示" });
+    slugLink.addEventListener("click", () => openHistoryDetail(h.id));
+    body.append(
+      el("tr", null, [
+        el("td", { textContent: fmtDate(h.archived_at) }),
+        el("td", { textContent: HISTORY_REASON_LABEL[h.reason] || h.reason }),
+        el("td", null, [slugLink]),
+        el("td", { className: "owner", textContent: h.owner_name || "（名前なし）" }),
+        el("td", { className: "num", textContent: String(h.item_count) }),
+        el("td", { textContent: h.unlisted ? "限定公開" : "公開" }),
+        el("td", { textContent: fmtDate(h.created_at) }),
+        el("td", { textContent: fmtDate(h.updated_at) }),
+      ])
+    );
+  }
+
+  table.style.display = "";
+  renderPager("historyPager", page, total, loadListHistory);
+}
+
 // 公開リスト一覧から監査ログページへ移動し、その slug で絞り込む。
 function filterAuditBySlug(slug) {
   $("auditSlug").value = slug || "";
@@ -663,6 +808,25 @@ async function renderDetailAudit(slug) {
   );
 }
 
+// 公開中のリストの詳細に、更新前・伏字前の版がいくつ控えてあるかとリストの控えへのリンクを出す。
+async function renderDetailHistory(slug) {
+  let total = 0;
+  try {
+    const res = await fetch(`/api/admin/list-history?slug=${encodeURIComponent(slug)}&per=1`);
+    if (!res.ok) return;
+    total = (await res.json()).total ?? 0;
+  } catch {
+    return;
+  }
+  if (!total) return;
+  const link = el("a", { className: "slug detail", textContent: "リストの控えを表示" });
+  link.addEventListener("click", () => filterHistoryBySlug(slug));
+  $("detailHistory").textContent = "";
+  $("detailHistory").append(
+    el("p", { className: "hint" }, [document.createTextNode(`過去の版 ${total.toLocaleString("ja-JP")}件 ｜ `), link])
+  );
+}
+
 async function loadAudit(page = pageState.audit) {
   const table = $("auditTable");
   const body = $("auditBody");
@@ -701,8 +865,14 @@ async function loadAudit(page = pageState.audit) {
   }
 
   for (const a of audit) {
-    const slugLink = el("a", { className: "slug detail", textContent: a.slug, title: "詳細を表示" });
-    slugLink.addEventListener("click", () => openDetail(a.slug));
+    // 削除の行は、もう公開リストには無いのでリストの控えへ飛ぶ。
+    const deleted = DELETE_ACTIONS.has(a.action);
+    const slugLink = el("a", {
+      className: "slug detail",
+      textContent: a.slug,
+      title: deleted ? "リストの控えを表示" : "詳細を表示",
+    });
+    slugLink.addEventListener("click", () => (deleted ? filterHistoryBySlug(a.slug) : openDetail(a.slug)));
 
     body.append(
       el("tr", null, [
@@ -2287,6 +2457,7 @@ async function openSeriesVolumes(seriesId, label) {
   const titleEl = $("detailTitle");
   grid.textContent = "";
   $("detailAudit").textContent = "";
+  $("detailHistory").textContent = "";
   meta.textContent = "読み込み中…";
   titleEl.textContent = label || seriesId;
   modal.classList.add("open");
@@ -2849,6 +3020,7 @@ function openSupDetail(seriesId) {
   const titleEl = $("detailTitle");
   grid.textContent = "";
   $("detailAudit").textContent = "";
+  $("detailHistory").textContent = "";
 
   const seriesName = sp.series_name || "（不明なシリーズ）";
   titleEl.textContent = `${seriesName} — ${sp.series_id}`;
@@ -3049,6 +3221,7 @@ function openBookMetaDetail(isbn) {
   const titleEl = $("detailTitle");
   grid.textContent = "";
   $("detailAudit").textContent = "";
+  $("detailHistory").textContent = "";
 
   const titleText = b.title || "（マスター未登録）";
   titleEl.textContent = `${titleText} — ${b.isbn}`;
@@ -4290,6 +4463,7 @@ const PAGES = {
   lists: () => loadLists(1),
   users: () => loadUsers(1),
   audit: () => loadAudit(1),
+  "list-history": () => loadListHistory(1),
   "volume-reports": () => {
     resetHistory("volReports");
     loadVolumeReports(1);
@@ -4988,6 +5162,10 @@ $("userQuery").addEventListener("keydown", (e) => {
 });
 $("auditSlug").addEventListener("keydown", (e) => {
   if (e.key === "Enter") loadAudit(1);
+});
+$("reloadHistory").addEventListener("click", () => loadListHistory(pageState.history));
+$("historySlug").addEventListener("keydown", (e) => {
+  if (e.key === "Enter") loadListHistory(1);
 });
 $("reloadVolReport").addEventListener("click", () =>
   HISTORY.volReports.on ? loadHiddenVolumes(pageState.volHidden) : loadVolumeReports(pageState.volReports)

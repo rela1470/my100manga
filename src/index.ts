@@ -47,6 +47,8 @@ import {
   adminDismissVolumeReport,
   adminListHiddenVolumes,
   adminGetList,
+  adminGetListHistory,
+  adminListListHistory,
   adminListCorrections,
   adminListLists,
   adminListUsers,
@@ -80,7 +82,7 @@ import {
   adminDevReset,
   parsePage,
 } from "./admin";
-import { addReport, purgePublishAudit } from "./reports";
+import { addReport, purgeListHistory, purgePublishAudit } from "./reports";
 import { adminCsrfOk, isAdminAssetPath, isAdminUiPath, requireAdmin } from "./adminAuth";
 import { CSP_REPORT_PATH, cspMode, errorPageHtml, MAX_JSON_BODY, readJsonBody, withSecurityHeaders } from "./util";
 import { currentUser, loginCallback, loginStart, logout, purgeExpiredSessions } from "./auth";
@@ -937,6 +939,14 @@ const worker = {
         // ?resolved=1 で処理済み(却下/伏字)の履歴、無ければレビュー待ちキュー。
         return await adminListReports(env, parsePage(url), url.searchParams.get("resolved") === "1");
       }
+      // リストの控え（削除・更新前・伏字前の版, 365 日）。?slug=xxx で絞り込める。詳細は id で引く。
+      if (path === "/api/admin/list-history" && request.method === "GET") {
+        return await adminListListHistory(env, parsePage(url), url.searchParams.get("slug") ?? undefined);
+      }
+      const adminListHistoryMatch = path.match(/^\/api\/admin\/list-history\/([0-9]+)$/);
+      if (adminListHistoryMatch && request.method === "GET") {
+        return await adminGetListHistory(env, Number(adminListHistoryMatch[1]));
+      }
       // 公開の監査ログ。?slug=xxx で特定リストだけに絞り込める。
       if (path === "/api/admin/publish-audit" && request.method === "GET") {
         return await adminListPublishAudit(
@@ -1016,6 +1026,8 @@ const worker = {
     ctx.waitUntil(purgeListViewSeen(env).catch((err) => console.error("list view purge failed", err)));
     // 公開の監査ログ（publish_audit, IP・UA を含む）は 365 日で消す。期限切れのログインセッションも掃除する。
     ctx.waitUntil(purgePublishAudit(env).catch((err) => console.error("publish audit purge failed", err)));
+    // リストの控え（list_history）も 365 日で消す。
+    ctx.waitUntil(purgeListHistory(env).catch((err) => console.error("list history purge failed", err)));
     ctx.waitUntil(purgeExpiredSessions(env).catch((err) => console.error("session purge failed", err)));
     // 下書きのある端末（draft_devices）は集計窓の 30 日を過ぎたら消す。
     ctx.waitUntil(purgeDraftDevices(env).catch((err) => console.error("draft device purge failed", err)));

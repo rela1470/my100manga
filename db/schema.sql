@@ -677,6 +677,28 @@ CREATE TABLE IF NOT EXISTS publish_audit (
 CREATE INDEX IF NOT EXISTS idx_publish_audit_slug ON publish_audit (slug);
 CREATE INDEX IF NOT EXISTS idx_publish_audit_created ON publish_audit (created_at);
 
+-- リストの控え（src/lists.ts archiveListStatement）。消す・書き換える直前の中身を写す:
+-- 作成者の削除・管理者の削除・退会時の削除・更新公開（内容が変わったときだけ）・管理者の伏字。
+-- 削除後や編集で消された後に通報や権利侵害の申し立てが来たとき、何が載っていたかを確かめるための
+-- もので、管理画面からだけ読む。公開側からは引かない。publish_audit と同じく 365 日で消す
+-- （src/reports.ts purgeListHistory, Cron）。更新前の版は 1 リスト LIST_HISTORY_UPDATE_KEEP 件まで。
+-- slug はカスタム slug で再利用されうるので PK にしない。edit_token は持たない（復元は作らない）。
+CREATE TABLE IF NOT EXISTS list_history (
+  id          INTEGER PRIMARY KEY AUTOINCREMENT,
+  slug        TEXT NOT NULL,
+  owner_name  TEXT,
+  bio         TEXT NOT NULL DEFAULT '',
+  items_json  TEXT NOT NULL,             -- lists.items_json そのまま
+  user_id     TEXT,                      -- 控えた時点の所有アカウント (users.id)。退会後は users に無い
+  unlisted    INTEGER NOT NULL DEFAULT 0,
+  created_at  INTEGER NOT NULL,          -- 元のリストの作成時刻、この版の最終更新時刻 (epoch ms)
+  updated_at  INTEGER NOT NULL,
+  archived_at INTEGER NOT NULL,          -- 控えた（消した・書き換えた）時刻 (epoch ms)
+  reason      TEXT NOT NULL              -- 'delete' (作成者) | 'admin_delete' | 'account_delete' | 'update' | 'admin_redact'
+);
+CREATE INDEX IF NOT EXISTS idx_list_history_slug ON list_history (slug, id);
+CREATE INDEX IF NOT EXISTS idx_list_history_at ON list_history (archived_at);
+
 -- 売上ランキング（src/salesRanking.ts）。楽天ブックスのコミックを「売れている順」で毎日
 -- 上位 300 件取得した日次スナップショット。楽天は期間も部数も出さないので、日ごとの順位を
 -- ポイントにして作品単位（work_norm）で過去7日・30日・年間に積み上げる。

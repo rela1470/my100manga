@@ -76,6 +76,7 @@ describe("DELETE /api/me（退会）", () => {
       .first<{ user_id: string | null; edit_token: string }>();
     expect(row).toEqual({ user_id: null, edit_token: a.edit_token });
     expect(await count(`SELECT COUNT(*) AS n FROM publish_audit WHERE slug = ? AND action = 'account_unlink'`, a.slug)).toBe(1);
+    expect(await count(`SELECT COUNT(*) AS n FROM list_history WHERE slug = ?`, a.slug)).toBe(0);
   });
 
   it("delete_lists なら本人のリストだけを付随データごと消す", async () => {
@@ -100,6 +101,9 @@ describe("DELETE /api/me（退会）", () => {
     expect(await count(`SELECT COUNT(*) AS n FROM publish_audit WHERE slug = ? AND action = 'account_delete'`, mine.slug)).toBe(1);
     expect(await count(`SELECT COUNT(*) AS n FROM publish_audit WHERE slug = ? AND action = 'create'`, mine.slug)).toBe(1);
     expect(await count(`SELECT COUNT(*) AS n FROM publish_audit WHERE slug = ? AND action LIKE 'account_%'`, others.slug)).toBe(0);
+    // 消した中身は list_history に控えが残る（本人の分だけ）。
+    expect(await count(`SELECT COUNT(*) AS n FROM list_history WHERE slug = ? AND reason = 'account_delete' AND user_id = 'u1'`, mine.slug)).toBe(1);
+    expect(await count(`SELECT COUNT(*) AS n FROM list_history WHERE slug IN (?, ?)`, others.slug, anon.slug)).toBe(0);
   });
 
   it("別オリジンからのリクエストは拒否する", async () => {

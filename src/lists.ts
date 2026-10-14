@@ -18,13 +18,45 @@ import { checkListContent, findNgWord } from "./ngwords";
 import { parseStoredItems, resolveListItems } from "./listItems";
 import { adultBlockMessage, findAdultIsbns } from "./adult";
 
+/** 控えの理由。list_history.reason に入れる。削除系は publish_audit.action と同じ値。 */
+export type ListArchiveReason = "delete" | "admin_delete" | "account_delete" | "update" | "admin_redact";
+export type ListDeleteReason = Extract<ListArchiveReason, "delete" | "admin_delete" | "account_delete">;
+
+/** 1 リストあたりに残す「更新前の版」の上限。更新は書き込みの枠（RL_WRITE）と Turnstile を通るが、
+ *  それでも 1 リストを繰り返し更新して表を膨らませられないよう、古い版から消す。削除・伏字の控えは数えない。 */
+export const LIST_HISTORY_UPDATE_KEEP = 100;
+
+/** lists の今の中身を list_history に写す文（行が無ければ 0 件）。消す・書き換える文と同じ batch に
+ *  入れる（トランザクションなので、写しと変更の片方だけが通ることは無い）。 */
+export function archiveListStatement(
+  env: Env,
+  slug: string,
+  reason: ListArchiveReason,
+  /** 指定すると、今の中身がこれと同じなら写さない（更新公開で中身が変わらないとき）。 */
+  unlessSameAs?: { owner_name: string; bio: string; items_json: string; unlisted: boolean }
+): D1PreparedStatement {
+  const sql = `INSERT INTO list_history
+       (slug, owner_name, bio, items_json, user_id, unlisted, created_at, updated_at, archived_at, reason)
+     SELECT slug, owner_name, bio, items_json, user_id, unlisted, created_at, updated_at, ?, ?
+       FROM lists WHERE slug = ?`;
+  if (!unlessSameAs) return env.DB.prepare(sql).bind(Date.now(), reason, slug);
+  const u = unlessSameAs;
+  return env.DB.prepare(
+    `${sql} AND NOT (owner_name IS ? AND bio IS ? AND items_json IS ? AND unlisted IS ?)`
+  ).bind(Date.now(), reason, slug, u.owner_name, u.bio, u.items_json, u.unlisted ? 1 : 0);
+}
+
 /** リスト 1 件とその付随データを消す文。lists 本体に加え、ランキングが消えたリストを数え
  *  続けないよう追加イベント (src/ranking.ts) を、一覧のアクセス数順 (src/publicLists.ts) の
- *  日別カウンタも一緒に掃除する。管理者削除と退会時の削除で使う。 */
-export function deleteListStatements(env: Env, slug: string): D1PreparedStatement[] {
-  return ["lists", "list_item_events", "list_views", "list_view_seen"].map((t) =>
-    env.DB.prepare(`DELETE FROM ${t} WHERE slug = ?`).bind(slug)
-  );
+ *  日別カウンタも一緒に掃除する。作成者の削除・管理者削除・退会時の削除で使う。
+ *  先頭は中身を list_history へ写す文（削除後の通報・権利侵害への対応用。365 日で消える）。 */
+export function deleteListStatements(env: Env, slug: string, reason: ListDeleteReason): D1PreparedStatement[] {
+  return [
+    archiveListStatement(env, slug, reason),
+    ...["lists", "list_item_events", "list_views", "list_view_seen"].map((t) =>
+      env.DB.prepare(`DELETE FROM ${t} WHERE slug = ?`).bind(slug)
+    ),
+  ];
 }
 
 const REQUIRED_ITEMS = 100;
@@ -328,7 +360,7 @@ export async function deleteList(request: Request, env: Env, slug: string): Prom
     }
   }
   if (!timingSafeEqualStr(token, list.edit_token)) return json({ error: "編集権限がありません" }, 403);
-  await env.DB.batch(deleteListStatements(env, slug));
+  await env.DB.batch(deleteListStatements(env, slug, "delete"));
   await recordPublishAudit(request, env, slug, "delete", list.owner_name);
   return json({ ok: true, slug });
 }
@@ -363,11 +395,19 @@ export async function updateList(request: Request, env: Env, slug: string): Prom
 
   const now = Date.now();
 
-  await env.DB.prepare(
-    `UPDATE lists SET owner_name = ?, bio = ?, items_json = ?, unlisted = ?, updated_at = ? WHERE slug = ?`
-  )
-    .bind(owner_name, bio, JSON.stringify(items), unlisted ? 1 : 0, now, slug)
-    .run();
+  const itemsJson = JSON.stringify(items);
+  // 更新前の版を控える。中身（名前・ひとこと・作品・公開範囲）が変わらない更新では控えない。
+  await env.DB.batch([
+    archiveListStatement(env, slug, "update", { owner_name, bio, items_json: itemsJson, unlisted }),
+    env.DB.prepare(
+      `DELETE FROM list_history
+        WHERE slug = ? AND reason = 'update' AND id NOT IN (
+          SELECT id FROM list_history WHERE slug = ? AND reason = 'update' ORDER BY id DESC LIMIT ?)`
+    ).bind(slug, slug, LIST_HISTORY_UPDATE_KEEP),
+    env.DB.prepare(
+      `UPDATE lists SET owner_name = ?, bio = ?, items_json = ?, unlisted = ?, updated_at = ? WHERE slug = ?`
+    ).bind(owner_name, bio, itemsJson, unlisted ? 1 : 0, now, slug),
+  ]);
 
   await recordPublishAudit(request, env, slug, "update", owner_name);
 

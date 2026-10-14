@@ -23,6 +23,7 @@
       <a href="#lists" data-page="lists">公開リスト</a>
       <a href="#users" data-page="users">Googleアカウント</a>
       <a href="#audit" data-page="audit">監査ログ</a>
+      <a href="#list-history" data-page="list-history">リストの控え</a>
       <a href="#volume-reports" data-page="volume-reports">巻の通報</a>
       <a href="#series-reports" data-page="series-reports">シリーズ名の修正</a>
       <a href="#series-merges" data-page="series-merges">シリーズの結合</a>
@@ -188,6 +189,39 @@
         <tbody id="auditBody"></tbody>
       </table>
       <div class="pager" id="auditPager" style="display:none"></div>
+    </section>
+
+    <!-- リストの控え（list_history, 365 日） -->
+    <section class="admin-page" id="page-list-history" hidden>
+      <div class="toolbar">
+        <strong>リストの控え</strong>
+        <span class="count" id="historyCount"></span>
+        <input type="text" id="historySlug" placeholder="slug で絞り込み（任意）" style="margin-left:8px">
+        <div style="flex:1"></div>
+        <button id="reloadHistory">再読み込み</button>
+      </div>
+      <p class="hint">
+        リストを消す・書き換える直前の中身です（作成者の削除・管理者の削除・退会時の削除・更新公開・伏字）。
+        通報や権利侵害の申し立てへの対応用で、1 年で自動的に消えます。更新前の版は 1 リスト 100 件まで残します。
+        読み取り専用で、元に戻すことはできません。
+      </p>
+      <p class="hint" id="historyHint" style="display:none"></p>
+      <table class="admin-table" id="historyTable" style="display:none">
+        <thead>
+          <tr>
+            <th>控えた時刻</th>
+            <th>理由</th>
+            <th>slug</th>
+            <th>作成者</th>
+            <th class="num">作品数</th>
+            <th>公開範囲</th>
+            <th>作成</th>
+            <th>この版の更新</th>
+          </tr>
+        </thead>
+        <tbody id="historyBody"></tbody>
+      </table>
+      <div class="pager" id="historyPager" style="display:none"></div>
     </section>
 
     <!-- 巻の通報（間違っています） -->
@@ -1262,6 +1296,7 @@
       <h2 id="detailTitle">リスト詳細</h2>
       <p class="hint" id="detailMeta"></p>
       <div class="detail-audit" id="detailAudit"></div>
+      <div class="detail-audit" id="detailHistory"></div>
       <div class="detail-ad" id="detailAd"></div>
       <div class="detail-grid" id="detailGrid"></div>
       <div class="modal-actions">

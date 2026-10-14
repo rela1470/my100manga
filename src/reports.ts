@@ -86,3 +86,13 @@ export async function purgePublishAudit(env: Env, now = Date.now()): Promise<voi
     .bind(now - PUBLISH_AUDIT_RETENTION_MS)
     .run();
 }
+
+/** リストの控え（list_history）の保持期間。publish_audit と揃える。 */
+export const LIST_HISTORY_RETENTION_MS = PUBLISH_AUDIT_RETENTION_MS;
+
+/** 保持期間を過ぎた list_history を消す（Cron, src/index.ts scheduled）。archived_at は epoch ms。 */
+export async function purgeListHistory(env: Env, now = Date.now()): Promise<void> {
+  await env.DB.prepare(`DELETE FROM list_history WHERE archived_at < ?`)
+    .bind(now - LIST_HISTORY_RETENTION_MS)
+    .run();
+}

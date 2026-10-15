@@ -230,7 +230,26 @@ function render(data) {
     grid.appendChild(slot);
   });
 
+  fillMissingCovers(grid, data.items);
   noteJustUpdated(data.slug);
+}
+
+// スナップショット（src/viewSnapshot.ts）は表紙が欠けたままでも最大 24 時間使い回されるので、
+// 表紙の無い巻だけ /api/covers で引いて差し込む。取得済みの ISBN はストアを叩かない
+// （src/covers.ts resolveCovers）。1 回で解決できるのは予算ぶん（7〜8 件）だけで、残りは
+// 次の閲覧者の分に回す。
+async function fillMissingCovers(grid, items) {
+  const missing = items.filter((it) => !it.cover_url && it.isbn).map((it) => it.isbn);
+  if (!missing.length) return;
+  const covers = await lookupCovers(missing);
+  const slots = grid.children;
+  items.forEach((it, idx) => {
+    const url = !it.cover_url && covers[it.isbn];
+    if (!url) return;
+    it.cover_url = url; // 詳細・通報メニューも同じ items を見る
+    const ph = slots[idx] && slots[idx].querySelector(".cover.placeholder");
+    if (ph) ph.replaceWith(coverNode(url, it.title));
+  });
 }
 
 // 編集画面で「更新する」を押した直後はこのページへ送られてくる（public/app.js goToPublished）。

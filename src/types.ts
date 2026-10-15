@@ -124,6 +124,11 @@ export interface Env {
   // リクエストの無いところから自サイトの URL を組むとき（Slack 通知の管理画面へのリンク）に使う。
   // vars は継承されないので env ごとに書く。未設定ならリンクを付けない。
   SITE_ORIGIN?: string;
+  // メンテナンスモード（src/maintenance.ts）。secret で入れる（`wrangler secret put MAINTENANCE`、
+  // 解除は `wrangler secret delete MAINTENANCE`）。secret の出し入れは直近のデプロイのコードで
+  // 新バージョンを作るだけなので、作業ツリーを出さずに切り替えられる。値は "1" か、画面に出す一言
+  // （例 "10月15日 3:00 ごろまで"）。未設定・"0"・"false" なら通常運転。
+  MAINTENANCE?: string;
 }
 
 /** VIEW_QUEUE のメッセージ（閲覧ビーコン 1 件）。visitor は IP + 日付のハッシュ、userId は

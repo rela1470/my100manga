@@ -168,6 +168,7 @@ import {
   writeViewCache,
 } from "./viewSnapshot";
 import { badRequest, escapeHtml, json, notFound, readJsonObject, replaceLiteral } from "./util";
+import { MAINTENANCE_QUEUE_DELAY_SEC, maintenanceOn, maintenanceResponse } from "./maintenance";
 
 export { RakutenRateLimiter } from "./ratelimiter";
 import { limiterStub, type CoverQueue } from "./ratelimiter";
@@ -1008,6 +1009,11 @@ const worker = {
   // 掃除はプライバシーポリシーの保存期間を守るためなので全 env で走らせ、売上ランキングだけを
   // salesRankingCronEnabled で絞る（dev / R18版では取らない）。
   async scheduled(_controller: ScheduledController, env: Env, ctx: ExecutionContext): Promise<void> {
+    // メンテナンス中（src/maintenance.ts）は何もしない。日次の掃除・売上ランキングは 1 日飛んでも困らない。
+    if (maintenanceOn(env)) {
+      console.log("scheduled skipped: maintenance");
+      return;
+    }
     if (salesRankingCronEnabled(env)) {
       ctx.waitUntil(
         runSalesSnapshot(env, "cron").then(
@@ -1035,6 +1041,12 @@ const worker = {
 
   // キューの consumer。閲覧ビーコン（VIEW_QUEUE）・自動暖機（WARM_QUEUE）・共有画像（SHARE_QUEUE）の 3 本を受ける。
   async queue(batch: MessageBatch<unknown>, env: Env, ctx: ExecutionContext): Promise<void> {
+    // メンテナンス中（src/maintenance.ts）は処理せずに遅らせて積み直す。D1 を restore している間に
+    // 書くと、その書き込みは restore で消える。
+    if (maintenanceOn(env)) {
+      batch.retryAll({ delaySeconds: MAINTENANCE_QUEUE_DELAY_SEC });
+      return;
+    }
     if (batch.queue.includes(VIEW_QUEUE_MARK)) return await consumeViewBatch(batch, env);
     if (batch.queue.includes(WARM_QUEUE_MARK)) {
       // 自動暖機の連鎖の 1 歩（src/warmAuto.ts）と、売上ランキングのリンク先の点検の 1 歩
@@ -1092,6 +1104,9 @@ const AUTO_WARM_TRIGGERS = new Set([
 export default {
   ...worker,
   async fetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
+    // メンテナンス中（src/maintenance.ts）は D1 に触る経路をすべて止める。admin も含む。
+    const down = maintenanceResponse(request, env);
+    if (down) return withSecurityHeaders(down, env);
     const res = await worker.fetch(request, env, ctx);
     // 管理者の変更（結合・表紙承認・名前修正など）を閲覧ページに早く反映するため、表示に効く
     // admin の更新系 API が成功したら表示データの世代を上げる（src/viewSnapshot.ts）。

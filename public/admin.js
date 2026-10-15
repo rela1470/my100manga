@@ -4521,6 +4521,8 @@ const PAGES = {
   },
   circulation: () => loadCirculation(),
   warm: () => loadWarm(),
+  "series-stats": () => loadSeriesStats(),
+  "cron-runs": () => loadCronRuns(1),
   "dev-tools": () => {},
 };
 
@@ -5557,6 +5559,181 @@ async function postAdminAction(url, btn, busyLabel, message, after) {
   }
 }
 
+/* ---------- cron の履歴（cron_runs） ---------- */
+// 仕事の名前（src/index.ts scheduled の job(...)）→ 表示名。知らない名前はそのまま出す。
+const CRON_JOB_LABEL = {
+  "sales-snapshot": "売上ランキングの集計",
+  "purge-list-view-seen": "閲覧の重複判定の掃除",
+  "purge-publish-audit": "監査ログの掃除（365 日）",
+  "purge-list-history": "リストの控えの掃除（365 日）",
+  "purge-sessions": "期限切れセッションの掃除",
+  "purge-draft-devices": "下書き端末の掃除（30 日）",
+  "purge-cron-runs": "cron の履歴の掃除（30 日）",
+  "series-stats": "巻数の集計の数え直し",
+};
+const CRON_LABEL = { "0 20 * * *": "毎日 5:00 JST", "*/2 * * * *": "2 分ごと" };
+const cronJobLabel = (j) => CRON_JOB_LABEL[j] || j;
+const cronLabel = (c) => CRON_LABEL[c] || c;
+
+async function loadCronRuns(page = 1) {
+  const job = $("cronJob").value;
+  const hint = $("cronHint");
+  hint.style.display = "none";
+  let d;
+  try {
+    const q = new URLSearchParams({ page: String(page), per: String(PER) });
+    if (job) q.set("job", job);
+    const res = await fetch(`/api/admin/cron-runs?${q}`);
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    d = await res.json();
+  } catch (e) {
+    hint.textContent = `履歴の取得に失敗しました（${e.message}。db/add-cron-runs.sql は適用済みですか）`;
+    hint.style.display = "";
+    return;
+  }
+
+  // 起動の生存（cron_tick）。
+  $("cronTicks").textContent = d.ticks.length
+    ? "最後に起動した時刻: " + d.ticks.map((t) => `${cronLabel(t.cron)} … ${fmtDate(t.at)}`).join(" ／ ")
+    : "最後に起動した時刻: まだ記録がありません";
+
+  // 仕事ごとのまとめ。絞り込みの選択肢もここから作る（選択は保つ）。
+  const sel = $("cronJob");
+  const keep = sel.value;
+  sel.replaceChildren(el("option", { value: "", textContent: "すべての仕事" }));
+  for (const j of d.jobs) sel.append(el("option", { value: j.job, textContent: cronJobLabel(j.job) }));
+  sel.value = keep;
+  const jb = $("cronJobsBody");
+  jb.textContent = "";
+  for (const j of d.jobs) {
+    const failedLast = j.last_error_at && j.last_error_at >= (j.last_ok_at || 0);
+    jb.append(
+      el("tr", failedLast ? { className: "warn" } : null, [
+        el("td", { textContent: cronJobLabel(j.job) }),
+        el("td", { textContent: cronLabel(j.cron) }),
+        el("td", { textContent: fmtDate(j.last_at) }),
+        el("td", { textContent: fmtDate(j.last_ok_at) }),
+        el("td", { textContent: j.last_error_at ? fmtDate(j.last_error_at) : "-" }),
+        el("td", { textContent: `${Number(j.runs).toLocaleString("ja-JP")}（${Number(j.errors || 0).toLocaleString("ja-JP")}）` }),
+      ])
+    );
+  }
+  $("cronJobsTable").style.display = d.jobs.length ? "" : "none";
+
+  // 履歴（新しい順）。
+  $("cronCount").textContent = `${Number(d.total).toLocaleString("ja-JP")}件`;
+  const body = $("cronBody");
+  body.textContent = "";
+  for (const r of d.runs) {
+    const sec = ((r.finished_at - r.started_at) / 1000).toFixed(1);
+    body.append(
+      el("tr", r.ok ? null : { className: "warn" }, [
+        el("td", { textContent: fmtDate(r.started_at) }),
+        el("td", { textContent: cronJobLabel(r.job), title: r.cron }),
+        el("td", { textContent: r.ok ? "成功" : "失敗" }),
+        el("td", { textContent: `${sec} 秒` }),
+        el("td", { textContent: r.detail || "", style: "word-break:break-all" }),
+      ])
+    );
+  }
+  $("cronTable").style.display = d.runs.length ? "" : "none";
+  if (!d.total) {
+    hint.textContent = "まだ記録がありません（cron が次に動いたときから残ります）。";
+    hint.style.display = "";
+  }
+  renderPager("cronPager", page, d.total, loadCronRuns);
+}
+
+/* ---------- 巻数の集計（series_stats） ---------- */
+// cron（2 分ごと）が回している数え直しの状況と、手動の 1 歩・連続実行（src/seriesList.ts）。
+let ssRunning = false;
+
+async function loadSeriesStats() {
+  const stats = $("ssStats");
+  stats.textContent = "";
+  let d;
+  try {
+    const res = await fetch("/api/admin/series-stats");
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    d = await res.json();
+  } catch (e) {
+    $("ssSummary").textContent = `状況の取得に失敗しました（${e.message}。db/add-series-stats.sql は適用済みですか）`;
+    return;
+  }
+  const n = (x) => Number(x || 0).toLocaleString("ja-JP");
+  $("ssSummary").textContent = `${n(d.rows)} シリーズ`;
+  const cards = [
+    [n(d.rows), "集計のあるシリーズ"],
+    [n(d.fresh), "取り込み以降に数えた（検索で使う）"],
+    [n(d.complete), "1 巻からそろっている"],
+    [n(d.target), "cron の対象（巻数 2 以上）"],
+  ];
+  for (const [v, k] of cards) {
+    stats.append(
+      el("div", { className: "stat-card" }, [
+        el("div", { className: "n", textContent: v }),
+        el("div", { className: "k", textContent: k }),
+      ])
+    );
+  }
+  $("ssPass").textContent = seriesStatsPassText(d.pass, d.target, d.imported_at);
+}
+
+function seriesStatsPassText(p, target, importedAt) {
+  const imp = importedAt ? `マスタ取り込み ${fmtDate(importedAt)}` : "マスタ取り込み日時なし";
+  if (!p) return `数え直し: まだ走っていません（cron が次に起動したときに始まります）／ ${imp}`;
+  const state = p.finished_at
+    ? `完了（${fmtDate(p.finished_at)}）。次はマスタを取り込み直したときに頭から`
+    : `周回中 ${Number(p.done).toLocaleString("ja-JP")} / 約 ${Number(target).toLocaleString("ja-JP")} 本（いま巻数 ${String(p.cursor).split(":")[0] || "-"} のあたり）`;
+  return `数え直し: ${state} ／ ${fmtDate(p.started_at)} 開始 ／ ${imp}`;
+}
+
+async function seriesStatsStep(restart) {
+  const progress = $("ssProgress");
+  try {
+    const res = await fetch(`/api/admin/series-stats/step${restart ? "?restart=1" : ""}`, { method: "POST" });
+    const r = await res.json();
+    if (!res.ok) throw new Error(r.error || `HTTP ${res.status}`);
+    progress.textContent = r.idle ? "周回は完了しています（数える分はありません）。" : `${r.ran} 本を数えました。`;
+    return r;
+  } catch (e) {
+    progress.textContent = `失敗しました: ${e.message}`;
+    return null;
+  } finally {
+    await loadSeriesStats();
+  }
+}
+
+// 初回の埋め込みを早めたいとき用。このページを開いている間だけ 1 歩ずつ続けて回す
+// （cron も 2 分ごとに同じ周回を進めるので、どちらが回しても続きから進む）。
+async function seriesStatsLoop() {
+  $("ssLoop").disabled = true;
+  $("ssStop").disabled = false;
+  let total = 0;
+  while (ssRunning) {
+    let r;
+    try {
+      const res = await fetch("/api/admin/series-stats/step", { method: "POST" });
+      r = await res.json();
+      if (!res.ok) throw new Error(r.error || `HTTP ${res.status}`);
+    } catch (e) {
+      $("ssProgress").textContent = `中断しました: ${e.message}`;
+      break;
+    }
+    total += r.ran;
+    $("ssProgress").textContent = `${total.toLocaleString("ja-JP")} 本を数えました…`;
+    if (r.finished) {
+      $("ssProgress").textContent = `完了: ${total.toLocaleString("ja-JP")} 本を数えました。`;
+      break;
+    }
+    if (total % 200 < r.ran) await loadSeriesStats();
+  }
+  ssRunning = false;
+  $("ssLoop").disabled = false;
+  $("ssStop").disabled = true;
+  await loadSeriesStats();
+}
+
 /* ---------- キャッシュ暖機 ---------- */
 // 楽天の枠（サイト全体で約 1 件/秒）に合わせて「次の数件」を繰り返し頼むループ（src/warm.ts）。
 // 進捗は covers 表で判断するので、止めても同じ対象を選び直せば続きから進む。
@@ -5709,6 +5886,21 @@ $("circPickQuery").addEventListener("keydown", (e) => {
 // 寄せ先の検索欄にも入力補完を付ける（public/suggest.js）。候補を選んだらそのまま検索する。
 attachSuggest($("circPickQuery"), { onPick: () => runCircPickSearch() });
 $("reloadWarm").addEventListener("click", () => loadWarm());
+$("reloadSeriesStats").addEventListener("click", () => loadSeriesStats());
+$("reloadCron").addEventListener("click", () => loadCronRuns(1));
+$("cronJob").addEventListener("change", () => loadCronRuns(1));
+$("ssStep").addEventListener("click", () => seriesStatsStep(false));
+$("ssRestart").addEventListener("click", async () => {
+  if (!(await uiConfirm("周回を頭からやり直します（今ある集計は消さず、巻数の多い順に数え直します）。よろしいですか？"))) return;
+  seriesStatsStep(true);
+});
+$("ssLoop").addEventListener("click", () => {
+  ssRunning = true;
+  seriesStatsLoop();
+});
+$("ssStop").addEventListener("click", () => {
+  ssRunning = false;
+});
 $("warmStart").addEventListener("click", () => {
   if (warmRunning) return;
   warmRunning = true;

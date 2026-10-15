@@ -203,3 +203,40 @@ export async function handleSeriesList(env: Env, url: URL): Promise<Response> {
     );
   });
 }
+
+// ── 管理画面（巻数の集計のページ）──────────────────────────────────────────
+
+/** GET /api/admin/series-stats。集計の埋まり具合と、数え直しの周回の状態。 */
+export async function adminSeriesStatsStatus(env: Env): Promise<Response> {
+  const importedAt = Number((await readMeta(env, "imported_at")) || 0);
+  const r = await env.DB.prepare(
+    `SELECT (SELECT COUNT(*) FROM series_stats) AS rows,
+            (SELECT COUNT(*) FROM series_stats WHERE computed_at >= ?1) AS fresh,
+            (SELECT COUNT(*) FROM series_stats WHERE complete_run > 0) AS complete,
+            (SELECT COUNT(*) FROM series WHERE num_items >= ?2) AS target`
+  )
+    .bind(importedAt, MIN_NUM_ITEMS)
+    .first<{ rows: number; fresh: number; complete: number; target: number }>();
+  return json(
+    {
+      rows: r?.rows ?? 0,
+      fresh: r?.fresh ?? 0,
+      complete: r?.complete ?? 0,
+      target: r?.target ?? 0,
+      batch: BATCH,
+      cron: STATS_CRON,
+      imported_at: importedAt || null,
+      pass: await readStatsPass(env),
+    },
+    200,
+    { "cache-control": "no-store" }
+  );
+}
+
+/** POST /api/admin/series-stats/step。cron と同じ 1 歩を今すぐ回す（初回の埋め込みを早めたいとき、
+ *  管理画面の「続けて回す」が繰り返し叩く）。restart=1 なら周回を頭からやり直してから回す。 */
+export async function adminSeriesStatsStep(env: Env, url: URL): Promise<Response> {
+  if (url.searchParams.get("restart") === "1") await env.DB.prepare(`DELETE FROM meta WHERE key = ?`).bind(PASS_KEY).run();
+  const r = await runSeriesStatsBatch(env);
+  return json({ ...r, pass: await readStatsPass(env) }, 200, { "cache-control": "no-store" });
+}

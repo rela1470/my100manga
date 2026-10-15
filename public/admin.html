@@ -40,6 +40,8 @@
       <a href="#sales-ranking" data-page="sales-ranking">売上ランキング</a>
       <a href="#circulation" data-page="circulation">発行部数ランキング</a>
       <a href="#warm" data-page="warm">キャッシュ暖機</a>
+      <a href="#series-stats" data-page="series-stats">巻数の集計</a>
+      <a href="#cron-runs" data-page="cron-runs">cron の履歴</a>
       <a href="#dev-tools" data-page="dev-tools" id="navDevTools" hidden>開発ツール</a>
     </nav>
 
@@ -1158,6 +1160,77 @@
         <button id="warmStop" disabled>停止</button>
       </div>
       <p class="hint" id="warmProgress"></p>
+    </section>
+
+    <!-- 巻数の集計（series_stats, src/seriesList.ts） -->
+    <section class="admin-page" id="page-series-stats" hidden>
+      <div class="toolbar">
+        <strong>巻数の集計</strong>
+        <span class="count" id="ssSummary"></span>
+        <div style="flex:1"></div>
+        <button id="reloadSeriesStats">再読み込み</button>
+      </div>
+      <p class="hint">
+        シリーズごとの「巻一覧に出る巻数」を、巻一覧と同じ数え方で持っています（<code>series_stats</code>）。
+        検索カードの「全N巻」・シリーズ一覧ページ（<a href="/series" target="_blank">/series</a>）・おまかせで埋めるが読みます。
+        巻一覧が開かれたときと、2 分ごとの cron（巻数 2 以上のシリーズを巻数の多い順に 1 回 20 本）で埋まり、
+        マスタを取り込み直すと頭からもう 1 周します。取り込み前に数えた行は、検索では使わず従来の数え方に戻ります。
+      </p>
+      <div class="stat-grid compact" id="ssStats"></div>
+      <p class="hint" id="ssPass"></p>
+      <div class="cover-actions">
+        <button id="ssStep">1 回分を今すぐ回す</button>
+        <button id="ssLoop">続けて回す</button>
+        <button id="ssStop" disabled>停止</button>
+        <button id="ssRestart" class="danger">頭から数え直す</button>
+      </div>
+      <p class="hint" id="ssProgress"></p>
+    </section>
+
+    <!-- cron の実行履歴（cron_runs, src/cronLog.ts） -->
+    <section class="admin-page" id="page-cron-runs" hidden>
+      <div class="toolbar">
+        <strong>cron の履歴</strong>
+        <span class="count" id="cronCount"></span>
+        <select id="cronJob" style="margin-left:8px">
+          <option value="">すべての仕事</option>
+        </select>
+        <div style="flex:1"></div>
+        <button id="reloadCron">再読み込み</button>
+      </div>
+      <p class="hint">
+        定期実行（wrangler.jsonc の triggers）の仕事ごとの結果です。日次（毎日 20:00 UTC = 翌 5:00 JST）に売上ランキングの集計と保持期限の掃除、
+        2 分ごとに巻数の集計の数え直しが走ります（数え直しは、数える分があった回だけ記録します）。履歴は 30 日で消えます。
+        途中で落ちた起動は履歴に残らないので、cron 自体が動いているかは「最後に起動した時刻」で見てください。
+      </p>
+      <p class="hint" id="cronTicks"></p>
+      <table class="admin-table" id="cronJobsTable" style="display:none">
+        <thead>
+          <tr>
+            <th>仕事</th>
+            <th>スケジュール</th>
+            <th>最後の実行</th>
+            <th>最後の成功</th>
+            <th>最後の失敗</th>
+            <th>件数（失敗）</th>
+          </tr>
+        </thead>
+        <tbody id="cronJobsBody"></tbody>
+      </table>
+      <p class="hint" id="cronHint" style="display:none"></p>
+      <table class="admin-table" id="cronTable" style="display:none;margin-top:16px">
+        <thead>
+          <tr>
+            <th>開始</th>
+            <th>仕事</th>
+            <th>結果</th>
+            <th>所要</th>
+            <th>詳細</th>
+          </tr>
+        </thead>
+        <tbody id="cronBody"></tbody>
+      </table>
+      <div class="pager" id="cronPager" style="display:none"></div>
     </section>
 
     <!-- 楽天データ（book_meta: あらすじ・作者・出版社・発行日のキャッシュ） -->

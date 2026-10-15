@@ -940,6 +940,8 @@ a.stat-card.stat-link .k::after { content: " ›"; }
 .admin-table td.num { text-align: right; font-variant-numeric: tabular-nums; }
 .admin-table a.slug { font-family: ui-monospace, Menlo, monospace; }
 .admin-table td.warn { color: var(--accent); }
+/* cron の履歴で失敗した行・最後が失敗のままの仕事（public/admin.js loadCronRuns）。 */
+.admin-table tr.warn td { color: var(--danger); }
 .admin-table td.num.hot { color: #fff; background: var(--accent); font-weight: 700; }
 .admin-table td.muted { color: var(--muted); }
 

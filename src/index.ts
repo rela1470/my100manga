@@ -142,7 +142,14 @@ import {
 import { Env, MangaList, ShareJob } from "./types";
 import { rateLimit } from "./ratelimit";
 import { handleRandomFill } from "./randomFill";
-import { handleSeriesList, runSeriesStatsBatch, STATS_CRON } from "./seriesList";
+import { adminCronRuns, purgeCronRuns, recordCronTick, runLogged } from "./cronLog";
+import {
+  adminSeriesStatsStatus,
+  adminSeriesStatsStep,
+  handleSeriesList,
+  runSeriesStatsBatch,
+  STATS_CRON,
+} from "./seriesList";
 import { turnstileAction, verifyTurnstile } from "./turnstile";
 import { COVER_CACHE, getTrimmedCover, trimKind } from "./coverBytes";
 import {
@@ -643,6 +650,17 @@ const worker = {
       if (path === "/api/admin/suggest/rebuild" && request.method === "POST") {
         return json({ ok: true, rows: await rebuildSuggest(env) }, 200, { "cache-control": "no-store" });
       }
+      // cron の実行履歴（src/cronLog.ts）。
+      if (path === "/api/admin/cron-runs" && request.method === "GET") {
+        return await adminCronRuns(env, url);
+      }
+      // 巻数の集計（series_stats）の状況と、cron の数え直しの手動実行（src/seriesList.ts）。
+      if (path === "/api/admin/series-stats" && request.method === "GET") {
+        return await adminSeriesStatsStatus(env);
+      }
+      if (path === "/api/admin/series-stats/step" && request.method === "POST") {
+        return await adminSeriesStatsStep(env, url);
+      }
       // 表紙・書誌キャッシュの暖機（公開前。scripts/warm-cache.mjs が繰り返し叩く）。
       if (path === "/api/admin/warm" && request.method === "GET") {
         return await adminWarmStatus(env);
@@ -1019,7 +1037,8 @@ const worker = {
     return injectAnalytics(await fetchSiteAsset(request, env, path), env, url.origin, path);
   },
 
-  // Cron（wrangler.jsonc triggers）: 売上ランキングの日次スナップショットと、保持期限の掃除。
+  // Cron（wrangler.jsonc triggers）: 売上ランキングの日次スナップショットと、保持期限の掃除（日次）、
+  // 巻数の集計の数え直し（2 分ごと）。
   // 掃除はプライバシーポリシーの保存期間を守るためなので全 env で走らせ、売上ランキングだけを
   // salesRankingCronEnabled で絞る（dev / R18版では取らない）。
   async scheduled(controller: ScheduledController, env: Env, ctx: ExecutionContext): Promise<void> {
@@ -1028,39 +1047,40 @@ const worker = {
       console.log("scheduled skipped: maintenance");
       return;
     }
+    // 仕事ごとの結果は cron_runs に、起動したこと自体は meta の cron_tick に残す（src/cronLog.ts、
+    // 管理画面の「cron の履歴」）。
+    const cron = controller.cron;
+    ctx.waitUntil(recordCronTick(env, cron));
+    const job = <T,>(name: string, fn: () => Promise<T>, skip?: (r: T) => boolean) =>
+      ctx.waitUntil(runLogged(env, cron, name, fn, skip));
+
     // 2 分ごとの起動は巻数の集計（series_stats）の数え直しだけ（src/seriesList.ts）。日次の仕事はしない。
-    if (controller.cron === STATS_CRON) {
-      ctx.waitUntil(
-        runSeriesStatsBatch(env).then(
-          (r) => { if (!r.idle) console.log("series stats batch", r); },
-          (err) => console.error("series stats batch failed", err)
-        )
-      );
+    // 数える分が無かった回（周回の完了後）は履歴に書かない。
+    if (cron === STATS_CRON) {
+      job("series-stats", () => runSeriesStatsBatch(env), (r) => r.idle);
       return;
     }
     if (salesRankingCronEnabled(env)) {
-      ctx.waitUntil(
-        runSalesSnapshot(env, "cron").then(
-          async (r) => {
-            console.log("sales snapshot", r);
-            // 集計が入れ替わったら、ランキングに載ったシリーズの巻を温める（src/warmAuto.ts）。
-            if (r.count > 0) await startAutoWarm(env, "sales-cron").catch((err) => console.error("auto warm start failed", err));
-            // リンク先の巻一覧が楽天の巻数に足りているかを点検し、新しい問題を Slack に送る（src/salesLinkHealth.ts）。
-            if (r.count > 0) await startLinkHealth(env, "sales-cron", true).catch((err) => console.error("link health start failed", err));
-          },
-          (err) => console.error("sales snapshot failed", err)
-        )
-      );
+      job("sales-snapshot", async () => {
+        const r = await runSalesSnapshot(env, "cron");
+        // 集計が入れ替わったら、ランキングに載ったシリーズの巻を温める（src/warmAuto.ts）。
+        if (r.count > 0) await startAutoWarm(env, "sales-cron").catch((err) => console.error("auto warm start failed", err));
+        // リンク先の巻一覧が楽天の巻数に足りているかを点検し、新しい問題を Slack に送る（src/salesLinkHealth.ts）。
+        if (r.count > 0) await startLinkHealth(env, "sales-cron", true).catch((err) => console.error("link health start failed", err));
+        return r;
+      });
     }
     // 公開リストのアクセス数の重複判定（list_view_seen）の古い記録を消す。
-    ctx.waitUntil(purgeListViewSeen(env).catch((err) => console.error("list view purge failed", err)));
+    job("purge-list-view-seen", () => purgeListViewSeen(env));
     // 公開の監査ログ（publish_audit, IP・UA を含む）は 365 日で消す。期限切れのログインセッションも掃除する。
-    ctx.waitUntil(purgePublishAudit(env).catch((err) => console.error("publish audit purge failed", err)));
+    job("purge-publish-audit", () => purgePublishAudit(env));
     // リストの控え（list_history）も 365 日で消す。
-    ctx.waitUntil(purgeListHistory(env).catch((err) => console.error("list history purge failed", err)));
-    ctx.waitUntil(purgeExpiredSessions(env).catch((err) => console.error("session purge failed", err)));
+    job("purge-list-history", () => purgeListHistory(env));
+    job("purge-sessions", () => purgeExpiredSessions(env));
     // 下書きのある端末（draft_devices）は集計窓の 30 日を過ぎたら消す。
-    ctx.waitUntil(purgeDraftDevices(env).catch((err) => console.error("draft device purge failed", err)));
+    job("purge-draft-devices", () => purgeDraftDevices(env));
+    // cron の実行履歴そのもの（cron_runs）は 30 日で消す。
+    job("purge-cron-runs", () => purgeCronRuns(env));
   },
 
   // キューの consumer。閲覧ビーコン（VIEW_QUEUE）・自動暖機（WARM_QUEUE）・共有画像（SHARE_QUEUE）の 3 本を受ける。

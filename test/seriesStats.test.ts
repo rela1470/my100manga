@@ -2,7 +2,7 @@ import { SELF } from "cloudflare:test";
 import { env } from "cloudflare:workers";
 import { beforeAll, describe, expect, it } from "vitest";
 import { computeSeriesStats } from "../src/seriesStats";
-import { runSeriesStatsBatch, readStatsPass } from "../src/seriesList";
+import { adminSeriesStatsStatus, adminSeriesStatsStep, runSeriesStatsBatch, readStatsPass } from "../src/seriesList";
 import { bumpViewEpoch } from "../src/viewSnapshot";
 import { BROWSER_UA, makeIsbns } from "./helpers";
 
@@ -141,5 +141,18 @@ describe("GET /api/series-list", () => {
     expect(all.find((e) => e.series_id === ABSORBED)).toBeUndefined();
     expect(mine.find((e) => e.series_id === LOOSE).complete).toBe(true);
     expect(mine.find((e) => e.series_id === GAP).complete).toBe(false);
+  });
+});
+
+describe("管理画面の API（巻数の集計）", () => {
+  it("状況を返し、restart=1 で周回を頭からやり直して 1 歩回す", async () => {
+    const st = (await (await adminSeriesStatsStatus(env)).json()) as any;
+    expect(st.rows).toBeGreaterThan(0);
+    expect(st.target).toBeGreaterThan(0);
+    const r = (await (
+      await adminSeriesStatsStep(env, new URL("https://example.com/api/admin/series-stats/step?restart=1"))
+    ).json()) as any;
+    expect(r.idle).toBe(false);
+    expect(r.pass.finished_at === 0 || r.finished).toBe(true);
   });
 });

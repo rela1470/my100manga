@@ -264,6 +264,21 @@ CREATE TABLE IF NOT EXISTS adult_volumes (
   series_name TEXT               -- 所属シリーズ名（あれば）
 );
 
+-- cron（wrangler.jsonc triggers）の実行履歴。仕事（job）ごとに終わった時点で 1 行。30 日で消す。
+-- 管理画面の「cron の履歴」が読む。起動そのものの生存は meta の cron_tick:<式> で見る。
+-- See src/cronLog.ts / db/add-cron-runs.sql
+CREATE TABLE IF NOT EXISTS cron_runs (
+  id          INTEGER PRIMARY KEY AUTOINCREMENT,
+  cron        TEXT NOT NULL,               -- 起動した cron の式（"0 20 * * *" など）
+  job         TEXT NOT NULL,               -- 仕事の名前（"sales-snapshot" / "series-stats" など）
+  started_at  INTEGER NOT NULL,            -- epoch ms
+  finished_at INTEGER NOT NULL,            -- epoch ms
+  ok          INTEGER NOT NULL,            -- 1 = 成功 / 0 = 失敗
+  detail      TEXT NOT NULL DEFAULT ''     -- 結果の要約（JSON）か、失敗の内容。500 文字まで
+);
+CREATE INDEX IF NOT EXISTS idx_cron_runs_started ON cron_runs (started_at);
+CREATE INDEX IF NOT EXISTS idx_cron_runs_job ON cron_runs (job, started_at);
+
 -- シリーズごとの「巻一覧に出る巻数」の集計。巻一覧（src/series.ts getSeriesVolumes）と同じ処理で
 -- 数えた結果を持つ: 迷子巻（series_id の無い同名の巻）の寄せ・補完・手動追加・結合・非表示が
 -- 効いた数。検索カードの「全N巻」（src/search.ts VOL_COUNT）は volumes 表だけを数えるので、

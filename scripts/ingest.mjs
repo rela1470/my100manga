@@ -32,6 +32,9 @@
 //                        the shadow tables: never swaps a partial master into place
 //   --env <name>         wrangler environment (e.g. dev → targets my100manga-dev)
 //   --no-apply           generate SQL but do not run wrangler
+//   --diff               差分取り込み。今の D1 の中身を読み出して MADB と比べ、変わった行だけを
+//                        書く（scripts/ingest-diff.mjs）。表がまだ無い DB では止まる（全件で入れる）。
+//                        --no-apply と組むと、読み出しだけして書く予定の行数を出す（書き込みなし）
 
 import fs from "node:fs";
 import path from "node:path";
@@ -41,6 +44,7 @@ import { parser } from "stream-json";
 import { pick } from "stream-json/filters/pick.js";
 import { streamArray } from "stream-json/streamers/stream-array.js";
 import { chain } from "stream-chain";
+import { deleteStatements, diffRows, liveRowKey, sqlInt, sqlStr, suggestDiffSql, upsertClause } from "./ingest-diff.mjs";
 
 const REPO = "mediaarts-db/dataset";
 const VOLUMES_ASSET = "metadata101_json.zip"; // マンガ単行本
@@ -170,6 +174,26 @@ export const SUGGEST_SQL = [
   "DROP TABLE series_suggest_old;",
 ];
 
+// 入れ替え（全件）・差分の書き込み（--diff）の後に流すもの: 索引の張り直し・補完キャッシュの整理・
+// 管理データの重ね直し。差分の後でも、MADB の値で書き戻した行に独自シリーズ・付け替え・差し替えを
+// 当て直すのに要る。CREATE INDEX IF NOT EXISTS は索引が既にあれば何も書かない。
+const POST_LOAD_SQL = [
+  "CREATE INDEX IF NOT EXISTS idx_series_name_norm ON series (name_norm);",
+  "CREATE INDEX IF NOT EXISTS idx_series_kana_norm ON series (name_kana_norm);",
+  "CREATE INDEX IF NOT EXISTS idx_volumes_series ON volumes (series_id, vol_sort);",
+  // db/add-indexes-2026-10.sql で足した索引。表を作り直すたびに張り直さないと消える。
+  "CREATE INDEX IF NOT EXISTS idx_series_name_label ON series (name, label);",
+  // db/add-circulation.sql で足した索引（暖機 src/warm.ts が巻数順にたどる）。
+  "CREATE INDEX IF NOT EXISTS idx_series_num_items ON series (num_items DESC, id);",
+  // db/add-label-tag.sql で足した索引（管理画面のレーベル管理が GROUP BY label で数える）。
+  "CREATE INDEX IF NOT EXISTS idx_series_label ON series (label);",
+  "CREATE INDEX IF NOT EXISTS idx_volumes_unlinked_title ON volumes (title, label) WHERE series_id IS NULL;",
+  "CREATE TABLE IF NOT EXISTS series_supplement (series_id TEXT PRIMARY KEY, volumes_json TEXT NOT NULL, checked_at INTEGER NOT NULL);",
+  PRUNE_SUPPLEMENT_SQL,
+  ...APPLY_LINKS_SQL,
+  ...APPLY_MASTER_FIX_SQL,
+];
+
 // Blue-green cutover. RENAMEs are instant metadata ops, so the window where the live
 // `series`/`volumes` names point at anything other than a fully-loaded table is
 // negligible. Old tables are dropped first to free the global index names, then the
@@ -190,20 +214,7 @@ const SWAP_SQL = [
   "DROP TABLE series_old;",
   "DROP TABLE volumes_old;",
   "DROP TABLE adult_volumes_old;",
-  "CREATE INDEX IF NOT EXISTS idx_series_name_norm ON series (name_norm);",
-  "CREATE INDEX IF NOT EXISTS idx_series_kana_norm ON series (name_kana_norm);",
-  "CREATE INDEX IF NOT EXISTS idx_volumes_series ON volumes (series_id, vol_sort);",
-  // db/add-indexes-2026-10.sql で足した索引。表を作り直すたびに張り直さないと消える。
-  "CREATE INDEX IF NOT EXISTS idx_series_name_label ON series (name, label);",
-  // db/add-circulation.sql で足した索引（暖機 src/warm.ts が巻数順にたどる）。
-  "CREATE INDEX IF NOT EXISTS idx_series_num_items ON series (num_items DESC, id);",
-  // db/add-label-tag.sql で足した索引（管理画面のレーベル管理が GROUP BY label で数える）。
-  "CREATE INDEX IF NOT EXISTS idx_series_label ON series (label);",
-  "CREATE INDEX IF NOT EXISTS idx_volumes_unlinked_title ON volumes (title, label) WHERE series_id IS NULL;",
-  "CREATE TABLE IF NOT EXISTS series_supplement (series_id TEXT PRIMARY KEY, volumes_json TEXT NOT NULL, checked_at INTEGER NOT NULL);",
-  PRUNE_SUPPLEMENT_SQL,
-  ...APPLY_LINKS_SQL,
-  ...APPLY_MASTER_FIX_SQL,
+  ...POST_LOAD_SQL,
 ].join(" ");
 
 function parseArgs(argv) {
@@ -218,6 +229,7 @@ function parseArgs(argv) {
     apply: true,
     env: "",
     includeAdult: false,
+    diff: false,
   };
   for (let i = 2; i < argv.length; i++) {
     const v = argv[i];
@@ -226,6 +238,7 @@ function parseArgs(argv) {
     else if (v === "--skip-download") a.skipDownload = true;
     else if (v === "--no-apply") a.apply = false;
     else if (v === "--include-adult") a.includeAdult = true;
+    else if (v === "--diff") a.diff = true;
     else if (v === "--tag") a.tag = argv[++i];
     else if (v === "--work") a.work = argv[++i];
     else if (v === "--out") a.out = argv[++i];
@@ -235,6 +248,8 @@ function parseArgs(argv) {
     else throw new Error(`unknown flag: ${v}`);
   }
   if (!a.out) a.out = path.join(a.work, "seed");
+  // 差分は「MADB に無い行を消す」ので、一部だけ読んだ --limit と組むと残りを全部消してしまう。
+  if (a.diff && a.limit) throw new Error("--diff と --limit は一緒に使えません（--limit 以外の行を全部消すことになる）");
   // 本家の D1 に成年向けを流し込む / R18版の D1 に成年向け抜きを流し込む、という取り違えは
   // どちらも master の作り直しでしか戻せないので、リモートに触るときだけ env と突き合わせる。
   // ローカル（--local）は試し取り込みの場なので縛らない。
@@ -674,21 +689,42 @@ function isAdult(node) {
 
 // ── SQL emission ────────────────────────────────────────────────────────────
 
-function sqlStr(s) {
-  if (s == null || s === "") return "NULL";
-  return "'" + String(s).replace(/'/g, "''") + "'";
-}
-function sqlInt(n) {
-  return n == null || Number.isNaN(n) ? "NULL" : String(n);
+
+// 取り込みが書く列（SqlChunkWriter の列）。series の is_adult は全件では列に入れず UPDATE で
+// 立てるので、差分で比べる列は末尾に is_adult を足したもの（SERIES_DIFF_COLS）。
+const SERIES_WRITE_COLS = ["id", "name", "name_norm", "name_kana", "name_kana_norm", "name_search", "creator", "creators", "creators_norm", "publisher", "label", "num_items", "version", "name_display"];
+const SERIES_DIFF_COLS = [...SERIES_WRITE_COLS, "is_adult"];
+const VOLUME_WRITE_COLS = ["isbn", "series_id", "volume_number", "vol_sort", "title", "subtitle", "title_search", "creator", "creators", "creators_norm", "publisher", "label", "pubdate", "is_adult"];
+const ADULT_WRITE_COLS = ["isbn", "title", "title_norm", "series_name"];
+// D1 から読んだ値をリテラルに戻すときに数として扱う列（db/schema.sql の INTEGER 列）。
+const INT_COLS = new Set(["num_items", "is_adult", "vol_sort"]);
+
+// --diff 用: SqlChunkWriter と同じ add() で、行を主キー（先頭列のリテラル）ごとに手元へ集める。
+// 同じ主キーが 2 度来たら後が勝つ（全件の INSERT OR REPLACE と同じ）。extra は末尾に足す列。
+class RowCollector {
+  constructor(extra = []) {
+    this.extra = extra;
+    this.rows = new Map();
+  }
+  add(valuesTuple) {
+    this.rows.set(valuesTuple[0], [...valuesTuple, ...this.extra]);
+  }
+  finish() {
+    return [];
+  }
 }
 
 // Buffered writer that flushes multi-row INSERTs into numbered .sql files.
 // finish() returns [{ path, rows }] in apply order so the daily seeder can
 // budget exactly how many rows each file writes (see scripts/seed-daily.mjs).
 class SqlChunkWriter {
-  constructor(outDir, prefix, columns, rowsPerFile) {
+  // opts.table: 書き込む表（既定は prefix）。opts.conflict: 文末に足す ON CONFLICT 句（差分の upsert）。
+  // 付けたときは INSERT OR REPLACE ではなく INSERT にする。
+  constructor(outDir, prefix, columns, rowsPerFile, opts = {}) {
     this.outDir = outDir;
     this.prefix = prefix;
+    this.table = opts.table ?? prefix;
+    this.conflict = opts.conflict ?? "";
     this.columns = columns;
     this.rowsPerFile = rowsPerFile;
     this.fileIdx = 0;
@@ -706,9 +742,11 @@ class SqlChunkWriter {
   }
   _flushStatement() {
     if (this.values.length === 0) return;
+    const verb = this.conflict ? "INSERT INTO" : "INSERT OR REPLACE INTO";
     const stmt =
-      `INSERT OR REPLACE INTO ${this.prefix} (${this.columns.join(",")}) VALUES\n` +
+      `${verb} ${this.table} (${this.columns.join(",")}) VALUES\n` +
       this.values.join(",\n") +
+      this.conflict +
       ";\n";
     fs.appendFileSync(this._currentPath(), stmt);
     this.values = [];
@@ -784,12 +822,10 @@ async function main() {
 
   // 1. series → load into a shadow table (series_new); swapped in atomically at the
   // end so the live site never reads a half-loaded master. See the swap block below.
-  const seriesWriter = new SqlChunkWriter(
-    a.out,
-    "series_new",
-    ["id", "name", "name_norm", "name_kana", "name_kana_norm", "name_search", "creator", "creators", "creators_norm", "publisher", "label", "num_items", "version", "name_display"],
-    a.chunk
-  );
+  // --diff では SQL に書き出さず、行を手元に集めて最後に D1 の今の中身と比べる（runDiff）。
+  const seriesWriter = a.diff
+    ? new RowCollector(["0"]) // is_adult（全件では列に入れず、下の印付けの UPDATE で立てる）
+    : new SqlChunkWriter(a.out, "series_new", SERIES_WRITE_COLS, a.chunk);
   let seriesCount = 0;
   // シリーズ名の引き当て用（成年向けの巻の series_name。成年向けだけのシリーズは series から
   // 消すので、ここで覚えておかないと名前が残らない）。
@@ -841,17 +877,12 @@ async function main() {
   log(`series: ${seriesCount} rows → ${seriesFiles.length} files`);
 
   // 2. volumes (deduped by ISBN) → shadow table volumes_new, swapped in below.
-  const volumesWriter = new SqlChunkWriter(
-    a.out,
-    "volumes_new",
-    ["isbn", "series_id", "volume_number", "vol_sort", "title", "subtitle", "title_search", "creator", "creators", "creators_norm", "publisher", "label", "pubdate", "is_adult"],
-    a.chunk
-  );
+  const volumesWriter = a.diff ? new RowCollector() : new SqlChunkWriter(a.out, "volumes_new", VOLUME_WRITE_COLS, a.chunk);
   const seen = new Set();
   let volCount = 0;
   let processed = 0;
   let adultCount = 0;
-  const adultWriter = new SqlChunkWriter(a.out, "adult_volumes_new", ["isbn", "title", "title_norm", "series_name"], a.chunk);
+  const adultWriter = a.diff ? new RowCollector() : new SqlChunkWriter(a.out, "adult_volumes_new", ADULT_WRITE_COLS, a.chunk);
   const adultSeries = new Set(); // 成年向けの巻を持つシリーズ
   const keptSeries = new Set(); // 取り込んだ巻を持つシリーズ
   // シリーズごとの「全巻に共通する副題」（name_display、下の「3.5」）。値は副題の文字列、
@@ -962,7 +993,7 @@ async function main() {
     const key = seriesNameKeys.get(id);
     if (key) nameKeyCounts.set(key, (nameKeyCounts.get(key) ?? 0) + 1);
   }
-  const displayStmts = [];
+  const displayRows = []; // [id, 表示名]
   for (const [id, sub] of commonSubtitle) {
     if (!sub) continue;
     const name = seriesNames.get(id);
@@ -973,12 +1004,29 @@ async function main() {
     if ((nameKeyCounts.get(seriesNameKeys.get(id)) ?? 0) < 2) continue;
     // 名前が既に副題を含むなら足さない（「あした天気になあれ 全英オープン編」）。
     if (normTitle(name).includes(normTitle(sub))) continue;
-    displayStmts.push(
-      `UPDATE series_new SET name_display = ${sqlStr(`${name} ${sub}`)} WHERE id = ${sqlStr(id)};\n`
-    );
+    displayRows.push([id, `${name} ${sub}`]);
   }
+  const displayStmts = displayRows.map(
+    ([id, display]) => `UPDATE series_new SET name_display = ${sqlStr(display)} WHERE id = ${sqlStr(id)};\n`
+  );
   fs.writeFileSync(displayFile, displayStmts.join(""));
   log(`series: 同名シリーズと見分けるため ${displayStmts.length} 件に副題付きの表示名を付ける`);
+
+  if (a.diff) {
+    // 全件では series_new に UPDATE / DELETE で当てる印付け・除外・表示名を、集めた行に直接当てる。
+    const rows = seriesWriter.rows;
+    for (const id of pruneIds) rows.delete(sqlStr(id));
+    for (const id of markIds) {
+      const t = rows.get(sqlStr(id));
+      if (t) t[SERIES_DIFF_COLS.indexOf("is_adult")] = "1";
+    }
+    for (const [id, display] of displayRows) {
+      const t = rows.get(sqlStr(id));
+      if (t) t[SERIES_DIFF_COLS.indexOf("name_display")] = sqlStr(display);
+    }
+    await runDiff(a, { series: rows, volumes: volumesWriter.rows, adult: adultWriter.rows }, { releaseTag, releasedAt });
+    return;
+  }
 
   // Emit a manifest so a resumable per-day loader (scripts/seed-daily.mjs) can
   // budget exactly how many rows each file writes, in apply order.
@@ -1066,6 +1114,11 @@ async function main() {
   log("rebuild suggest index");
   execWrangler(envArgs, targetFlag, "--command", SUGGEST_SQL.join(" "));
 
+  writeMeta(envArgs, targetFlag, releaseTag, releasedAt);
+  log("done.");
+}
+
+function writeMeta(envArgs, targetFlag, releaseTag, releasedAt) {
   // Record dump provenance so the UI can show "マスター更新". released_at is the MADB
   // release date (preferred); imported_at is when this ingest ran (fallback).
   const metaRows = [
@@ -1082,6 +1135,120 @@ async function main() {
       .map(([k, v]) => `INSERT OR REPLACE INTO meta (key, value) VALUES (${sqlStr(k)}, ${sqlStr(v)});`)
       .join(" ");
   execWrangler(envArgs, targetFlag, "--command", metaSql);
+}
+
+// ── --diff: 今の D1 の中身と比べて、変わった行だけを書く（scripts/ingest-diff.mjs）────────
+
+// 読み出しの 1 回あたりの行数。remote は 1 応答を数 MB に抑える。
+const DIFF_PAGE_ROWS = { local: 20000, remote: 10000 };
+
+async function openDb(a, envArgs) {
+  if (a.target === "remote") {
+    const conn = await remoteD1(envArgs);
+    return { conn, select: async (sql) => (await d1Query(conn, sql))?.[0]?.results ?? [] };
+  }
+  return {
+    conn: null,
+    select: async (sql) => {
+      const out = execFileSync(
+        "npx",
+        ["wrangler", "d1", "execute", DB_BINDING, ...envArgs, "--local", "--json", "--command", sql],
+        { encoding: "utf8", stdio: ["ignore", "pipe", "inherit"], maxBuffer: 1 << 30 }
+      );
+      return JSON.parse(out)[0]?.results ?? [];
+    },
+  };
+}
+
+// 表を主キー順に読み、Map<主キーのリテラル, liveRowKey> にする。
+async function readLive(db, table, cols, pk, page) {
+  const out = new Map();
+  let last = null;
+  for (;;) {
+    const where = last == null ? "" : ` WHERE ${pk} > ${sqlStr(last)}`;
+    const rows = await db.select(`SELECT ${cols.join(", ")} FROM ${table}${where} ORDER BY ${pk} LIMIT ${page}`);
+    for (const r of rows) out.set(sqlStr(r[pk]), liveRowKey(r, cols, INT_COLS));
+    if (rows.length < page) break;
+    last = rows[rows.length - 1][pk];
+  }
+  log(`  read ${table}: ${out.size} rows`);
+  return out;
+}
+
+async function runDiff(a, next, { releaseTag, releasedAt }) {
+  const targetFlag = a.target === "remote" ? "--remote" : "--local";
+  const envArgs = a.env ? ["--env", a.env] : [];
+  const db = await openDb(a, envArgs);
+  const page = DIFF_PAGE_ROWS[a.target];
+
+  const tables = new Set((await db.select("SELECT name FROM sqlite_master WHERE type = 'table'")).map((r) => r.name));
+  for (const t of ["series", "volumes", "adult_volumes"]) {
+    if (!tables.has(t)) throw new Error(`表 ${t} がまだ無い DB には差分で入れられません。--diff を外して全件で取り込んでください`);
+  }
+  // MADB に無くても消さない行: 独自シリーズと、差し替えで足した巻（取り込みの後に重ね直す）。
+  const customIds = new Set(
+    tables.has("custom_series") ? (await db.select("SELECT id FROM custom_series")).map((r) => sqlStr(r.id)) : []
+  );
+  const fixIsbns = new Set(
+    tables.has("volume_master_fix") ? (await db.select("SELECT isbn FROM volume_master_fix")).map((r) => sqlStr(r.isbn)) : []
+  );
+
+  log("diff: read live tables");
+  const specs = [
+    { table: "series", pk: "id", cols: SERIES_DIFF_COLS, next: next.series, keep: (k) => customIds.has(k) },
+    { table: "volumes", pk: "isbn", cols: VOLUME_WRITE_COLS, next: next.volumes, keep: (k) => fixIsbns.has(k) },
+    { table: "adult_volumes", pk: "isbn", cols: ADULT_WRITE_COLS, next: next.adult, keep: () => false },
+  ];
+  const upsertFiles = [];
+  const deleteFiles = [];
+  let total = 0;
+  for (const sp of specs) {
+    const live = await readLive(db, sp.table, sp.cols, sp.pk, page);
+    const { upserts, deletes } = diffRows(sp.next, live, sp.keep);
+    const w = new SqlChunkWriter(a.out, `diff_${sp.table}`, sp.cols, a.chunk, {
+      table: sp.table,
+      conflict: upsertClause(sp.cols, sp.pk),
+    });
+    for (const t of upserts) w.add(t);
+    upsertFiles.push(...w.finish().map((f) => f.path));
+    // deletes は主キーのリテラルなので、引用符を外して deleteStatements に渡す。
+    const stmts = deleteStatements(sp.table, sp.pk, deletes.map((k) => k.slice(1, -1).replace(/''/g, "'")));
+    if (stmts.length) {
+      const f = path.join(a.out, `diff_${sp.table}_delete.sql`);
+      fs.writeFileSync(f, stmts.join(""));
+      deleteFiles.push(f);
+    }
+    log(`diff ${sp.table}: MADB ${sp.next.size} / D1 ${live.size} → 書き込み ${upserts.length}・削除 ${deletes.length}`);
+    total += upserts.length + deletes.length;
+  }
+  log(`diff: 書き込み・削除 計 ${total} 行（索引の更新は別に数えられる）`);
+
+  if (!a.apply) {
+    log("--no-apply: diff SQL written to", a.out);
+    return;
+  }
+
+  // 書き戻し → 削除の順。全件の取り込みと同じく、remote は import API（--file）を使わない。
+  for (const file of [...upsertFiles, ...deleteFiles]) {
+    log("apply", path.basename(file));
+    if (db.conn) await applyFileViaQueryApi(db.conn, file);
+    else execWrangler(envArgs, targetFlag, "--file", file);
+  }
+
+  // 索引・補完キャッシュの整理・管理データの重ね直し（全件の入れ替えの後と同じもの）。
+  log("post-load (indexes / supplement / links / master fixes)");
+  execWrangler(envArgs, targetFlag, "--command", POST_LOAD_SQL.join(" "));
+
+  // サジェストの索引も差分で合わせる。D1 の CPU 上限などで落ちたら、全件の作り直しに切り替える。
+  log("sync suggest index (diff)");
+  try {
+    execWrangler(envArgs, targetFlag, "--command", suggestDiffSql(SUGGEST_SQL).join(" "));
+  } catch (err) {
+    log(`  suggest diff failed (${err.message}); rebuilding suggest index in full`);
+    execWrangler(envArgs, targetFlag, "--command", SUGGEST_SQL.join(" "));
+  }
+
+  writeMeta(envArgs, targetFlag, releaseTag, releasedAt);
   log("done.");
 }
 
@@ -1134,7 +1301,7 @@ async function d1Query(conn, sql, attempts = 6) {
         body: JSON.stringify({ sql }),
       });
       const body = await res.json().catch(() => null);
-      if (res.ok && body?.success) return;
+      if (res.ok && body?.success) return body.result;
       detail = `${res.status} ${JSON.stringify(body?.errors ?? body).slice(0, 300)}`;
       // 4xx（429 以外）は SQL かリクエストの誤りなのでリトライしない。
       if (res.status < 500 && res.status !== 429) throw new Error(`D1 query failed: ${detail}`);
@@ -1153,7 +1320,7 @@ async function d1Query(conn, sql, attempts = 6) {
 // prune の書き方）。値の中の「;\n」で切らないよう、次の文の頭も見て区切る。
 function splitStatements(sqlText) {
   return sqlText
-    .split(/;\n(?=INSERT OR REPLACE INTO |DELETE FROM )/)
+    .split(/;\n(?=INSERT (?:OR REPLACE )?INTO |DELETE FROM |UPDATE )/)
     .map((x) => x.trim().replace(/;$/, ""))
     .filter(Boolean)
     .map((x) => x + ";");

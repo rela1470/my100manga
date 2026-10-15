@@ -1,6 +1,7 @@
 import { Env } from "./types";
 import { json, badRequest, toIsbn13 } from "./util";
 import { getSeriesVolumes } from "./series";
+import { edgeCacheKey, withEdgeCache } from "./edgeCache";
 import { isCompleteRun } from "./seriesStats";
 
 export { isCompleteRun };
@@ -153,9 +154,28 @@ export function sizeOrder(rem: number): number[] {
   ];
 }
 
+/** 何も持っていない人（have も exclude も無い）の抽選をエッジに持つ秒数。エディタはボタンが
+ *  見えた時点で先に引いて書名をボタンに出す（public/app.js prefetchFill）ので、トップを開いた
+ *  人の数だけ抽選が走る。本棚が空の人は条件が全員同じ（n=100）なので、その応答を短く共有して
+ *  抽選を 1 分に 1 回程度に抑える。同じ 1 分に来た人は同じ顔ぶれを見るが、引き直せば変わる。 */
+const SHARED_EDGE_TTL_SEC = 60;
+
 export async function handleRandomFill(env: Env, url: URL): Promise<Response> {
   const n = parseInt(url.searchParams.get("n") ?? "", 10);
   if (!Number.isFinite(n) || n < 1 || n > MAX_N) return badRequest(`n は 1〜${MAX_N} で指定してください`);
+  if (!url.searchParams.get("have") && !url.searchParams.get("exclude")) {
+    // ちょうど埋まらなかった抽選（打ち切り）は共有しない。
+    return withEdgeCache(
+      edgeCacheKey(env, "/api/random-fill", { n }),
+      SHARED_EDGE_TTL_SEC,
+      () => drawFill(env, url, n),
+      (res) => res.status === 200 && res.headers.get("x-fill") === "full"
+    );
+  }
+  return drawFill(env, url, n);
+}
+
+async function drawFill(env: Env, url: URL, n: number): Promise<Response> {
   const have = new Set(
     (url.searchParams.get("have") ?? "")
       .split(",")
@@ -225,6 +245,6 @@ export async function handleRandomFill(env: Env, url: URL): Promise<Response> {
       })),
     },
     200,
-    { "cache-control": "no-store" }
+    { "cache-control": "no-store", "x-fill": rem === 0 ? "full" : "partial" }
   );
 }

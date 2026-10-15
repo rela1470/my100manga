@@ -697,7 +697,8 @@ function render() {
   const fillBtn = $("randomFill");
   $("fillBar").style.display = !state.reorder && filled < TARGET ? "" : "none";
   fillBtn.disabled = state.filling;
-  fillBtn.textContent = state.filling ? "選んでいます…" : `残り${TARGET - filled}作品をおまかせで埋める`;
+  fillBtn.textContent = state.filling ? "選んでいます…" : fillButtonLabel();
+  scheduleFillPrefetch();
 
   const clearBtn = $("clearAll");
   clearBtn.textContent = `編集中の漫画を全削除（${filled}）`;
@@ -4404,6 +4405,68 @@ function bulkAddSeries(volumes) {
   if (notes.length) uiAlert(`${n}巻を追加しました（${notes.join("、")}）。`);
 }
 
+// おまかせで埋めるボタンの先引き。ボタンが見えたら裏で 1 回引いておき、「残り100作品を
+// 『ONE PIECE』で埋める」のように選ばれたシリーズ名をボタンに出す。押したらその顔ぶれを
+// そのままモーダルに出す（randomFill）。本棚が変わったら 1 秒おいて引き直す（足すたびに名前が
+// 変わるのは仕様）。本棚が空の人の抽選はサーバがエッジで 1 分共有する（src/randomFill.ts）。
+const FILL_TITLE_MAX = 15; // ボタンに出す書名の長さ（全角）。超えたら「…」で切る
+const FILL_PREFETCH_DELAY_MS = 1000;
+const fillPre = { key: "", data: null, pendingKey: "", timer: 0, seq: 0, visible: false, active: false };
+
+function fillHave() {
+  return state.items.map((it) => it.isbn).filter(Boolean).slice(-200);
+}
+function fillQuery(rest, have) {
+  return `n=${rest}&have=${have.join(",")}`;
+}
+function fillKey(rest, have) {
+  return `${rest}|${have.join(",")}`;
+}
+
+function fillButtonLabel() {
+  const rest = TARGET - state.items.length;
+  const d = fillPre.key === fillKey(rest, fillHave()) ? fillPre.data : null;
+  const series = (d && d.series) || [];
+  if (!series.length) return `残り${rest}作品をおまかせで埋める`;
+  const t = series[0].title || "";
+  const name = t.length > FILL_TITLE_MAX ? `${t.slice(0, FILL_TITLE_MAX)}…` : t;
+  return series.length === 1
+    ? `残り${rest}作品を『${name}』で埋める`
+    : `残り${rest}作品を『${name}』ほか${series.length - 1}作で埋める`;
+}
+
+function scheduleFillPrefetch() {
+  const rest = TARGET - state.items.length;
+  if (rest <= 0 || state.reorder || state.filling || fillPre.active || !fillPre.visible) return;
+  const key = fillKey(rest, fillHave());
+  if (key === fillPre.key || key === fillPre.pendingKey) return;
+  fillPre.pendingKey = key;
+  clearTimeout(fillPre.timer);
+  // 初めての 1 回はすぐ、本棚を触っている最中は落ち着くまで待つ。
+  fillPre.timer = setTimeout(prefetchFill, fillPre.data ? FILL_PREFETCH_DELAY_MS : 0);
+}
+
+async function prefetchFill() {
+  const rest = TARGET - state.items.length;
+  const have = fillHave();
+  const key = fillKey(rest, have);
+  if (rest <= 0 || key !== fillPre.pendingKey) return;
+  const my = ++fillPre.seq;
+  let data = null;
+  try {
+    data = await apiFetch(`/api/random-fill?${fillQuery(rest, have)}`);
+  } catch (e) {
+    data = null; // 先引きの失敗は黙って「おまかせで埋める」のままにする（押せば改めて引く）
+  }
+  if (my !== fillPre.seq) return; // 押された・引き直しが始まった
+  if (fillPre.pendingKey === key) fillPre.pendingKey = "";
+  if (!data || data.filled !== rest) return;
+  fillPre.key = key;
+  fillPre.data = data;
+  if (!state.filling) $("randomFill").textContent = fillButtonLabel();
+  scheduleFillPrefetch(); // 待っている間に本棚が変わっていれば、その分を引き直す
+}
+
 // おまかせで埋めるモーダル（#fillModal）。選ばれたシリーズごとに、名前・巻数と先頭の巻の表紙を
 // 並べる。押されたボタンで "ok" / "alt"（再抽選）/ false（やめる・Esc・戻る）を返す。
 const FILL_COVERS_MAX = 11; // 1 シリーズに並べる表紙の数（残りは「ほかN巻」の枠 1 つにまとめる）
@@ -4497,14 +4560,34 @@ async function fillFillCovers(picked) {
 // 選ばれた顔ぶれを見せて確認してから足す。確認画面の「再抽選」で別の顔ぶれを引き直せて、
 // 足したあとも「元に戻す」で丸ごと取り消せる。
 async function randomFill() {
+  if (fillPre.active) return;
+  // 抽選とモーダルの間は先引きを止める（同じ条件で無駄に引き直さない）。
+  fillPre.active = true;
+  try {
+    await randomFillRun();
+  } finally {
+    fillPre.active = false;
+    render();
+  }
+}
+
+async function randomFillRun() {
   const rest = TARGET - state.items.length;
   if (rest <= 0 || state.filling) return;
-  const have = state.items.map((it) => it.isbn).filter(Boolean).slice(-200);
+  const have = fillHave();
+  // ボタンに書名を出すために先に引いてあれば、それをそのまま最初の顔ぶれにする（待ち時間なし）。
+  let first = fillPre.key === fillKey(rest, have) ? fillPre.data : null;
+  fillPre.seq++; // 走っている先引きの結果は捨てる
   // 再抽選では、これまでに出したシリーズを外して引き直す（同じ顔ぶれが続かないように）。
   // 外したせいで埋まらなくなったら（候補が数本しか無い巻数など）、外さずにもう一度引く。
   let shown = [];
   const draw = async () => {
-    const q = `n=${rest}&have=${have.join(",")}`;
+    if (first) {
+      const d = first;
+      first = null;
+      return d;
+    }
+    const q = fillQuery(rest, have);
     const ex = shown.slice(-50);
     let data = await apiFetch(`/api/random-fill?${q}${ex.length ? `&exclude=${ex.join(",")}` : ""}`);
     if (ex.length && data.filled !== rest) {
@@ -4535,6 +4618,9 @@ async function randomFill() {
       return;
     }
     shown.push(...picked.map((s) => s.series_id));
+    // ボタンの書名も最後に見せた顔ぶれにそろえる（やめたあとも同じものが出ている）。
+    fillPre.key = fillKey(rest, have);
+    fillPre.data = data;
     const ans = await showFillModal(picked, rest);
     if (ans === "alt") {
       setFillModalBusy(true); // 開いたまま引き直す（閉じて開き直すとちらつく）
@@ -5071,6 +5157,15 @@ function wireEvents() {
   syncTopSearchClear = wireSearchClear($("topSearch"), $("topSearchClear"), () => topSuggest);
   $("fetchCovers").addEventListener("click", fetchMissingCovers);
   $("randomFill").addEventListener("click", randomFill);
+  // ボタンが画面に入ってから先引きする（見えない人の分まで抽選を走らせない）。
+  if ("IntersectionObserver" in window) {
+    new IntersectionObserver((entries) => {
+      fillPre.visible = entries.some((e) => e.isIntersecting);
+      scheduleFillPrefetch();
+    }).observe($("fillBar"));
+  } else {
+    fillPre.visible = true;
+  }
   $("fillOk").addEventListener("click", () => settleFillModal("ok"));
   $("fillReroll").addEventListener("click", () => settleFillModal("alt"));
   // やめる・Esc・ブラウザバック（どちらも背景への click として届く。public/ui-dialog.js）。

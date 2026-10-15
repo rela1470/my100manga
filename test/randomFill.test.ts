@@ -114,11 +114,18 @@ describe("GET /api/random-fill", () => {
     // 集計が無い間は記録（9）でしか引けないので、ちょうど 6 の 1 本は見つからない（前のテストの
     // 抽選で巻一覧を開いていると集計が書かれているので、先に消す）。
     await env.DB.prepare(`DELETE FROM series_stats WHERE series_id = ?`).bind(MISCOUNT).run();
-    expect((await fill("n=6")).body.series.map((s: any) => s.series_id)).not.toEqual([MISCOUNT]);
+    // exclude を付けるのは、本棚が空の人向けのエッジ共有（下のテスト）を通さないため。
+    expect((await fill("n=6&exclude=C000000")).body.series.map((s: any) => s.series_id)).not.toEqual([MISCOUNT]);
     // 巻一覧を開くと集計が書かれ（src/seriesStats.ts）、complete_run = 6 で引けるようになる。
     await SELF.fetch(`https://example.com/api/series/${MISCOUNT}/volumes`, { headers: { "user-agent": BROWSER_UA } });
-    const { body } = await fill("n=6");
+    const { body } = await fill("n=6&exclude=C000000");
     expect(body.series.map((s: any) => s.series_id)).toEqual([MISCOUNT]);
+  });
+
+  it("本棚が空の人の抽選（have も exclude も無い）はエッジで共有し、同じ顔ぶれを返す", async () => {
+    const a = await fill("n=10");
+    const b = await fill("n=10");
+    expect(b.body.series.map((s: any) => s.series_id)).toEqual(a.body.series.map((s: any) => s.series_id));
   });
 
   it("n は 1〜100", async () => {

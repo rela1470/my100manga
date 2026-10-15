@@ -138,9 +138,9 @@ async function loadSiteStats() {
     const res = await fetch("/api/site-stats");
     if (!res.ok) return;
     const stats = await res.json();
-    // href があるカードは押すとそのページへ（公開リスト → みんなのリスト）。
+    // href があるカードは押すとそのページへ（シリーズ → シリーズ一覧（巻数順）、公開リスト → みんなのリスト）。
     const cards = [
-      ["series", "シリーズ"],
+      ["series", "シリーズ", "/series"],
       ["volumes", "巻(ISBN)"],
       ["lists", "公開リスト", "/lists"],
     ];

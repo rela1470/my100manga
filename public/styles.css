@@ -602,6 +602,8 @@ button:disabled { opacity: .45; cursor: not-allowed; transform: none; box-shadow
    先に使われていて、枠と地色が付いてしまうため。 */
 .shelf-cover-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; margin: 0 0 14px; }
 .shelf-cover-actions .cover-status { margin: 0; }
+.shelf-fill { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 12px; margin: 0 0 14px; }
+.shelf-fill .hint { margin: 0; }
 .shelf-title {
   margin: 0;
   font-weight: 900; font-size: 24px; letter-spacing: .02em;

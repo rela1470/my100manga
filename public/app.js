@@ -31,6 +31,7 @@ const state = {
   customSlug: "", // user-chosen slug for a new list ("" = random)
   unlisted: false, // 限定公開: noindex にし、運営からの紹介対象にしない（URL を知っていれば見られる）
   fetchingCovers: false, // true while the "表紙を取得" bulk fill is running
+  filling: false, // true while 「残りをおまかせで埋める」 is waiting on /api/random-fill
   coverTried: new Set(), // isbns already fetched this session (miss or hit) — don't re-offer
   reorder: false, // true while in reorder mode (tap = select, not edit)
   placing: false, // reorder mode phase 2: selection is fixed, now tap where it goes
@@ -691,6 +692,12 @@ function render() {
   // 取得ボタンの行は、どちらかのボタンが出るときと、取得中（進捗の文言を同じ行に出す）
   // だけ場所を取る。取得中は上の 2 つのボタンがどちらも隠れる。
   $("coverActions").style.display = showFetch || showFix || state.fetchingCovers ? "" : "none";
+
+  // 残りのおまかせ埋め。並べ替え中は出さない（追加の枠と同じ理由）。
+  const fillBtn = $("randomFill");
+  $("fillBar").style.display = !state.reorder && filled < TARGET ? "" : "none";
+  fillBtn.disabled = state.filling;
+  fillBtn.textContent = state.filling ? "選んでいます…" : `残り${TARGET - filled}作品をおまかせで埋める`;
 
   const clearBtn = $("clearAll");
   clearBtn.textContent = `編集中の漫画を全削除（${filled}）`;
@@ -4397,6 +4404,98 @@ function bulkAddSeries(volumes) {
   if (notes.length) uiAlert(`${n}巻を追加しました（${notes.join("、")}）。`);
 }
 
+// 残りの枠を、1巻から最終巻までそろったシリーズだけでちょうど埋める（src/randomFill.ts）。
+// 選ばれた顔ぶれを見せて確認してから足す。確認画面の「再抽選」で別の顔ぶれを引き直せて、
+// 足したあとも「元に戻す」で丸ごと取り消せる。
+async function randomFill() {
+  const rest = TARGET - state.items.length;
+  if (rest <= 0 || state.filling) return;
+  const have = state.items.map((it) => it.isbn).filter(Boolean).slice(-200);
+  // 再抽選では、これまでに出したシリーズを外して引き直す（同じ顔ぶれが続かないように）。
+  // 外したせいで埋まらなくなったら（候補が数本しか無い巻数など）、外さずにもう一度引く。
+  let shown = [];
+  const draw = async () => {
+    const q = `n=${rest}&have=${have.join(",")}`;
+    const ex = shown.slice(-50);
+    let data = await apiFetch(`/api/random-fill?${q}${ex.length ? `&exclude=${ex.join(",")}` : ""}`);
+    if (ex.length && data.filled !== rest) {
+      shown = [];
+      data = await apiFetch(`/api/random-fill?${q}`);
+    }
+    return data;
+  };
+  let picked;
+  for (;;) {
+    state.filling = true;
+    render();
+    let data;
+    try {
+      data = await draw();
+    } catch (e) {
+      uiAlert(apiErrorMessage(e, "シリーズを選べませんでした"));
+      return;
+    } finally {
+      state.filling = false;
+      render();
+    }
+    picked = (data && data.series) || [];
+    if (!picked.length || data.filled !== rest) {
+      uiAlert(`ちょうど${rest}作品になる組み合わせが見つかりませんでした。もう一度お試しください。`);
+      return;
+    }
+    shown.push(...picked.map((s) => s.series_id));
+    const lines = picked.map((s) => {
+      const name = s.version ? `${s.title}（${s.version}）` : s.title;
+      const by = s.creator ? ` ／ ${s.creator}` : "";
+      return `・${name}（全${s.volumes.length}巻）${by}`;
+    });
+    const head =
+      picked.length === 1
+        ? `残り${rest}作品を、このシリーズで埋めます。`
+        : `残り${rest}作品を、次の${picked.length}シリーズで埋めます。`;
+    const ans = await uiConfirm(`${head}\n\n${lines.join("\n")}`, {
+      okLabel: "追加する",
+      altLabel: "再抽選",
+      cancelLabel: "やめる",
+    });
+    if (ans === "alt") continue;
+    if (!ans) return;
+    break;
+  }
+  // 確認のあいだに本棚が変わっていたら（別タブの下書き同期など）、足すと 100 からずれるので取りやめる。
+  if (TARGET - state.items.length !== rest) {
+    uiAlert("本棚の冊数が変わったため、追加をやめました。もう一度お試しください。");
+    return;
+  }
+  const added = [];
+  for (const s of picked) {
+    for (const v of s.volumes) {
+      added.push({
+        isbn: toIsbn13(v.isbn),
+        title: volLabel(v),
+        author: v.author || "",
+        cover_url: v.cover_url || "",
+        comment: "",
+        spoiler: false,
+      });
+    }
+  }
+  state.items.push(...added);
+  render();
+  saveDraft();
+  uiToast(`${rest}作品を追加しました`, {
+    actionLabel: "元に戻す",
+    onAction: () => {
+      // 位置ではなく中身で外す（取り消すまでに並べ替えや削除をしていても、足した分だけを外す）。
+      const mine = new Set(added);
+      state.items = state.items.filter((it) => !mine.has(it));
+      render();
+      saveDraft();
+    },
+    duration: 10000,
+  });
+}
+
 // Fetch covers for grid items that still lack one, in chunks sized to the Rakuten
 // limiter budget (COVER_CHUNK), re-rendering after each so covers pop in
 // progressively. Triggered by the "表紙を取得" button rather than automatically,
@@ -4889,6 +4988,7 @@ function wireEvents() {
   });
   syncTopSearchClear = wireSearchClear($("topSearch"), $("topSearchClear"), () => topSuggest);
   $("fetchCovers").addEventListener("click", fetchMissingCovers);
+  $("randomFill").addEventListener("click", randomFill);
   wireShareX($("shareXPost"), $("shareXImage"), () => ({ slug: shareSlug, owner: state.owner }));
   $("fixMissing").addEventListener("click", startFixMissing);
   $("clearAll").addEventListener("click", clearAll);

@@ -127,6 +127,12 @@
       <p class="cover-status" id="coverStatus" style="display:none"></p>
     </div>
 
+    <!-- 残りの枠のおまかせ埋め（app.js randomFill）。100作品に満たないときだけ出す。 -->
+    <div class="shelf-fill" id="fillBar" style="display:none">
+      <button id="randomFill">残りをおまかせで埋める</button>
+      <p class="hint">1巻から最終巻までそろったシリーズを、残りがちょうど埋まるようにランダムに選びます。</p>
+    </div>
+
     <div class="shelf">
       <div class="shelf-tone" aria-hidden="true"></div>
       <div class="grid" id="grid" aria-label="100作品グリッド"></div>

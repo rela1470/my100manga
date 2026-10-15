@@ -141,6 +141,7 @@ import {
 } from "./labels";
 import { Env, MangaList, ShareJob } from "./types";
 import { rateLimit } from "./ratelimit";
+import { handleRandomFill } from "./randomFill";
 import { turnstileAction, verifyTurnstile } from "./turnstile";
 import { COVER_CACHE, getTrimmedCover, trimKind } from "./coverBytes";
 import {
@@ -293,6 +294,8 @@ const worker = {
                     ? "public-lists"
                     : path === "/api/share-status"
                       ? "share-status"
+                      : path === "/api/random-fill"
+                        ? "random-fill"
                       : /^\/api\/series\/[A-Za-z0-9]+\/(volumes|merge-candidates)$/.test(path)
                         ? "volumes"
                         : null;
@@ -418,6 +421,10 @@ const worker = {
             : await reportSeriesName(request, env, r.group.id, r.group);
         }
         return badRequest("このまとまりはシリーズに属していないため、この操作はできません");
+      }
+      // 残りの枠をランダムなシリーズで埋める（src/randomFill.ts）。
+      if (path === "/api/random-fill" && request.method === "GET") {
+        return await handleRandomFill(env, url);
       }
       const seriesMatch = path.match(/^\/api\/series\/([A-Za-z0-9]+)\/volumes$/);
       if (seriesMatch && request.method === "GET") {

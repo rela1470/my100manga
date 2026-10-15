@@ -361,6 +361,33 @@ function editionVersion(v, name, brand) {
   return ver;
 }
 
+// 並列タイトル（ISBD の「本タイトル = 並列タイトル : 副題」）を落とした表示用の書名。
+// MADB は C40 万番台（2020 年代の登録）から英題を「東島丹三郎は仮面ライダーになりたい =
+// TOJIMA TANZABURO WANTS TO BE A MASKED RIDER」のように書名へ併記していて、ローカル DB で
+// シリーズ 2,262 件・巻 1.4 万件がこの形。古い登録の同じ作品には付いておらず、カードに英題が
+// 並ぶだけなので表示からは外す。
+//   ・日本語（かな・漢字）を含む区切りがちょうど 1 つで、他が英字だけのときに限り、その 1 つを残す。
+//     「Kurofunemaru de Rio = Rioの黒船丸」のように英字が先の行は日本語の方を残す。
+//   ・並列タイトルの後ろの「 : 副題」は残す（「ラストオーダー = Last Order : ひとりぼっちの
+//     百年戦争」→「ラストオーダー : ひとりぼっちの百年戦争」）。
+//   ・両側とも日本語（「制服×征服×性服 = 世界大戦」）や、空白で挟まない「=」（「1+1=0」
+//     「ペルシャン=ブルー」）はそのまま。
+// 検索キー（name_search / title_search）は落とす前の書名から作り、英題でも引けるようにしておく。
+function dropParallelTitle(s) {
+  const parts = s.split(" = ");
+  if (parts.length < 2) return s;
+  let rest = "";
+  const mains = parts.map((p, i) => {
+    if (i === 0) return p;
+    const at = p.indexOf(" : ");
+    if (at < 0) return p;
+    rest += p.slice(at);
+    return p.slice(0, at);
+  });
+  const ja = mains.filter((m) => /[\p{Script=Hiragana}\p{Script=Katakana}\p{Script=Han}]/u.test(m));
+  return ja.length === 1 ? ja[0] + rest : s;
+}
+
 function cid(node, prop) {
   const v = node[prop];
   if (v && typeof v === "object" && typeof v["@id"] === "string") {
@@ -778,8 +805,9 @@ async function main() {
     const id = (node["@id"] || "").startsWith(ID_PREFIX)
       ? node["@id"].slice(ID_PREFIX.length)
       : node["@id"];
-    const name = primary(node["schema:name"]) || node["rdfs:label"] || "";
-    if (!id || !name) return;
+    const fullName = primary(node["schema:name"]) || node["rdfs:label"] || "";
+    if (!id || !fullName) return;
+    const name = dropParallelTitle(fullName);
     seriesNames.set(id, name);
     // name_search は空になることがあり（記号だけの名前）、その場合 SQL 側は name_norm に
     // 落ちる（COALESCE(name_search, name_norm)）ので、ここでも同じ順で決める。
@@ -796,7 +824,7 @@ async function main() {
       sqlStr(normTitle(name)),
       sqlStr(nameKana),
       sqlStr(kanaNorm),
-      sqlStr(searchKey(name)),
+      sqlStr(searchKey(fullName)),
       sqlStr(cleanCreator(pickCreator(node["schema:creator"]))),
       sqlStr(creatorsDisplay(node["schema:creator"])),
       sqlStr(creatorsNorm(node["schema:creator"])),
@@ -835,8 +863,9 @@ async function main() {
     if (node["@type"] !== "class:MangaBook") return;
     const isbn = isbn13(node["schema:isbn"]);
     if (!isbn || seen.has(isbn)) return;
-    const title = primary(node["schema:name"]) || node["rdfs:label"] || "";
-    if (!title) return;
+    const fullTitle = primary(node["schema:name"]) || node["rdfs:label"] || "";
+    if (!fullTitle) return;
+    const title = dropParallelTitle(fullTitle);
     seen.add(isbn); // 成年向けで落とす巻も seen に入れ、同じ ISBN の重複ノードから入り込ませない
     const seriesId = cid(node, "schema:isPartOf");
     // R18版（--include-adult）は成年向けも本体表に入れる。adult_volumes は空のままにして、
@@ -845,7 +874,7 @@ async function main() {
       adultCount++;
       if (seriesId) adultSeries.add(seriesId);
       // 検索・追加で「成年向けは追加できません」と明示するために記録する（src/adult.ts）。
-      adultWriter.add([sqlStr(isbn), sqlStr(title), sqlStr(searchKey(title) || normTitle(title) || title), sqlStr(seriesNames.get(seriesId) ?? null)]);
+      adultWriter.add([sqlStr(isbn), sqlStr(title), sqlStr(searchKey(fullTitle) || normTitle(fullTitle) || fullTitle), sqlStr(seriesNames.get(seriesId) ?? null)]);
       return;
     }
     const adult = isAdult(node);
@@ -869,7 +898,7 @@ async function main() {
       sqlInt(volSort(vnum)),
       sqlStr(title),
       sqlStr(sub),
-      sqlStr(searchKey(title)),
+      sqlStr(searchKey(fullTitle)),
       sqlStr(cleanCreator(pickCreator(node["schema:creator"]))),
       sqlStr(creatorsDisplay(node["schema:creator"])),
       sqlStr(creatorsNorm(node["schema:creator"])),

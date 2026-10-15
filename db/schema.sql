@@ -694,7 +694,7 @@ CREATE TABLE IF NOT EXISTS list_history (
   created_at  INTEGER NOT NULL,          -- 元のリストの作成時刻、この版の最終更新時刻 (epoch ms)
   updated_at  INTEGER NOT NULL,
   archived_at INTEGER NOT NULL,          -- 控えた（消した・書き換えた）時刻 (epoch ms)
-  reason      TEXT NOT NULL              -- 'delete' (作成者) | 'admin_delete' | 'account_delete' | 'update' | 'admin_redact'
+  reason      TEXT NOT NULL              -- 'delete' (作成者) | 'admin_delete' | 'account_delete' | 'update' | 'admin_redact' | 'salvage'（手で戻した版）
 );
 CREATE INDEX IF NOT EXISTS idx_list_history_slug ON list_history (slug, id);
 CREATE INDEX IF NOT EXISTS idx_list_history_at ON list_history (archived_at);

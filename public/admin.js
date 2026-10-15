@@ -698,6 +698,7 @@ const HISTORY_REASON_LABEL = {
   admin_delete: "管理者が削除",
   update: "更新前の版",
   admin_redact: "伏字前の版",
+  salvage: "復旧した版", // 控えを始める前に消えた・上書きされた中身を、バックアップや Time Travel から戻したもの
 };
 
 function filterHistoryBySlug(slug) {

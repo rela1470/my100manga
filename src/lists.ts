@@ -20,6 +20,7 @@ import { adultBlockMessage, findAdultIsbns } from "./adult";
 
 /** 控えの理由。list_history.reason に入れる。削除系は publish_audit.action と同じ値。 */
 export type ListArchiveReason = "delete" | "admin_delete" | "account_delete" | "update" | "admin_redact";
+// ほかに 'salvage'（控えを始める前の中身をバックアップ・Time Travel から手で戻したもの）が入る行がある。
 export type ListDeleteReason = Extract<ListArchiveReason, "delete" | "admin_delete" | "account_delete">;
 
 /** 1 リストあたりに残す「更新前の版」の上限。更新は書き込みの枠（RL_WRITE）と Turnstile を通るが、

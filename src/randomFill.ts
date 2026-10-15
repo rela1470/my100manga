@@ -46,8 +46,12 @@ const TRIES_PER_SIZE = 4;
 const TRIES_EXACT = 12;
 /** 候補をまとめて読んでシャッフルする巻数の上限本数（これより多い巻数は乱数で 1 本ずつ引く）。 */
 const LIST_ALL_MAX = 40;
-/** 1 回の要求で巻一覧（D1 を 10 本ほど引く）を確かめる総回数の上限。 */
-const MAX_CHECKS = 50;
+/** 1 回の要求で巻一覧を確かめる総回数の上限。巻一覧 1 本で D1 を 20 本前後引き、Worker 1 回の
+ *  D1 クエリ上限は 1000 なので、候補引きの分（下の QUERY_BUDGET）と合わせて収まるようにする。 */
+const MAX_CHECKS = 30;
+/** 候補引き（巻数ごとの MIN / MAX と乱数の 1 行）に使ってよい D1 クエリ数。巻一覧の確認
+ *  （MAX_CHECKS × 約 20 本）と合わせて 1000 の内側に収める。 */
+const QUERY_BUDGET = 250;
 /** 既にリストにある ISBN として受け取る数の上限（URL に載るので）。 */
 const MAX_HAVE = 200;
 
@@ -82,14 +86,26 @@ const SOURCES = [
 ] as const;
 type Source = (typeof SOURCES)[number];
 
+/** 1 回の抽選の中で使い回すもの: 候補引きのクエリ数と、巻数ごとの id の範囲。 */
+interface DrawCtx {
+  queries: number;
+  ranges: Map<string, { lo: string; hi: string }>;
+}
+
 /** 巻数 k のシリーズ id を 1 本、ランダムに（候補の多い巻数用）。無ければ null。 */
-async function randomSeriesId(env: Env, src: Source, k: number): Promise<string | null> {
+async function randomSeriesId(env: Env, ctx: DrawCtx, src: Source, k: number): Promise<string | null> {
   const where = `FROM ${src.table} WHERE ${src.size} = ?`;
-  const mn = await env.DB.prepare(`SELECT MIN(${src.id}) AS v ${where}`).bind(k).first<{ v: string | null }>();
-  if (!mn?.v) return null;
-  const mx = await env.DB.prepare(`SELECT MAX(${src.id}) AS v ${where}`).bind(k).first<{ v: string | null }>();
-  const lo = mn.v;
-  const hi = mx?.v ?? lo;
+  const rk = `${src.table}:${k}`;
+  let range = ctx.ranges.get(rk);
+  if (!range) {
+    ctx.queries += 2;
+    const mn = await env.DB.prepare(`SELECT MIN(${src.id}) AS v ${where}`).bind(k).first<{ v: string | null }>();
+    if (!mn?.v) return null;
+    const mx = await env.DB.prepare(`SELECT MAX(${src.id}) AS v ${where}`).bind(k).first<{ v: string | null }>();
+    range = { lo: mn.v, hi: mx?.v ?? mn.v };
+    ctx.ranges.set(rk, range);
+  }
+  const { lo, hi } = range;
   // 同じ接頭辞・同じ長さのときだけ数値で閾値を作る。それ以外（混在）は先頭から。
   let threshold = lo;
   const a = /^([A-Z])(\d+)$/.exec(lo);
@@ -100,6 +116,7 @@ async function randomSeriesId(env: Env, src: Source, k: number): Promise<string 
     const pick = from + Math.floor(Math.random() * (to - from + 1));
     threshold = a[1] + String(pick).padStart(a[2].length, "0");
   }
+  ctx.queries++;
   const row = await env.DB.prepare(`SELECT ${src.id} AS id ${where} AND ${src.id} >= ? ORDER BY ${src.id} LIMIT 1`)
     .bind(k, threshold)
     .first<{ id: string }>();
@@ -108,8 +125,10 @@ async function randomSeriesId(env: Env, src: Source, k: number): Promise<string 
 
 /** 1 つの引き先から、巻数 k の候補 id を最大 tries 本。候補が LIST_ALL_MAX 本以下なら全部を
  *  シャッフルして返し（同じ候補に何度も当たらない）、多ければ乱数で引く。 */
-async function idsFrom(env: Env, src: Source, k: number, tries: number): Promise<string[]> {
+async function idsFrom(env: Env, ctx: DrawCtx, src: Source, k: number, tries: number): Promise<string[]> {
+  if (ctx.queries >= QUERY_BUDGET) return [];
   let ids: string[];
+  ctx.queries++;
   try {
     const rows = await env.DB.prepare(`SELECT ${src.id} AS id FROM ${src.table} WHERE ${src.size} = ? LIMIT ?`)
       .bind(k, LIST_ALL_MAX + 1)
@@ -120,19 +139,19 @@ async function idsFrom(env: Env, src: Source, k: number, tries: number): Promise
   }
   if (ids.length <= LIST_ALL_MAX) return shuffle(ids).slice(0, tries);
   const out = new Set<string>();
-  for (let t = 0; t < tries * 2 && out.size < tries; t++) {
-    const id = await randomSeriesId(env, src, k);
+  for (let t = 0; t < tries * 2 && out.size < tries && ctx.queries < QUERY_BUDGET; t++) {
+    const id = await randomSeriesId(env, ctx, src, k);
     if (id) out.add(id);
   }
   return [...out];
 }
 
 /** 巻数 k の候補 id を、確かめる順に最大 tries 本（series_stats の候補が先）。 */
-async function candidateIds(env: Env, k: number, tries: number): Promise<string[]> {
+async function candidateIds(env: Env, ctx: DrawCtx, k: number, tries: number): Promise<string[]> {
   const out: string[] = [];
   for (const src of SOURCES) {
     if (out.length >= tries) break;
-    for (const id of await idsFrom(env, src, k, tries)) if (!out.includes(id)) out.push(id);
+    for (const id of await idsFrom(env, ctx, src, k, tries)) if (!out.includes(id)) out.push(id);
   }
   return out.slice(0, tries);
 }
@@ -194,10 +213,12 @@ async function drawFill(env: Env, url: URL, n: number): Promise<Response> {
   const picked: FillSeries[] = [];
   let rem = n;
   let checks = 0;
+  const ctx: DrawCtx = { queries: 0, ranges: new Map() };
+  const exhausted = () => checks >= MAX_CHECKS || ctx.queries >= QUERY_BUDGET;
 
   // 巻数 k のシリーズを 1 本、確かめたうえで返す。見つからなければ null。
   const tryPick = async (k: number, tries: number): Promise<FillSeries | null> => {
-    for (const id of await candidateIds(env, k, tries)) {
+    for (const id of await candidateIds(env, ctx, k, tries)) {
       if (checks >= MAX_CHECKS) return null;
       if (usedSeries.has(id)) continue;
       checks++;
@@ -217,11 +238,11 @@ async function drawFill(env: Env, url: URL, n: number): Promise<Response> {
     return null;
   };
 
-  while (rem > 0 && picked.length < MAX_PIECES && checks < MAX_CHECKS) {
+  while (rem > 0 && picked.length < MAX_PIECES && !exhausted()) {
     let got = await tryPick(rem, TRIES_EXACT);
     if (!got) {
       for (const k of sizeOrder(rem)) {
-        if (checks >= MAX_CHECKS) break;
+        if (exhausted()) break;
         got = await tryPick(k, TRIES_PER_SIZE);
         if (got) break;
       }

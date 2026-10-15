@@ -9,9 +9,14 @@ import { edgeCacheKey, withEdgeCache } from "./edgeCache";
 // ── 数え直し（runSeriesStatsBatch）──────────────────────────────────────────
 // series_stats は巻一覧を開いたときにも書かれる（src/seriesStats.ts）が、開かれたことの無い
 // シリーズは行が無いので、cron（STATS_CRON、2 分ごと）で巻数の多いシリーズから順に巻一覧を
-// 組み立てて埋める。巻一覧 1 本で D1 を 20 本前後引くので、1 回の起動（D1 クエリ上限 1000）で
-// 回すのは BATCH 本まで。2 分ごと × 30 本 = 1 日 2 万本で、巻数 2 以上の約 4.7 万本を 2〜3 日で
-// 1 周する。1 巻物（約 9 万本）は回さない（数え方でほぼ食い違わず、開かれたときに埋まる）。
+// 組み立てて埋める。巻一覧 1 本で D1 を 20 本前後（巻数の多いシリーズは表紙の読み出しが分かれて
+// もっと）引くので、1 回の起動（D1 クエリ上限 1000）で回すのは BATCH 本まで。周回は巻数の多い
+// 順に始まるので、最初の数回がいちばん重い。2 分ごと × 20 本 = 1 日 1.4 万本で、巻数 2 以上の
+// 約 4.7 万本を 3〜4 日で 1 周する。1 巻物（約 9 万本）は回さない（数え方でほぼ食い違わず、
+// 開かれたときに埋まる）。
+//
+// 進み具合（cursor）は数え始める前に書く。上限に当たるなどで起動の途中で落ちても、次の起動は
+// 先へ進む（同じ BATCH 本で詰まり続けない）。取りこぼした本は、開かれたときか次の周回で埋まる。
 //
 // 進み具合は meta の series_stats_pass に持つ。1 周し終えたら止まり、マスタが取り込み直された
 // （meta imported_at が周回の開始より新しい）ら頭からもう 1 周する。止まっている間の起動は
@@ -19,7 +24,7 @@ import { edgeCacheKey, withEdgeCache } from "./edgeCache";
 
 export const STATS_CRON = "*/2 * * * *";
 const PASS_KEY = "series_stats_pass";
-const BATCH = 30;
+const BATCH = 20;
 /** 数え直す下限の巻数（series.num_items）。1 巻物は回さない。 */
 const MIN_NUM_ITEMS = 2;
 
@@ -27,7 +32,7 @@ interface StatsPass {
   cursor: string; // "<num_items>:<id>"（キーセット法。src/warm.ts seriesPage と同じ）
   started_at: number;
   finished_at: number; // 0 = 周回中
-  done: number; // この周回で数えたシリーズ数
+  done: number; // この周回で数えにいったシリーズ数
 }
 
 async function readMeta(env: Env, key: string): Promise<string | null> {
@@ -79,6 +84,15 @@ export async function runSeriesStatsBatch(
         .all<{ id: string; num_items: number }>()
     ).results ?? [];
 
+  const last = rows[rows.length - 1];
+  const finished = rows.length < batch;
+  await writePass(env, {
+    cursor: last ? `${last.num_items}:${last.id}` : pass.cursor,
+    started_at: pass.started_at,
+    finished_at: finished ? now : 0,
+    done: pass.done + rows.length,
+  });
+
   let ran = 0;
   for (const r of rows) {
     try {
@@ -90,14 +104,6 @@ export async function runSeriesStatsBatch(
       console.error("series stats: volumes failed", r.id, err);
     }
   }
-  const last = rows[rows.length - 1];
-  const finished = rows.length < batch;
-  await writePass(env, {
-    cursor: last ? `${last.num_items}:${last.id}` : pass.cursor,
-    started_at: pass.started_at,
-    finished_at: finished ? now : 0,
-    done: pass.done + ran,
-  });
   return { ran, finished, idle: false };
 }
 

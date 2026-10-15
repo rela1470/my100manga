@@ -325,6 +325,21 @@
     </div>
   </div>
 
+  <!-- おまかせで埋める（app.js randomFill）。選ばれたシリーズを表紙付きで見せて確かめてもらう。 -->
+  <div class="modal-backdrop" id="fillModal">
+    <div class="modal fill-modal">
+      <h2>おまかせで埋める</h2>
+      <p class="hint" id="fillLead"></p>
+      <div class="fill-list" id="fillList"></div>
+      <div class="modal-actions">
+        <div style="flex:1"></div>
+        <button id="fillCancel">やめる</button>
+        <button id="fillReroll">再抽選</button>
+        <button class="primary" id="fillOk">追加する</button>
+      </div>
+    </div>
+  </div>
+
   <!-- share modal -->
   <div class="modal-backdrop" id="shareModal">
     <div class="modal">

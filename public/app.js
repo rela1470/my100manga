@@ -4404,6 +4404,95 @@ function bulkAddSeries(volumes) {
   if (notes.length) uiAlert(`${n}巻を追加しました（${notes.join("、")}）。`);
 }
 
+// おまかせで埋めるモーダル（#fillModal）。選ばれたシリーズごとに、名前・巻数と先頭の巻の表紙を
+// 並べる。押されたボタンで "ok" / "alt"（再抽選）/ false（やめる・Esc・戻る）を返す。
+const FILL_COVERS_MAX = 11; // 1 シリーズに並べる表紙の数（残りは「ほかN巻」の枠 1 つにまとめる）
+let fillResolve = null;
+
+function closeFillModal() {
+  $("fillModal").classList.remove("open");
+  setFillModalBusy(false);
+}
+
+function setFillModalBusy(busy) {
+  $("fillList").classList.toggle("busy", busy);
+  for (const id of ["fillOk", "fillReroll"]) $(id).disabled = busy;
+  $("fillReroll").textContent = busy ? "選び直しています…" : "再抽選";
+}
+
+function settleFillModal(ans) {
+  const r = fillResolve;
+  fillResolve = null;
+  if (r) r(ans);
+}
+
+function showFillModal(picked, rest) {
+  $("fillLead").textContent =
+    picked.length === 1
+      ? `残り${rest}作品を、このシリーズで埋めます。`
+      : `残り${rest}作品を、次の${picked.length}シリーズで埋めます。`;
+  const list = $("fillList");
+  list.textContent = "";
+  for (const s of picked) {
+    const box = document.createElement("div");
+    box.className = "fill-series";
+    const name = document.createElement("div");
+    name.className = "fill-name";
+    name.textContent = s.version ? `${s.title}（${s.version}）` : s.title;
+    const sub = document.createElement("div");
+    sub.className = "fill-sub";
+    const label = s.volumes[0] ? s.volumes[0].label || s.volumes[0].publisher : "";
+    sub.textContent = [`全${s.volumes.length}巻`, s.creator, label].filter(Boolean).join("・");
+    const covers = document.createElement("div");
+    covers.className = "fill-covers";
+    const head = s.volumes.length > FILL_COVERS_MAX + 1 ? s.volumes.slice(0, FILL_COVERS_MAX) : s.volumes;
+    for (const v of head) {
+      const node = coverNode(v.cover_url, volLabel(v), v.volume_number || "");
+      node.dataset.isbn = toIsbn13(v.isbn);
+      covers.appendChild(node);
+    }
+    if (head.length < s.volumes.length) {
+      const more = document.createElement("div");
+      more.className = "fill-more";
+      more.textContent = `ほか${s.volumes.length - head.length}巻`;
+      covers.appendChild(more);
+    }
+    box.append(name, sub, covers);
+    list.appendChild(box);
+  }
+  setFillModalBusy(false);
+  $("fillModal").classList.add("open");
+  fillFillCovers(picked);
+  return new Promise((resolve) => {
+    settleFillModal(false); // 前の表示の待ちが残っていれば片付ける
+    fillResolve = resolve;
+  });
+}
+
+// 表紙の無い巻を埋める。並べた巻はサイト共通のキャッシュだけを引き（ストアの枠を使わない）、
+// それでも無ければ各シリーズの 1 巻目だけストアまで取りに行く。見つかった表紙は巻に書き戻すので、
+// 追加した本棚にもそのまま載る。
+async function fillFillCovers(picked) {
+  const shownVols = picked.flatMap((s) => s.volumes.slice(0, FILL_COVERS_MAX + 1)).filter((v) => !v.cover_url);
+  if (!shownVols.length) return;
+  const apply = (map) => {
+    for (const v of shownVols) {
+      const url = map[toIsbn13(v.isbn)];
+      if (!url || v.cover_url) continue;
+      v.cover_url = url;
+      const ph = $("fillList").querySelector(`[data-isbn="${toIsbn13(v.isbn)}"]`);
+      if (ph && ph.classList.contains("placeholder")) {
+        const img = coverNode(url, volLabel(v), v.volume_number || "");
+        img.dataset.isbn = toIsbn13(v.isbn);
+        ph.replaceWith(img);
+      }
+    }
+  };
+  apply(await lookupCovers(shownVols.map((v) => toIsbn13(v.isbn)), { cacheOnly: true }));
+  const firsts = picked.map((s) => s.volumes[0]).filter((v) => v && !v.cover_url);
+  if (firsts.length) apply(await lookupCovers(firsts.map((v) => toIsbn13(v.isbn))));
+}
+
 // 残りの枠を、1巻から最終巻までそろったシリーズだけでちょうど埋める（src/randomFill.ts）。
 // 選ばれた顔ぶれを見せて確認してから足す。確認画面の「再抽選」で別の顔ぶれを引き直せて、
 // 足したあとも「元に戻す」で丸ごと取り消せる。
@@ -4432,6 +4521,7 @@ async function randomFill() {
     try {
       data = await draw();
     } catch (e) {
+      closeFillModal();
       uiAlert(apiErrorMessage(e, "シリーズを選べませんでした"));
       return;
     } finally {
@@ -4440,25 +4530,17 @@ async function randomFill() {
     }
     picked = (data && data.series) || [];
     if (!picked.length || data.filled !== rest) {
+      closeFillModal();
       uiAlert(`ちょうど${rest}作品になる組み合わせが見つかりませんでした。もう一度お試しください。`);
       return;
     }
     shown.push(...picked.map((s) => s.series_id));
-    const lines = picked.map((s) => {
-      const name = s.version ? `${s.title}（${s.version}）` : s.title;
-      const by = s.creator ? ` ／ ${s.creator}` : "";
-      return `・${name}（全${s.volumes.length}巻）${by}`;
-    });
-    const head =
-      picked.length === 1
-        ? `残り${rest}作品を、このシリーズで埋めます。`
-        : `残り${rest}作品を、次の${picked.length}シリーズで埋めます。`;
-    const ans = await uiConfirm(`${head}\n\n${lines.join("\n")}`, {
-      okLabel: "追加する",
-      altLabel: "再抽選",
-      cancelLabel: "やめる",
-    });
-    if (ans === "alt") continue;
+    const ans = await showFillModal(picked, rest);
+    if (ans === "alt") {
+      setFillModalBusy(true); // 開いたまま引き直す（閉じて開き直すとちらつく）
+      continue;
+    }
+    closeFillModal();
     if (!ans) return;
     break;
   }
@@ -4989,6 +5071,18 @@ function wireEvents() {
   syncTopSearchClear = wireSearchClear($("topSearch"), $("topSearchClear"), () => topSuggest);
   $("fetchCovers").addEventListener("click", fetchMissingCovers);
   $("randomFill").addEventListener("click", randomFill);
+  $("fillOk").addEventListener("click", () => settleFillModal("ok"));
+  $("fillReroll").addEventListener("click", () => settleFillModal("alt"));
+  // やめる・Esc・ブラウザバック（どちらも背景への click として届く。public/ui-dialog.js）。
+  // 戻る操作は閉じたかどうかをその場で見るので、待ちを解く前に閉じておく。
+  const cancelFill = () => {
+    closeFillModal();
+    settleFillModal(false);
+  };
+  $("fillCancel").addEventListener("click", cancelFill);
+  $("fillModal").addEventListener("click", (e) => {
+    if (e.target === $("fillModal")) cancelFill();
+  });
   wireShareX($("shareXPost"), $("shareXImage"), () => ({ slug: shareSlug, owner: state.owner }));
   $("fixMissing").addEventListener("click", startFixMissing);
   $("clearAll").addEventListener("click", clearAll);

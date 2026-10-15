@@ -3,8 +3,6 @@
 // スマホで扱いづらいブラウザ標準の alert/confirm/prompt を、サイト内モーダルに置き換える。
 // Promise ベースで、呼び出し側は await uiConfirm(...) のように同期的な見た目で書ける。
 // window.uiAlert / uiConfirm / uiPrompt として公開する。
-// uiConfirm は opts.altLabel を渡すと 3 つ目のボタンが出て、押されると "alt" で解決する
-// （「再抽選」のように、閉じずにやり直したい操作用）。
 // uiPrompt は opts.validate(value) を渡すと、エラー文言（文字列）を返す間は決定できない。
 (function () {
   let host = null;
@@ -13,7 +11,6 @@
   let errorEl = null;
   let okBtn = null;
   let cancelBtn = null;
-  let altBtn = null;
   let current = null; // { resolve, mode, validate }
 
   function build() {
@@ -27,7 +24,6 @@
       '<p class="ui-dialog-error" role="alert" style="display:none"></p>' +
       '<div class="ui-dialog-actions">' +
       '<button type="button" class="ui-dialog-cancel"></button>' +
-      '<button type="button" class="ui-dialog-alt" style="display:none"></button>' +
       '<button type="button" class="ui-dialog-ok"></button>' +
       "</div></div>";
     document.body.appendChild(host);
@@ -36,11 +32,9 @@
     errorEl = host.querySelector(".ui-dialog-error");
     okBtn = host.querySelector(".ui-dialog-ok");
     cancelBtn = host.querySelector(".ui-dialog-cancel");
-    altBtn = host.querySelector(".ui-dialog-alt");
 
     okBtn.addEventListener("click", () => settle(true));
     cancelBtn.addEventListener("click", () => settle(false));
-    altBtn.addEventListener("click", () => settle("alt"));
     // 背景クリックで閉じる（キャンセル扱い）。
     host.addEventListener("click", (e) => {
       if (e.target === host) settle(false);
@@ -73,7 +67,7 @@
     host.classList.remove("open");
     let result;
     if (mode === "alert") result = undefined;
-    else if (mode === "confirm") result = ok === "alt" ? "alt" : ok;
+    else if (mode === "confirm") result = ok;
     else result = ok ? inputEl.value : null; // prompt
     resolve(result);
   }
@@ -113,9 +107,6 @@
     cancelBtn.style.display = showCancel ? "" : "none";
     cancelBtn.textContent = opts.cancelLabel || "キャンセル";
     okBtn.textContent = opts.okLabel || "OK";
-    const showAlt = mode === "confirm" && !!opts.altLabel;
-    altBtn.style.display = showAlt ? "" : "none";
-    altBtn.textContent = showAlt ? opts.altLabel : "";
     okBtn.className = "ui-dialog-ok" + (opts.danger ? " danger" : " primary");
 
     host.classList.add("open");

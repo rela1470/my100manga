@@ -604,6 +604,20 @@ button:disabled { opacity: .45; cursor: not-allowed; transform: none; box-shadow
 .shelf-cover-actions .cover-status { margin: 0; }
 .shelf-fill { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 12px; margin: 0 0 14px; }
 .shelf-fill .hint { margin: 0; }
+/* おまかせで埋めるモーダル（#fillModal）。シリーズごとに名前・巻数と、先頭の巻の表紙を横に並べる。 */
+.fill-list { display: flex; flex-direction: column; gap: 14px; margin: 4px 0 8px; }
+.fill-list.busy { opacity: .45; pointer-events: none; }
+.fill-series { border: 2px solid var(--ink); border-radius: var(--radius-sm); padding: 10px 12px; background: var(--panel-2); }
+.fill-series .fill-name { font-weight: 700; overflow-wrap: anywhere; }
+.fill-series .fill-sub { color: var(--muted); font-size: 12px; margin: 2px 0 8px; overflow-wrap: anywhere; }
+.fill-covers { display: grid; grid-template-columns: repeat(6, 1fr); gap: 6px; }
+.fill-covers .cover { width: 100%; aspect-ratio: 3 / 4; object-fit: contain; background: var(--panel); border-radius: 4px; font-size: 9px; }
+.fill-covers .fill-more {
+  display: flex; align-items: center; justify-content: center; aspect-ratio: 3 / 4;
+  border: 1.5px dashed var(--border); border-radius: 4px; color: var(--muted); font-size: 11px; text-align: center;
+}
+.fill-covers .cover.placeholder { display: flex; align-items: center; justify-content: center; color: var(--muted); border: 1.5px solid var(--border); }
+@media (max-width: 480px) { .fill-covers { grid-template-columns: repeat(4, 1fr); } }
 .shelf-title {
   margin: 0;
   font-weight: 900; font-size: 24px; letter-spacing: .02em;

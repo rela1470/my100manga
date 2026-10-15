@@ -19,6 +19,7 @@ export const SITEMAP_PATHS = [
   "/ranking",
   "/sales-ranking",
   "/circulation",
+  "/series",
   "/about",
   "/books-guide",
   "/terms",

@@ -29,6 +29,7 @@ import { getCorrectionVolumes } from "./corrections";
 import { resolveMergeTarget, mergeMembers } from "./merge";
 import { attributeTitles, isCustomSeriesId, NAME_NORM_PREFIX } from "./groups";
 import { effectiveTagSql } from "./labels";
+import { recordSeriesStats } from "./seriesStats";
 
 interface VolumeRow {
   isbn: string;
@@ -619,6 +620,10 @@ export async function getSeriesVolumes(
     cover_url: firstCover(e.isbns, covers),
     correction: e.correction,
   }));
+
+  // 巻数の集計（series_stats）を巻一覧と同じ数え方で残す。検索カードの「全N巻」・シリーズ一覧
+  // ページ・おまかせ埋めが読む（src/seriesStats.ts）。値が変わらなければ書かない。
+  await recordSeriesStats(env, meta.id, volumes);
 
   // Covers are resolved strictly by ISBN (Rakuten ISBN-exact, then Google). We
   // deliberately do NOT title-search to fill remaining gaps: several distinct

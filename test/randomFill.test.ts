@@ -11,7 +11,9 @@ const FULL7 = "C810001"; // 1〜7 巻がそろっている
 const GAP4 = "C810002"; // num_items は 4 だが 4 巻が無く 5 巻がある（欠けあり）
 const FULL3 = "C810003"; // 1〜3 巻がそろっている
 const FULL12 = "C810004"; // 1〜12 巻がそろっている（ちょうど 12 枠なら 1 本で埋まる）
-const ISBNS = makeIsbns(26, 310000);
+const MISCOUNT = "C810005"; // 記録（num_items）は 9 だが、巻一覧は 1〜6 巻がそろっている（銀魂の 76 / 77 と同じ形）
+const SINGLE = "C810006"; // 1 巻物（本番には 9 万本あり、組み合わせの最後は必ずこれで埋まる）
+const ISBNS = makeIsbns(33, 310000);
 
 async function seed(id: string, numItems: number, vols: number[], isbns: string[]) {
   await env.DB.prepare(
@@ -41,6 +43,8 @@ beforeAll(async () => {
   await seed(GAP4, 4, [1, 2, 3, 5], ISBNS.slice(7, 11));
   await seed(FULL3, 3, [1, 2, 3], ISBNS.slice(11, 14));
   await seed(FULL12, 12, [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12], ISBNS.slice(14, 26));
+  await seed(MISCOUNT, 9, [1, 2, 3, 4, 5, 6], ISBNS.slice(26, 32));
+  await seed(SINGLE, 1, [1], ISBNS.slice(32, 33));
 });
 
 describe("isCompleteRun", () => {
@@ -92,15 +96,29 @@ describe("GET /api/random-fill", () => {
   });
 
   it("無ければ複数のシリーズを足してちょうど n にする。欠けのあるシリーズは使わない", async () => {
-    const { body } = await fill("n=10");
-    expect(body.filled).toBe(10);
-    expect(body.series.map((s: any) => s.series_id).sort()).toEqual([FULL7, FULL3].sort());
+    // 組み合わせは抽選しだい（7 + 3、6 + 3 + 1 …）なので、合計と「欠けのあるシリーズを使わない」だけを見る。
+    for (let i = 0; i < 5; i++) {
+      const { body } = await fill("n=10");
+      expect(body.filled).toBe(10);
+      expect(body.series.reduce((a: number, s: any) => a + s.volumes.length, 0)).toBe(10);
+      expect(body.series.map((s: any) => s.series_id)).not.toContain(GAP4);
+    }
   });
 
   it("リストに既にある本を含むシリーズは選ばない", async () => {
     const { body } = await fill(`n=7&have=${ISBNS[0]}`);
     expect(body.series.map((s: any) => s.series_id)).not.toContain(FULL7);
-    expect(body.filled).toBeLessThan(7);
+  });
+
+  it("記録の巻数がずれていても、集計（series_stats）でそろっていると分かれば 1 本で埋める", async () => {
+    // 集計が無い間は記録（9）でしか引けないので、ちょうど 6 の 1 本は見つからない（前のテストの
+    // 抽選で巻一覧を開いていると集計が書かれているので、先に消す）。
+    await env.DB.prepare(`DELETE FROM series_stats WHERE series_id = ?`).bind(MISCOUNT).run();
+    expect((await fill("n=6")).body.series.map((s: any) => s.series_id)).not.toEqual([MISCOUNT]);
+    // 巻一覧を開くと集計が書かれ（src/seriesStats.ts）、complete_run = 6 で引けるようになる。
+    await SELF.fetch(`https://example.com/api/series/${MISCOUNT}/volumes`, { headers: { "user-agent": BROWSER_UA } });
+    const { body } = await fill("n=6");
+    expect(body.series.map((s: any) => s.series_id)).toEqual([MISCOUNT]);
   });
 
   it("n は 1〜100", async () => {

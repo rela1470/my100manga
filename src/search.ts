@@ -85,7 +85,15 @@ const MEMBERS = `(SELECT s.id UNION ALL SELECT m.absorbed_id FROM series_merge m
 // （巻番号, 副題抜きの書名）ごとに、副題の種類数（0 なら 1）を足す。副題を書名に畳み込んだ行
 // （「世界一初恋 : 小野寺律の場合」）と分けて持つ行が同じ巻に同居するときだけ、巻一覧より 1 多く
 // 数える（書名が違うので別のまとまりになる）。実測で 11 万シリーズ中 5 件。
-const VOL_COUNT = `((SELECT COALESCE(SUM(MAX(nsub, 1)), 0) FROM (
+// 巻一覧と同じ数え方の集計（series_stats, src/seriesStats.ts）があればそちらを使う。下の式は
+// volumes 表しか数えないので、series_id の無い迷子巻を巻一覧が書名で寄せているシリーズ
+// （クッキングパパ 158 → 176、呪術廻戦 16 → 28）で、カードと巻一覧の数が食い違っていた。
+// 取り込み（meta imported_at）より前に数えた行は、巻が増えているかもしれないので使わない。
+// COALESCE は左から評価して止まるので、集計がある行では下の重い式を計算しない。
+const STATS_COUNT = `(SELECT st.vol_count FROM series_stats st
+           WHERE st.series_id = s.id
+             AND st.computed_at >= COALESCE((SELECT CAST(value AS INTEGER) FROM meta WHERE key = 'imported_at'), 0))`;
+const VOL_COUNT_RAW = `((SELECT COALESCE(SUM(MAX(nsub, 1)), 0) FROM (
              SELECT COUNT(DISTINCT CASE WHEN COALESCE(v.subtitle, '') <> ''
                                         THEN ${workKeySql("v.")} END) AS nsub
                FROM volumes v WHERE v.series_id IN ${MEMBERS}
@@ -97,6 +105,7 @@ const VOL_COUNT = `((SELECT COALESCE(SUM(MAX(nsub, 1)), 0) FROM (
                       FROM series_supplement sp WHERE sp.series_id = s.id), 0)
          + COALESCE((SELECT COUNT(*) FROM series_correction sc
                       WHERE sc.series_id IN ${MEMBERS}), 0))`;
+const VOL_COUNT = `COALESCE(${STATS_COUNT}, ${VOL_COUNT_RAW})`;
 const SERIES_COLS = `s.id, ${seriesNameSql("s", "o")} AS name, s.publisher, s.label, s.version,
         ${effectiveTagSql("s")} AS label_tag,
         (SELECT MIN(NULLIF(v.pubdate, '')) FROM volumes v WHERE v.series_id IN ${MEMBERS}) AS first_pubdate,

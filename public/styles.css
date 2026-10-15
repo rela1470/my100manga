@@ -2654,7 +2654,7 @@ html:has(.modal-backdrop.open) .to-top { display: none; }
   border-bottom: 3px solid transparent; margin-bottom: -1.5px;
 }
 .rank-switch a.active { color: var(--accent); border-bottom-color: var(--accent); }
-/* 狭い画面では「みんなが / 選んだ」のように 2 行に分けて、3 本を等幅で並べる
+/* 狭い画面では「みんなが / 選んだ」のように 2 行に分けて、タブを等幅で並べる
    （1 行のままだと字が溢れるか、タブの幅がばらばらになる）。 */
 @media (max-width: 560px) {
   .rank-switch a {

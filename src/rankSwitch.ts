@@ -1,7 +1,7 @@
 import { site } from "./site";
 import { Env } from "./types";
 
-// ランキング 3 ページ（みんなが選んだ / 売上 / 発行部数）を行き来するタブ。各 HTML の
+// ランキング 3 ページ（みんなが選んだ / 売上 / 発行部数）とシリーズ一覧（巻数順）を行き来するタブ。各 HTML の
 // <!--RANK_SWITCH--> に差し込む（ヘッダー src/header.ts と同じ作り）。
 //
 // allAges: 中身が全年齢のデータ源によるもの。R18版では出さない（src/site.ts allAgesRankings）。
@@ -12,6 +12,8 @@ const TABS = [
   { href: "/ranking", label: "みんなが", sub: "選んだ" },
   { href: "/sales-ranking", label: "売上", sub: "（楽天ブックス）", allAges: true },
   { href: "/circulation", label: "発行部数", sub: "（歴代）", allAges: true },
+  // シリーズ一覧（巻数の多い順）。データはマスタなので R18版にも出す。
+  { href: "/series", label: "巻数", sub: "（シリーズ）" },
 ];
 
 /** `currentPath` は配信中のページのパス。一致するタブに class="active" を付ける。 */

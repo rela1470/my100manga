@@ -264,6 +264,26 @@ CREATE TABLE IF NOT EXISTS adult_volumes (
   series_name TEXT               -- 所属シリーズ名（あれば）
 );
 
+-- シリーズごとの「巻一覧に出る巻数」の集計。巻一覧（src/series.ts getSeriesVolumes）と同じ処理で
+-- 数えた結果を持つ: 迷子巻（series_id の無い同名の巻）の寄せ・補完・手動追加・結合・非表示が
+-- 効いた数。検索カードの「全N巻」（src/search.ts VOL_COUNT）は volumes 表だけを数えるので、
+-- 迷子巻の多いシリーズ（クッキングパパ・呪術廻戦）で巻一覧と食い違っていた。
+-- 使い道: 検索カードの巻数（取り込み後に数え直した行だけ）、シリーズ一覧ページ（/series、
+-- 巻数の多い順）、おまかせ埋め（src/randomFill.ts、complete_run で候補を引く）。
+-- 書くのは巻一覧を組み立てたとき（src/seriesStats.ts recordSeriesStats）と、2 分ごとの cron が
+-- 巻数の多いシリーズから順に数え直す連鎖（src/seriesList.ts）。結合で吸収された側の id には
+-- 行を作らない（巻一覧が残す側を返すので、残す側の行になる）。see db/add-series-stats.sql
+CREATE TABLE IF NOT EXISTS series_stats (
+  series_id    TEXT PRIMARY KEY,         -- 巻一覧が返した series_id（結合なら残す側）
+  vol_count    INTEGER NOT NULL,         -- 巻一覧に出る巻の数
+  complete_run INTEGER NOT NULL DEFAULT 0, -- 巻番号が 1..vol_count で欠けなくそろっていれば vol_count、でなければ 0
+  first_isbn   TEXT NOT NULL DEFAULT '', -- 巻一覧の先頭の巻（一覧ページの表紙）
+  last_pubdate TEXT NOT NULL DEFAULT '', -- いちばん新しい巻の発売日（"YYYY-MM" など volumes.pubdate のまま）
+  computed_at  INTEGER NOT NULL          -- 数えた時刻 (epoch ms)。取り込み（meta imported_at）より古い行は検索で使わない
+);
+CREATE INDEX IF NOT EXISTS idx_series_stats_count ON series_stats (vol_count DESC, series_id);
+CREATE INDEX IF NOT EXISTS idx_series_stats_run ON series_stats (complete_run, series_id);
+
 -- Cache of extra volumes recovered from the live MADB SPARQL endpoint for a series
 -- (newer tankobon that exist in MADB but lack schema:isPartOf, so the monthly dump
 -- leaves them unlinked — e.g. ONE PIECE vol 101+). See src/madbLive.ts.

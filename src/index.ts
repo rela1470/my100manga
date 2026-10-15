@@ -142,6 +142,7 @@ import {
 import { Env, MangaList, ShareJob } from "./types";
 import { rateLimit } from "./ratelimit";
 import { handleRandomFill } from "./randomFill";
+import { handleSeriesList, runSeriesStatsBatch, STATS_CRON } from "./seriesList";
 import { turnstileAction, verifyTurnstile } from "./turnstile";
 import { COVER_CACHE, getTrimmedCover, trimKind } from "./coverBytes";
 import {
@@ -296,9 +297,11 @@ const worker = {
                       ? "share-status"
                       : path === "/api/random-fill"
                         ? "random-fill"
-                      : /^\/api\/series\/[A-Za-z0-9]+\/(volumes|merge-candidates)$/.test(path)
-                        ? "volumes"
-                        : null;
+                        : path === "/api/series-list"
+                          ? "series-list"
+                          : /^\/api\/series\/[A-Za-z0-9]+\/(volumes|merge-candidates)$/.test(path)
+                            ? "volumes"
+                            : null;
         if (getBucket) {
           const limited = await rateLimit(request, env.RL_COVERS, getBucket);
           if (limited) return limited;
@@ -421,6 +424,10 @@ const worker = {
             : await reportSeriesName(request, env, r.group.id, r.group);
         }
         return badRequest("このまとまりはシリーズに属していないため、この操作はできません");
+      }
+      // シリーズ一覧ページ（/series、巻数の多い順。src/seriesList.ts）。
+      if (path === "/api/series-list" && request.method === "GET") {
+        return await handleSeriesList(env, url);
       }
       // 残りの枠をランダムなシリーズで埋める（src/randomFill.ts）。
       if (path === "/api/random-fill" && request.method === "GET") {
@@ -1015,10 +1022,20 @@ const worker = {
   // Cron（wrangler.jsonc triggers）: 売上ランキングの日次スナップショットと、保持期限の掃除。
   // 掃除はプライバシーポリシーの保存期間を守るためなので全 env で走らせ、売上ランキングだけを
   // salesRankingCronEnabled で絞る（dev / R18版では取らない）。
-  async scheduled(_controller: ScheduledController, env: Env, ctx: ExecutionContext): Promise<void> {
+  async scheduled(controller: ScheduledController, env: Env, ctx: ExecutionContext): Promise<void> {
     // メンテナンス中（src/maintenance.ts）は何もしない。日次の掃除・売上ランキングは 1 日飛んでも困らない。
     if (maintenanceOn(env)) {
       console.log("scheduled skipped: maintenance");
+      return;
+    }
+    // 2 分ごとの起動は巻数の集計（series_stats）の数え直しだけ（src/seriesList.ts）。日次の仕事はしない。
+    if (controller.cron === STATS_CRON) {
+      ctx.waitUntil(
+        runSeriesStatsBatch(env).then(
+          (r) => { if (!r.idle) console.log("series stats batch", r); },
+          (err) => console.error("series stats batch failed", err)
+        )
+      );
       return;
     }
     if (salesRankingCronEnabled(env)) {

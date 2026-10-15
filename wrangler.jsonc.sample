@@ -175,7 +175,8 @@
   // （SALES_RANKING_CRON が "true" の env だけ）と、保持期限の掃除（監査ログの IP・UA、閲覧者ハッシュ、
   // 期限切れセッション）。掃除はプライバシーポリシーの保存期間を守るためなので全 env で要る。
   // triggers は env に継承されるので、dev / R18版でも空で上書きしないこと。
-  "triggers": { "crons": ["0 20 * * *"] },
+  // "*/2 * * * *" は巻数の集計（series_stats）の数え直しだけ（src/seriesList.ts STATS_CRON と揃える）。
+  "triggers": { "crons": ["0 20 * * *", "*/2 * * * *"] },
   "routes": [
     { "pattern": "example.com", "custom_domain": true }
   ],

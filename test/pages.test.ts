@@ -2,7 +2,7 @@ import { SELF } from "cloudflare:test";
 import { describe, expect, it } from "vitest";
 
 describe("共通ヘッダー", () => {
-  for (const path of ["/", "/ranking", "/sales-ranking", "/lists", "/about", "/terms", "/privacy", "/operator", "/books-guide"]) {
+  for (const path of ["/", "/ranking", "/sales-ranking", "/series", "/lists", "/about", "/terms", "/privacy", "/operator", "/books-guide"]) {
     it(`${path} にみんなのリスト・売上ランキングのボタンが入り、プレースホルダが残らない`, async () => {
       const res = await SELF.fetch(`https://example.com${path}`);
       expect(res.status).toBe(200);
@@ -18,6 +18,7 @@ describe("共通ヘッダー", () => {
     expect(html).toContain(`class="rank-switch"`);
     expect(html).toContain(`<a href="/ranking" class="active">`);
     expect(html).toContain(`href="/circulation"`);
+    expect(html).toContain(`href="/series"`);
   });
 
   it("管理画面には差し込まない（内部ツール）", async () => {

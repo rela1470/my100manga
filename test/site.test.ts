@@ -184,12 +184,13 @@ describe("R18 版では成年向けを拒否しない", () => {
 });
 
 describe("ランキングのタブ（rank-switch）", () => {
-  it("本家は 3 本、現在地に active が付く", () => {
+  it("本家は 4 本（ランキング 3 本＋シリーズ一覧）、現在地に active が付く", () => {
     const html = rankSwitchHtml(general, "/sales-ranking");
     expect(html).toContain(`href="/ranking"`);
     expect(html).toContain(`<a href="/sales-ranking" class="active">`);
     expect(html).toContain(`href="/circulation"`);
-    expect(html.match(/<a /g)).toHaveLength(3);
+    expect(html).toContain(`href="/series"`);
+    expect(html.match(/<a /g)).toHaveLength(4);
     // 拡張子付きで配信されても現在地が分かる
     expect(rankSwitchHtml(general, "/ranking.html")).toContain(`<a href="/ranking" class="active">`);
     // どのタブでもないパス（404 など）は active 無しで出すだけ
@@ -197,7 +198,11 @@ describe("ランキングのタブ（rank-switch）", () => {
     expect(rankSwitchHtml(general, "")).not.toContain("active");
   });
 
-  it("R18版は全年齢のランキングが消えて 1 本になるので nav ごと出さない", () => {
-    expect(rankSwitchHtml(adult, "/ranking")).toBe("");
+  it("R18版は全年齢のランキングが消え、みんなが選んだ・シリーズ一覧の 2 本になる", () => {
+    const html = rankSwitchHtml(adult, "/series");
+    expect(html).not.toContain(`href="/sales-ranking"`);
+    expect(html).not.toContain(`href="/circulation"`);
+    expect(html).toContain(`href="/ranking"`);
+    expect(html).toContain(`<a href="/series" class="active">`);
   });
 });

@@ -1,6 +1,9 @@
 import { Env } from "./types";
-import { json, badRequest, plainVolumeNumber, toIsbn13 } from "./util";
+import { json, badRequest, toIsbn13 } from "./util";
 import { getSeriesVolumes } from "./series";
+import { isCompleteRun } from "./seriesStats";
+
+export { isCompleteRun };
 
 // ── 残りの枠をランダムなシリーズで埋める（GET /api/random-fill）──────────────
 //
@@ -17,10 +20,13 @@ import { getSeriesVolumes } from "./series";
 //      各帯の中はランダムに試す。大きい方から取るのは本数を少なくするため（1 巻物ばかり
 //      30 本並ぶような埋まり方を避ける）。最後は 1 巻物でも必ず埋まる（マスタに 9 万本ある）。
 //
-// 巻数の当たりは series.num_items（schema:numberOfItems、索引 idx_series_num_items）で付け、
-// 実際の巻一覧（getSeriesVolumes。結合・非表示・迷子巻の取り込みを済ませた、利用者が
-// 「全N巻を追加」で入れるのと同じもの）で確かめる。num_items は巻一覧と食い違うことが
-// あり（ISBN の無い巻・結合先への吸収）、巻番号が 1..k で欠けなくそろうものだけを採る。
+// 巻数の当たりは、まず series_stats.complete_run（巻一覧と同じ数え方で 1..k がそろっていると
+// 分かっているもの。src/seriesStats.ts）で付け、足りなければ series.num_items
+// （schema:numberOfItems）で付ける。num_items は巻一覧と食い違うことがあり（迷子巻・ISBN の
+// 無い巻・結合先への吸収。銀魂は記録 76 に対して巻一覧は 1〜77 巻）、series_stats の無い
+// 巻数（数え直しが届いていない・取り込み直後）の保険。どちらで引いても最後に実際の巻一覧
+// （getSeriesVolumes。利用者が「全N巻を追加」で入れるのと同じもの）で確かめ、巻番号が 1..k で
+// 欠けなくそろうものだけを採る。
 //
 // 候補の多い巻数のランダムな引き方: ORDER BY random() や OFFSET は該当行を全部読む（1 巻物は
 // 9 万行）ので使わず、その巻数の id の範囲 [MIN, MAX] から乱数で閾値を作り、id >= 閾値の
@@ -59,23 +65,6 @@ interface FillSeries {
   volumes: FillVolume[];
 }
 
-/** 巻番号が 1..k で欠けなく、重複なくそろっているか。1 巻物は巻番号が空でもよい。 */
-export function isCompleteRun(volumes: { volume_number: string; isbn: string }[], k: number): boolean {
-  if (volumes.length !== k || k < 1) return false;
-  if (volumes.some((v) => !v.isbn)) return false;
-  if (k === 1) {
-    const vn = (volumes[0].volume_number ?? "").trim();
-    return !vn || plainVolumeNumber(vn) === 1;
-  }
-  const seen = new Set<number>();
-  for (const v of volumes) {
-    const n = plainVolumeNumber(v.volume_number ?? "");
-    if (n === null || n < 1 || n > k || seen.has(n)) return false;
-    seen.add(n);
-  }
-  return seen.size === k;
-}
-
 function shuffle<T>(a: T[]): T[] {
   for (let i = a.length - 1; i > 0; i--) {
     const j = Math.floor(Math.random() * (i + 1));
@@ -84,11 +73,20 @@ function shuffle<T>(a: T[]): T[] {
   return a;
 }
 
+/** 候補の引き先。series_stats（巻一覧と同じ数え方で、1..k がそろっていると分かっている）が先、
+ *  series.num_items（MADB の記録。巻一覧とずれることがある）が後。 */
+const SOURCES = [
+  { table: "series_stats", id: "series_id", size: "complete_run" },
+  { table: "series", id: "id", size: "num_items" },
+] as const;
+type Source = (typeof SOURCES)[number];
+
 /** 巻数 k のシリーズ id を 1 本、ランダムに（候補の多い巻数用）。無ければ null。 */
-async function randomSeriesId(env: Env, k: number): Promise<string | null> {
-  const mn = await env.DB.prepare(`SELECT MIN(id) AS v FROM series WHERE num_items = ?`).bind(k).first<{ v: string | null }>();
+async function randomSeriesId(env: Env, src: Source, k: number): Promise<string | null> {
+  const where = `FROM ${src.table} WHERE ${src.size} = ?`;
+  const mn = await env.DB.prepare(`SELECT MIN(${src.id}) AS v ${where}`).bind(k).first<{ v: string | null }>();
   if (!mn?.v) return null;
-  const mx = await env.DB.prepare(`SELECT MAX(id) AS v FROM series WHERE num_items = ?`).bind(k).first<{ v: string | null }>();
+  const mx = await env.DB.prepare(`SELECT MAX(${src.id}) AS v ${where}`).bind(k).first<{ v: string | null }>();
   const lo = mn.v;
   const hi = mx?.v ?? lo;
   // 同じ接頭辞・同じ長さのときだけ数値で閾値を作る。それ以外（混在）は先頭から。
@@ -101,26 +99,41 @@ async function randomSeriesId(env: Env, k: number): Promise<string | null> {
     const pick = from + Math.floor(Math.random() * (to - from + 1));
     threshold = a[1] + String(pick).padStart(a[2].length, "0");
   }
-  const row = await env.DB.prepare(`SELECT id FROM series WHERE num_items = ? AND id >= ? ORDER BY id LIMIT 1`)
+  const row = await env.DB.prepare(`SELECT ${src.id} AS id ${where} AND ${src.id} >= ? ORDER BY ${src.id} LIMIT 1`)
     .bind(k, threshold)
     .first<{ id: string }>();
   return row?.id ?? lo;
 }
 
-/** 巻数 k の候補 id を、確かめる順に最大 tries 本。候補が LIST_ALL_MAX 本以下なら全部を
+/** 1 つの引き先から、巻数 k の候補 id を最大 tries 本。候補が LIST_ALL_MAX 本以下なら全部を
  *  シャッフルして返し（同じ候補に何度も当たらない）、多ければ乱数で引く。 */
-async function candidateIds(env: Env, k: number, tries: number): Promise<string[]> {
-  const rows = await env.DB.prepare(`SELECT id FROM series WHERE num_items = ? LIMIT ?`)
-    .bind(k, LIST_ALL_MAX + 1)
-    .all<{ id: string }>();
-  const ids = (rows.results ?? []).map((r) => r.id);
+async function idsFrom(env: Env, src: Source, k: number, tries: number): Promise<string[]> {
+  let ids: string[];
+  try {
+    const rows = await env.DB.prepare(`SELECT ${src.id} AS id FROM ${src.table} WHERE ${src.size} = ? LIMIT ?`)
+      .bind(k, LIST_ALL_MAX + 1)
+      .all<{ id: string }>();
+    ids = (rows.results ?? []).map((r) => r.id);
+  } catch {
+    return []; // series_stats がまだ無い DB（マイグレーション前）
+  }
   if (ids.length <= LIST_ALL_MAX) return shuffle(ids).slice(0, tries);
   const out = new Set<string>();
   for (let t = 0; t < tries * 2 && out.size < tries; t++) {
-    const id = await randomSeriesId(env, k);
+    const id = await randomSeriesId(env, src, k);
     if (id) out.add(id);
   }
   return [...out];
+}
+
+/** 巻数 k の候補 id を、確かめる順に最大 tries 本（series_stats の候補が先）。 */
+async function candidateIds(env: Env, k: number, tries: number): Promise<string[]> {
+  const out: string[] = [];
+  for (const src of SOURCES) {
+    if (out.length >= tries) break;
+    for (const id of await idsFrom(env, src, k, tries)) if (!out.includes(id)) out.push(id);
+  }
+  return out.slice(0, tries);
 }
 
 /** 2 本目以降の巻数の候補の並び（「ちょうど残り」は呼び出し側で先に試す）。

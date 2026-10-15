@@ -48,3 +48,26 @@ describe("GET /api/admin/cron-runs", () => {
     expect(d.ticks).toContainEqual({ cron: "*/2 * * * *", at: 1234 });
   });
 });
+
+describe("scheduled の振り分け", () => {
+  it("2 分ごとの起動は数え直しだけ（日次の掃除は走らない）、日次の起動は掃除を記録する", async () => {
+    const { createExecutionContext, createScheduledController, waitOnExecutionContext } = await import("cloudflare:test");
+    const worker = (await import("../src/index")).default;
+    const run = async (cron: string) => {
+      const ctx = createExecutionContext();
+      await worker.scheduled(createScheduledController({ cron, scheduledTime: Date.now() }), env, ctx);
+      await waitOnExecutionContext(ctx);
+    };
+    const jobs = async () =>
+      ((await env.DB.prepare(`SELECT DISTINCT job FROM cron_runs`).all<{ job: string }>()).results ?? []).map((r) => r.job);
+
+    await env.DB.prepare(`DELETE FROM cron_runs`).run();
+    await run("*/2 * * * *");
+    expect((await jobs()).filter((j) => j.startsWith("purge-"))).toEqual([]);
+    const tick = await env.DB.prepare(`SELECT value FROM meta WHERE key = 'cron_tick:*/2 * * * *'`).first();
+    expect(tick).not.toBeNull();
+
+    await run("0 20 * * *");
+    expect(await jobs()).toEqual(expect.arrayContaining(["purge-publish-audit", "purge-cron-runs", "purge-sessions"]));
+  });
+});

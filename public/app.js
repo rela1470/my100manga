@@ -4411,7 +4411,9 @@ function bulkAddSeries(volumes) {
 // 変わるのは仕様）。本棚が空の人の抽選はサーバがエッジで 1 分共有する（src/randomFill.ts）。
 const FILL_TITLE_MAX = 15; // ボタンに出す書名の長さ（全角）。超えたら「…」で切る
 const FILL_PREFETCH_DELAY_MS = 1000;
-const fillPre = { key: "", data: null, pendingKey: "", timer: 0, seq: 0, visible: false, active: false };
+// failedKey: 先引きが失敗した条件。同じ本棚のままでは引き直さない（混雑で 429 が返り始めたときに、
+// 描き直しのたびに要求を重ねないため）。本棚が変われば key が変わるので、また引く。
+const fillPre = { key: "", data: null, pendingKey: "", failedKey: "", timer: 0, seq: 0, visible: false, active: false };
 
 function fillHave() {
   return state.items.map((it) => it.isbn).filter(Boolean).slice(-200);
@@ -4439,7 +4441,7 @@ function scheduleFillPrefetch() {
   const rest = TARGET - state.items.length;
   if (rest <= 0 || state.reorder || state.filling || fillPre.active || !fillPre.visible) return;
   const key = fillKey(rest, fillHave());
-  if (key === fillPre.key || key === fillPre.pendingKey) return;
+  if (key === fillPre.key || key === fillPre.pendingKey || key === fillPre.failedKey) return;
   fillPre.pendingKey = key;
   clearTimeout(fillPre.timer);
   // 初めての 1 回はすぐ、本棚を触っている最中は落ち着くまで待つ。
@@ -4460,7 +4462,10 @@ async function prefetchFill() {
   }
   if (my !== fillPre.seq) return; // 押された・引き直しが始まった
   if (fillPre.pendingKey === key) fillPre.pendingKey = "";
-  if (!data || data.filled !== rest) return;
+  if (!data || data.filled !== rest) {
+    fillPre.failedKey = key;
+    return;
+  }
   fillPre.key = key;
   fillPre.data = data;
   if (!state.filling) $("randomFill").textContent = fillButtonLabel();

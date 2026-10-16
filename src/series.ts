@@ -203,12 +203,21 @@ export async function getSeriesVolumes(
     .bind(...members)
     .all<{ isbn: string }>();
   const hiddenIsbns = new Set((hiddenRows.results ?? []).map((r) => r.isbn));
-  const visible = (v: VolumeRow) => !hiddenIsbns.has(v.isbn);
+  // 隠した行は巻一覧には出さないが、補完・穴埋め（下の masterIsbns / masterSorts）には
+  // 「マスタにある巻」として数える。数えないと、全ての ISBN を隠した巻の巻番号が抜け巻に見え、
+  // 取得ボタンで別の版の ISBN が埋め戻される。
+  const hiddenMaster: VolumeRow[] = [];
+  const foldVisible = (rows: VolumeRow[]) => {
+    for (const v of rows) {
+      if (hiddenIsbns.has(v.isbn)) hiddenMaster.push(v);
+      else addToGroup(v);
+    }
+  };
 
-  for (const v of (res.results ?? []).filter(visible)) addToGroup(v);
+  foldVisible(res.results ?? []);
 
   // シリーズ ID を失った迷子巻（series_id NULL）を寄せる。規則は unlinkedVolumesOf を参照。
-  for (const v of (await unlinkedVolumesOf(env, members, res.results ?? [])).filter(visible)) addToGroup(v);
+  foldVisible(await unlinkedVolumesOf(env, members, res.results ?? []));
 
   interface Entry {
     isbn: string;
@@ -252,6 +261,10 @@ export async function getSeriesVolumes(
   for (const e of entries) {
     for (const i of e.isbns) masterIsbns.add(i);
     if (e.volume_number && e.vol_sort > 0) masterSorts.add(e.vol_sort);
+  }
+  for (const v of hiddenMaster) {
+    masterIsbns.add(v.isbn);
+    if (v.volume_number && (v.vol_sort ?? 0) > 0) masterSorts.add(v.vol_sort!);
   }
   const existingNumbers = new Set(entries.map((e) => e.volume_number).filter(Boolean));
   const maxSort = entries.reduce((m, e) => Math.max(m, e.vol_sort), 0);

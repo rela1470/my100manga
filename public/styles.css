@@ -2316,6 +2316,8 @@ html:has(.modal-backdrop.open) { overflow: hidden; }
 @media (prefers-reduced-motion: reduce) {
   .cover-status::before { animation-duration: 2s; }
 }
+/* 取得が終わったあとの一文（見つからなかった件数・混雑で止まった）にはスピナーを出さない。 */
+.cover-status.done::before { content: none; }
 
 .share-url {
   display: flex; gap: 8px; margin: 8px 0;

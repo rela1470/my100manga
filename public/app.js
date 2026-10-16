@@ -2347,6 +2347,7 @@ function mountCoverFetch(barEl, entries) {
     const paint = () => {
       const left = total - done;
       status.style.display = left > 0 ? "" : "none";
+      status.classList.remove("done");
       if (left > 0) status.textContent = coverStatusText(left);
     };
     paint();
@@ -2386,9 +2387,11 @@ function mountCoverFetch(barEl, entries) {
       btn.textContent = `表紙を取得（残り${todo.length}件）`;
       btn.style.display = "";
       status.textContent = "混み合っています。少し待ってからもう一度お試しください。";
+      status.classList.add("done");
     } else {
       const miss = coverMissText(missed, total);
       status.textContent = miss;
+      status.classList.add("done");
       status.style.display = miss ? "" : "none";
     }
   });
@@ -4700,6 +4703,7 @@ async function fetchMissingCovers() {
     if (!statusEl) return;
     const left = total - done;
     statusEl.style.display = left > 0 ? "" : "none";
+    statusEl.classList.remove("done");
     if (left > 0) statusEl.textContent = coverStatusText(left);
   };
   paint();
@@ -4752,6 +4756,7 @@ async function fetchMissingCovers() {
       ? `混み合っています。少し待ってから「表紙を取得」をもう一度押してください（残り${todo.length}件）。`
       : coverMissText(missed, total);
     statusEl.textContent = msg;
+    statusEl.classList.add("done");
     statusEl.style.display = msg ? "" : "none";
   }
   render();

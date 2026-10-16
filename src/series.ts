@@ -31,7 +31,7 @@ import { attributeTitles, isCustomSeriesId, NAME_NORM_PREFIX } from "./groups";
 import { effectiveTagSql } from "./labels";
 import { recordSeriesStats } from "./seriesStats";
 
-interface VolumeRow {
+export interface VolumeRow {
   isbn: string;
   volume_number: string | null;
   vol_sort: number | null;
@@ -193,136 +193,8 @@ export async function getSeriesVolumes(
   };
   for (const v of res.results ?? []) addToGroup(v);
 
-  // Fold in volumes that belong to this work but lost their schema:isPartOf in the dump
-  // (series_id NULL). They carry the identical schema:name, so match on exact title —
-  // only when this name maps to a single series, or same-titled works/editions would
-  // steal each other's loose volumes (same guard as the SPARQL supplement below).
-  // Unlike that supplement we do NOT filter by creator: 原作/作画 split works list a
-  // different creator per volume (e.g. リュート vs 鍋島テツヒロ), and gating on the
-  // master creator would drop one half. Duplicate volume_numbers just collapse into
-  // sibling ISBNs of the volume already present, so no volume is double-counted.
-  // 複数の fold（書名の完全一致・巻が名乗る書名・基本書名）が同じ行を拾うので、ISBN で一度だけ
-  // 入れる。入れ直すと同じ巻の isbns に同じ ISBN が並ぶ。
-  const foldedIsbns = new Set((res.results ?? []).map((v) => v.isbn));
-  const foldUnlinked = (rows: VolumeRow[]) => {
-    for (const v of rows) {
-      if (foldedIsbns.has(v.isbn)) continue;
-      foldedIsbns.add(v.isbn);
-      addToGroup(v);
-    }
-  };
-
-  // 結合済みなら member ごとに名前・レーベルが違う（例: C451211「One piece」/ C336558
-  // 「ワンピース」）ので、下の 2 種類の fold は member 全員の (name, label) で行う。target の
-  // 名前だけだと、吸収した側の名前で拾っていた迷子巻が結合でかえって消える。
-  const memberMetas = await env.DB.prepare(
-    `SELECT name, label FROM series WHERE id IN (${inMembers})`
-  )
-    .bind(...members)
-    .all<{ name: string; label: string | null }>();
-  const nameLabels = new Map<string, Set<string>>();
-  for (const m of memberMetas.results ?? []) {
-    let labels = nameLabels.get(m.name);
-    if (!labels) nameLabels.set(m.name, (labels = new Set()));
-    if (m.label) labels.add(m.label);
-  }
-
-  // When other editions share the name (名探偵コナン: 少年サンデーコミックス 本編 vs My first
-  // big / スペシャル), fall back to name + label: loose volumes carrying this series' label
-  // are still attributable as long as no sibling shares that label too.
-  for (const [name, labels] of nameLabels) {
-    if (await isSoleSeriesForName(env, members, name)) {
-      const unlinked = await env.DB.prepare(
-        `SELECT isbn, volume_number, vol_sort, title, subtitle, creator, creators, publisher, label, pubdate
-         FROM volumes WHERE series_id IS NULL AND title = ? ORDER BY vol_sort, pubdate, isbn`
-      )
-        .bind(name)
-        .all<VolumeRow>();
-      foldUnlinked(unlinked.results ?? []);
-      continue;
-    }
-    for (const label of labels) {
-      if (!(await isSoleSeriesForNameLabel(env, members, name, label))) continue;
-      const unlinked = await env.DB.prepare(
-        `SELECT isbn, volume_number, vol_sort, title, subtitle, creator, creators, publisher, label, pubdate
-         FROM volumes WHERE series_id IS NULL AND title = ? AND label = ?
-         ORDER BY vol_sort, pubdate, isbn`
-      )
-        .bind(name, label)
-        .all<VolumeRow>();
-      foldUnlinked(unlinked.results ?? []);
-    }
-  }
-
-  // MADB がシリーズ名には付けない別名を、巻の schema:name にだけ持つ作品
-  // （series.name「東京卍リベンジャーズ」に対し巻は「東京卍リベンジャーズ = Tokyo Revengers」）。
-  // 上の完全一致はシリーズ名で引くので当たらず、下の基本書名 fold もシリーズ名に区切りが無い
-  // シリーズでは回らないので、同じ書名の迷子巻（7 巻）が巻一覧から抜けたままになる。そこで
-  // 「このシリーズの巻が実際に名乗っている書名」でも完全一致で拾う（迷子巻の名指し
-  // src/siblingVolumes.ts が既に使っているのと同じ書名）。寄せてよいかの判定は
-  // groups.attributeTitles ＝ 検索・本の詳細がその書名の迷子巻をどのシリーズに寄せるかと同じ
-  // 規則に委ねる。あちらは「getSeriesVolumes がこの条件の巻を巻一覧に混ぜる」前提で書かれて
-  // いるので、これで「ISBN 検索ではこのシリーズが出るのに巻一覧には無い」ずれが消える。
-  const volTitles = [...new Set((res.results ?? []).map((v) => (v.title ?? "").trim()))].filter(
-    (t) => t && !nameLabels.has(t)
-  );
-  if (volTitles.length) {
-    // 先に迷子巻の有無だけ引く（部分索引 idx_volumes_unlinked_title）。ほとんどのシリーズは
-    // 0 件で、寄せ先の判定まで進むのは候補が実際にあるときだけ（実測 13.3 万シリーズ中 699 本）。
-    const CHUNK = 80; // D1 の bind パラメータ上限（100）に当たらない刻み
-    const byTitle = new Map<string, VolumeRow[]>();
-    for (let i = 0; i < volTitles.length; i += CHUNK) {
-      const part = volTitles.slice(i, i + CHUNK);
-      const loose = await env.DB.prepare(
-        `SELECT isbn, volume_number, vol_sort, title, subtitle, creator, creators, publisher, label, pubdate
-         FROM volumes WHERE series_id IS NULL AND title IN (${part.map(() => "?").join(",")})
-         ORDER BY vol_sort, pubdate, isbn`
-      )
-        .bind(...part)
-        .all<VolumeRow>();
-      for (const v of loose.results ?? []) {
-        const list = byTitle.get(v.title);
-        if (list) list.push(v);
-        else byTitle.set(v.title, [v]);
-      }
-    }
-    if (byTitle.size) {
-      const owner = await attributeTitles(env, [...byTitle.keys()]);
-      for (const [title, rows] of byTitle) {
-        const id = owner.get(title);
-        // 結合済みなら吸収された側の C-id が返るので、member のどれかなら自分のもの。
-        if (id && members.includes(id)) foldUnlinked(rows);
-      }
-    }
-  }
-
-  // Also fold variants MADB filed under a different schema:name string for the SAME work
-  // — an English alias after "=", a descriptive subtitle after ":", or none — e.g. this
-  // series「Dジェネシス = D GENESIS : ダンジョンが出来て3年」plus loose「Dジェネシス」and
-  // 「Dジェネシス : …．」volumes. They share a base title (see util.baseTitle) but not the
-  // exact one above, so the exact fold misses them. Only when THIS series uniquely owns
-  // the base (no sibling「…外伝」/sequel contends) — otherwise a loose volume can't be
-  // attributed. Skipped when the name has no separator (base === full norm): the exact
-  // fold already covered everything. Duplicate volume_numbers just collapse into sibling
-  // ISBNs, so nothing is double-counted.
-  const bases = new Set<string>();
-  for (const name of nameLabels.keys()) {
-    const base = baseTitle(name);
-    if (base && base !== normTitle(name)) bases.add(base);
-  }
-  for (const base of bases) {
-    if (!(await isSoleSeriesForBase(env, members, base))) continue;
-    const variants = await env.DB.prepare(
-      `SELECT isbn, volume_number, vol_sort, title, subtitle, creator, creators, publisher, label, pubdate
-       FROM volumes
-       WHERE series_id IS NULL
-         AND REPLACE(REPLACE(LOWER(title), ' ', ''), '　', '') LIKE ? ESCAPE '\\'
-       ORDER BY vol_sort, pubdate, isbn`
-    )
-      .bind(escapeLikeClamped(base, LIKE_MAX_BYTES - 1) + "%")
-      .all<VolumeRow>();
-    foldUnlinked((variants.results ?? []).filter((v) => baseTitle(v.title) === base));
-  }
+  // シリーズ ID を失った迷子巻（series_id NULL）を寄せる。規則は unlinkedVolumesOf を参照。
+  for (const v of await unlinkedVolumesOf(env, members, res.results ?? [])) addToGroup(v);
 
   interface Entry {
     isbn: string;
@@ -818,3 +690,147 @@ async function isUnambiguousForSupplement(
   return (row?.n ?? 0) === 0;
 }
 
+
+/** シリーズ（結合済みなら全 member）の巻のうち、マスタではシリーズ ID を失っている迷子巻
+ *  （series_id NULL）を巻一覧に寄せる分だけ返す。masterRows はそのシリーズのマスタの巻
+ *  （volumes.series_id が member のもの）で、重ねて返さない。巻一覧（getSeriesVolumes）と
+ *  分離の依頼・分離（src/merge.ts）が同じ巻を「このシリーズの巻」として扱うために共有する。 */
+export async function unlinkedVolumesOf(
+  env: Env,
+  members: string[],
+  masterRows: VolumeRow[]
+): Promise<VolumeRow[]> {
+  const inMembers = members.map(() => "?").join(",");
+  // Fold in volumes that belong to this work but lost their schema:isPartOf in the dump
+  // (series_id NULL). They carry the identical schema:name, so match on exact title —
+  // only when this name maps to a single series, or same-titled works/editions would
+  // steal each other's loose volumes (same guard as the SPARQL supplement below).
+  // Unlike that supplement we do NOT filter by creator: 原作/作画 split works list a
+  // different creator per volume (e.g. リュート vs 鍋島テツヒロ), and gating on the
+  // master creator would drop one half. Duplicate volume_numbers just collapse into
+  // sibling ISBNs of the volume already present, so no volume is double-counted.
+  // 複数の fold（書名の完全一致・巻が名乗る書名・基本書名）が同じ行を拾うので、ISBN で一度だけ
+  // 入れる。入れ直すと同じ巻の isbns に同じ ISBN が並ぶ。
+  const foldedIsbns = new Set(masterRows.map((v) => v.isbn));
+  const out: VolumeRow[] = [];
+  const foldUnlinked = (rows: VolumeRow[]) => {
+    for (const v of rows) {
+      if (foldedIsbns.has(v.isbn)) continue;
+      foldedIsbns.add(v.isbn);
+      out.push(v);
+    }
+  };
+
+  // 結合済みなら member ごとに名前・レーベルが違う（例: C451211「One piece」/ C336558
+  // 「ワンピース」）ので、下の 2 種類の fold は member 全員の (name, label) で行う。target の
+  // 名前だけだと、吸収した側の名前で拾っていた迷子巻が結合でかえって消える。
+  const memberMetas = await env.DB.prepare(
+    `SELECT name, label FROM series WHERE id IN (${inMembers})`
+  )
+    .bind(...members)
+    .all<{ name: string; label: string | null }>();
+  const nameLabels = new Map<string, Set<string>>();
+  for (const m of memberMetas.results ?? []) {
+    let labels = nameLabels.get(m.name);
+    if (!labels) nameLabels.set(m.name, (labels = new Set()));
+    if (m.label) labels.add(m.label);
+  }
+
+  // When other editions share the name (名探偵コナン: 少年サンデーコミックス 本編 vs My first
+  // big / スペシャル), fall back to name + label: loose volumes carrying this series' label
+  // are still attributable as long as no sibling shares that label too.
+  for (const [name, labels] of nameLabels) {
+    if (await isSoleSeriesForName(env, members, name)) {
+      const unlinked = await env.DB.prepare(
+        `SELECT isbn, volume_number, vol_sort, title, subtitle, creator, creators, publisher, label, pubdate
+         FROM volumes WHERE series_id IS NULL AND title = ? ORDER BY vol_sort, pubdate, isbn`
+      )
+        .bind(name)
+        .all<VolumeRow>();
+      foldUnlinked(unlinked.results ?? []);
+      continue;
+    }
+    for (const label of labels) {
+      if (!(await isSoleSeriesForNameLabel(env, members, name, label))) continue;
+      const unlinked = await env.DB.prepare(
+        `SELECT isbn, volume_number, vol_sort, title, subtitle, creator, creators, publisher, label, pubdate
+         FROM volumes WHERE series_id IS NULL AND title = ? AND label = ?
+         ORDER BY vol_sort, pubdate, isbn`
+      )
+        .bind(name, label)
+        .all<VolumeRow>();
+      foldUnlinked(unlinked.results ?? []);
+    }
+  }
+
+  // MADB がシリーズ名には付けない別名を、巻の schema:name にだけ持つ作品
+  // （series.name「東京卍リベンジャーズ」に対し巻は「東京卍リベンジャーズ = Tokyo Revengers」）。
+  // 上の完全一致はシリーズ名で引くので当たらず、下の基本書名 fold もシリーズ名に区切りが無い
+  // シリーズでは回らないので、同じ書名の迷子巻（7 巻）が巻一覧から抜けたままになる。そこで
+  // 「このシリーズの巻が実際に名乗っている書名」でも完全一致で拾う（迷子巻の名指し
+  // src/siblingVolumes.ts が既に使っているのと同じ書名）。寄せてよいかの判定は
+  // groups.attributeTitles ＝ 検索・本の詳細がその書名の迷子巻をどのシリーズに寄せるかと同じ
+  // 規則に委ねる。あちらは「getSeriesVolumes がこの条件の巻を巻一覧に混ぜる」前提で書かれて
+  // いるので、これで「ISBN 検索ではこのシリーズが出るのに巻一覧には無い」ずれが消える。
+  const volTitles = [...new Set(masterRows.map((v) => (v.title ?? "").trim()))].filter(
+    (t) => t && !nameLabels.has(t)
+  );
+  if (volTitles.length) {
+    // 先に迷子巻の有無だけ引く（部分索引 idx_volumes_unlinked_title）。ほとんどのシリーズは
+    // 0 件で、寄せ先の判定まで進むのは候補が実際にあるときだけ（実測 13.3 万シリーズ中 699 本）。
+    const CHUNK = 80; // D1 の bind パラメータ上限（100）に当たらない刻み
+    const byTitle = new Map<string, VolumeRow[]>();
+    for (let i = 0; i < volTitles.length; i += CHUNK) {
+      const part = volTitles.slice(i, i + CHUNK);
+      const loose = await env.DB.prepare(
+        `SELECT isbn, volume_number, vol_sort, title, subtitle, creator, creators, publisher, label, pubdate
+         FROM volumes WHERE series_id IS NULL AND title IN (${part.map(() => "?").join(",")})
+         ORDER BY vol_sort, pubdate, isbn`
+      )
+        .bind(...part)
+        .all<VolumeRow>();
+      for (const v of loose.results ?? []) {
+        const list = byTitle.get(v.title);
+        if (list) list.push(v);
+        else byTitle.set(v.title, [v]);
+      }
+    }
+    if (byTitle.size) {
+      const owner = await attributeTitles(env, [...byTitle.keys()]);
+      for (const [title, rows] of byTitle) {
+        const id = owner.get(title);
+        // 結合済みなら吸収された側の C-id が返るので、member のどれかなら自分のもの。
+        if (id && members.includes(id)) foldUnlinked(rows);
+      }
+    }
+  }
+
+  // Also fold variants MADB filed under a different schema:name string for the SAME work
+  // — an English alias after "=", a descriptive subtitle after ":", or none — e.g. this
+  // series「Dジェネシス = D GENESIS : ダンジョンが出来て3年」plus loose「Dジェネシス」and
+  // 「Dジェネシス : …．」volumes. They share a base title (see util.baseTitle) but not the
+  // exact one above, so the exact fold misses them. Only when THIS series uniquely owns
+  // the base (no sibling「…外伝」/sequel contends) — otherwise a loose volume can't be
+  // attributed. Skipped when the name has no separator (base === full norm): the exact
+  // fold already covered everything. Duplicate volume_numbers just collapse into sibling
+  // ISBNs, so nothing is double-counted.
+  const bases = new Set<string>();
+  for (const name of nameLabels.keys()) {
+    const base = baseTitle(name);
+    if (base && base !== normTitle(name)) bases.add(base);
+  }
+  for (const base of bases) {
+    if (!(await isSoleSeriesForBase(env, members, base))) continue;
+    const variants = await env.DB.prepare(
+      `SELECT isbn, volume_number, vol_sort, title, subtitle, creator, creators, publisher, label, pubdate
+       FROM volumes
+       WHERE series_id IS NULL
+         AND REPLACE(REPLACE(LOWER(title), ' ', ''), '　', '') LIKE ? ESCAPE '\\'
+       ORDER BY vol_sort, pubdate, isbn`
+    )
+      .bind(escapeLikeClamped(base, LIKE_MAX_BYTES - 1) + "%")
+      .all<VolumeRow>();
+    foldUnlinked((variants.results ?? []).filter((v) => baseTitle(v.title) === base));
+  }
+  return out;
+}

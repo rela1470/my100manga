@@ -12,6 +12,7 @@ import {
   linkStmts,
   UnlinkedGroup,
 } from "./groups";
+import { unlinkedVolumesOf, VolumeRow } from "./series";
 
 // シリーズの結合（分裂したシリーズを 1 つにまとめる）。上流 MADB は同一作品を複数の C-id に
 // 分けて持つことがある（例: 「One piece」SJR 版が C451457 = 1巻 / C451211 = 2〜5巻）。
@@ -324,14 +325,42 @@ export async function requestSeriesMerge(request: Request, env: Env, seriesId: s
   return json({ ok: true, count: bs.length }, 200, { "cache-control": "no-store" });
 }
 
+/** 分離の対象になる巻。series_id は巻が今いるシリーズ（結合済みなら member のどれか）で、
+ *  null は巻一覧が書名で寄せているシリーズ無しの迷子巻。 */
+type SplitVolume = VolumeRow & { series_id: string | null };
+
+/** シリーズ（結合済みなら全 member）の巻を ISBN ごとに返す。マスタの巻だけでなく、巻一覧
+ *  （getSeriesVolumes）が書名で寄せている迷子巻も含める: 閲覧者には同じシリーズの巻として
+ *  見えているので、別の版ならそれも選んで分離できないといけない（例: C302126 新仮面ライダー
+ *  SPIRITS に寄っている「ロンリー仮面ライダー編 1」9784065429808 は series_id NULL）。 */
+async function splitSourceRows(env: Env, members: string[]): Promise<SplitVolume[]> {
+  const res = await env.DB.prepare(
+    `SELECT isbn, series_id, volume_number, vol_sort, title, subtitle, creator, creators, publisher, label, pubdate
+       FROM volumes WHERE series_id IN (${members.map(() => "?").join(",")})
+      ORDER BY vol_sort, pubdate, isbn`
+  )
+    .bind(...members)
+    .all<SplitVolume>();
+  const master = res.results ?? [];
+  const loose = (await unlinkedVolumesOf(env, members, master)).map((v) => ({ ...v, series_id: null }));
+  if (!loose.length) return master;
+  return [...master, ...loose].sort(
+    (a, b) =>
+      (a.vol_sort ?? 0) - (b.vol_sort ?? 0) ||
+      (a.pubdate ?? "").localeCompare(b.pubdate ?? "") ||
+      a.isbn.localeCompare(b.isbn)
+  );
+}
+
 /** 1 回の分離依頼で送れる ISBN の上限（兄弟 ISBN 込み。長期連載の別の版をまとめて選べる程度）。 */
 const SPLIT_REQUEST_MAX = 500;
 
 /** POST /api/series/:id/split-request — 「このシリーズに別の版が混ざっている」と分離を依頼する。
  *  body: { isbns: [] }（別の版だと選んだ巻の ISBN。兄弟 ISBN 込み）。結合依頼と同じ collect-only
  *  方針で、ISBN ごとに件数だけ記録し、分離は管理者が確定する。マスタの巻（volumes にあり、
- *  このシリーズ＝結合済みなら全 member に属するもの）だけを記録し、補完・ユーザ投稿の巻は
- *  分離の対象外なので黙って除く。全巻を選んだ依頼は分離にならないので弾く。 */
+ *  このシリーズ＝結合済みなら全 member に属するものと、巻一覧が書名で寄せている迷子巻。
+ *  splitSourceRows）だけを記録し、補完・ユーザ投稿の巻は分離の対象外なので黙って除く。
+ *  全巻を選んだ依頼は分離にならないので弾く。 */
 export async function requestSeriesSplit(request: Request, env: Env, seriesId: string): Promise<Response> {
   const body = (await readJsonObject(request)) as { isbns?: unknown };
   const isbns = Array.isArray(body.isbns)
@@ -344,25 +373,12 @@ export async function requestSeriesSplit(request: Request, env: Env, seriesId: s
 
   const target = await resolveMergeTarget(env, id);
   const members = await mergeMembers(env, target);
-  const inMembers = members.map(() => "?").join(",");
-  const total =
-    (
-      await env.DB.prepare(`SELECT COUNT(*) AS n FROM volumes WHERE series_id IN (${inMembers})`)
-        .bind(...members)
-        .first<{ n: number }>()
-    )?.n ?? 0;
+  const pool = await splitSourceRows(env, members);
+  const total = pool.length;
   if (!total) return notFound(`シリーズが見つかりません: ${seriesId}`);
 
-  const found: string[] = [];
-  for (let i = 0; i < isbns.length; i += CHUNK) {
-    const chunk = isbns.slice(i, i + CHUNK);
-    const res = await env.DB.prepare(
-      `SELECT isbn FROM volumes WHERE series_id IN (${inMembers}) AND isbn IN (${chunk.map(() => "?").join(",")})`
-    )
-      .bind(...members, ...chunk)
-      .all<{ isbn: string }>();
-    for (const r of res.results ?? []) found.push(r.isbn);
-  }
+  const poolIsbns = new Set(pool.map((v) => v.isbn));
+  const found = isbns.filter((i) => poolIsbns.has(i));
   if (!found.length) return badRequest("選んだ巻はこのシリーズのマスターの巻ではありません");
   if (found.length >= total) return badRequest("全ての巻を選ぶと分離になりません。別の版の巻だけを選んでください");
 
@@ -762,7 +778,8 @@ export async function adminUnlinkVolumes(env: Env, seriesId: string, createdAt: 
 }
 
 /** 分離の画面用: シリーズ（結合済みなら全 member）の巻を ISBN ごとに返す。巻一覧の API は
- *  同じ巻番号の ISBN を 1 巻にまとめてしまうので、別の版を 1 冊ずつ選べるよう生の行を返す。 */
+ *  同じ巻番号の ISBN を 1 巻にまとめてしまうので、別の版を 1 冊ずつ選べるよう生の行を返す。
+ *  巻一覧が書名で寄せている迷子巻も含む（series_id は null。splitSourceRows）。 */
 export async function adminSplitSourceVolumes(env: Env, seriesId: string): Promise<Response> {
   if (isGroupId(seriesId)) return badRequest("シリーズに属さないまとまりは分離できません");
   const target = await resolveMergeTarget(env, seriesId);
@@ -774,28 +791,24 @@ export async function adminSplitSourceVolumes(env: Env, seriesId: string): Promi
     .first<{ id: string; name: string; creator: string | null; publisher: string | null; label: string | null }>();
   if (!meta) return notFound("シリーズが見つかりません");
   const members = await mergeMembers(env, target);
+  const rows = await splitSourceRows(env, members);
   // 閲覧者の分離依頼で「別の版」と選ばれた回数も添える（画面で依頼された巻を選んだ状態にする）。
-  const res = await env.DB.prepare(
-    `SELECT v.isbn, v.series_id, v.volume_number, v.vol_sort, v.title, v.label, v.pubdate,
-            COALESCE(r.report_count, 0) AS report_count
-       FROM volumes v
-       LEFT JOIN series_split_request r ON r.series_id = ? AND r.isbn = v.isbn
-      WHERE v.series_id IN (${members.map(() => "?").join(",")})
-      ORDER BY v.vol_sort, v.pubdate, v.isbn`
-  )
-    .bind(target, ...members)
-    .all<{
-      isbn: string;
-      series_id: string;
-      volume_number: string | null;
-      vol_sort: number | null;
-      title: string;
-      label: string | null;
-      pubdate: string | null;
-      report_count: number;
-    }>();
+  const reqs = await env.DB.prepare(`SELECT isbn, report_count FROM series_split_request WHERE series_id = ?`)
+    .bind(target)
+    .all<{ isbn: string; report_count: number }>();
+  const counts = new Map((reqs.results ?? []).map((r) => [r.isbn, r.report_count]));
+  const volumes = rows.map((v) => ({
+    isbn: v.isbn,
+    series_id: v.series_id,
+    volume_number: v.volume_number,
+    vol_sort: v.vol_sort,
+    title: v.title,
+    label: v.label,
+    pubdate: v.pubdate,
+    report_count: counts.get(v.isbn) ?? 0,
+  }));
   return json(
-    { series_id: meta.id, name: meta.name, creator: meta.creator ?? "", label: meta.label ?? "", volumes: res.results ?? [] },
+    { series_id: meta.id, name: meta.name, creator: meta.creator ?? "", label: meta.label ?? "", volumes },
     200,
     { "cache-control": "no-store" }
   );
@@ -803,7 +816,9 @@ export async function adminSplitSourceVolumes(env: Env, seriesId: string): Promi
 
 /** シリーズを分離する。body: { source_id, isbns: [], name }。選んだ ISBN を新しい独自シリーズ
  *  （名前は name、著者・出版社・レーベルは分離元から）へ移す。結合済みのシリーズなら全 member の巻
- *  から選べ、巻ごとに今いる member を分離元として記録する。全巻を移すことはできない。 */
+ *  から選べ、巻ごとに今いる member を分離元として記録する。巻一覧が書名で寄せている迷子巻は
+ *  分離元 NULL（シリーズ無しの巻の紐付けと同じ。解除するとシリーズ無しに戻り、また書名で寄る）。
+ *  全巻を移すことはできない。 */
 export async function adminSplitSeries(request: Request, env: Env): Promise<Response> {
   const body = (await readJsonObject(request)) as { source_id?: unknown; isbns?: unknown; name?: unknown };
   const sourceRaw = typeof body.source_id === "string" ? body.source_id : "";
@@ -821,29 +836,17 @@ export async function adminSplitSeries(request: Request, env: Env): Promise<Resp
     .first<{ creator: string | null; publisher: string | null; label: string | null }>();
   if (!meta) return notFound("シリーズが見つかりません");
   const members = await mergeMembers(env, target);
-  const inMembers = members.map(() => "?").join(",");
-  const total =
-    (
-      await env.DB.prepare(`SELECT COUNT(*) AS n FROM volumes WHERE series_id IN (${inMembers})`)
-        .bind(...members)
-        .first<{ n: number }>()
-    )?.n ?? 0;
+  const pool = await splitSourceRows(env, members);
+  const total = pool.length;
 
-  // 選んだ ISBN が分離元の巻であることを確かめ、今いる member ごとに分ける。
-  const fromOf = new Map<string, string[]>();
-  for (let i = 0; i < isbns.length; i += CHUNK) {
-    const chunk = isbns.slice(i, i + CHUNK);
-    const res = await env.DB.prepare(
-      `SELECT isbn, series_id FROM volumes
-        WHERE series_id IN (${inMembers}) AND isbn IN (${chunk.map(() => "?").join(",")})`
-    )
-      .bind(...members, ...chunk)
-      .all<{ isbn: string; series_id: string }>();
-    for (const r of res.results ?? []) {
-      const list = fromOf.get(r.series_id);
-      if (list) list.push(r.isbn);
-      else fromOf.set(r.series_id, [r.isbn]);
-    }
+  // 選んだ ISBN が分離元の巻であることを確かめ、今いる member（迷子巻は null）ごとに分ける。
+  const picked = new Set(isbns);
+  const fromOf = new Map<string | null, string[]>();
+  for (const v of pool) {
+    if (!picked.has(v.isbn)) continue;
+    const list = fromOf.get(v.series_id);
+    if (list) list.push(v.isbn);
+    else fromOf.set(v.series_id, [v.isbn]);
   }
   const found = [...fromOf.values()].reduce((n, l) => n + l.length, 0);
   if (found !== isbns.length) return badRequest("このシリーズの巻ではない ISBN が含まれています");

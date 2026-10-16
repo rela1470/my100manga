@@ -2179,6 +2179,8 @@ async function loadSplitVolumes(id, area) {
   area.textContent = "";
 
   const vols = data.volumes || [];
+  // 結合済みのシリーズの巻や、巻一覧が書名で寄せている迷子巻（series_id が null）が混ざるなら、
+  // 今いるシリーズの列を出す。
   const merged = vols.some((v) => v.series_id !== data.series_id);
   const checks = [];
   const body = el("tbody");
@@ -2200,7 +2202,7 @@ async function loadSplitVolumes(id, area) {
         el("td", { className: "wrap", textContent: v.label || "-" }),
         el("td", { textContent: v.pubdate || "-" }),
         el("td", { textContent: v.report_count ? `${v.report_count}` : "" }),
-        ...(merged ? [el("td", { textContent: v.series_id })] : []),
+        ...(merged ? [el("td", { textContent: v.series_id ?? "シリーズ無し" })] : []),
       ])
     );
   }

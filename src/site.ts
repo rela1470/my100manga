@@ -33,9 +33,14 @@ export interface SiteConfig {
   /** 外部ストアの API とアフィリエイトを使うか。表紙の取得（楽天ブックス・Yahoo!ショッピング・
    *  楽天市場）、購入リンク（Amazon・楽天・Yahoo・メルカリ）、売上ランキング（楽天ブックス）、
    *  フッターの楽天 / Yahoo 公式クレジットがまとめてこれで切れる。R18版が false なのは、
-   *  各社の規約が成人向けサイトでの利用を認めているか未確認で、使う予定の DMM アフィリエイトが
-   *  承認待ちのため（docs/r18.md 6 節）。false の間 R18版に表紙は出ない（MADB の書誌だけ）。 */
+   *  各社の規約が成人向けサイトでの利用を認めているか未確認のため（docs/r18.md 6 節）。
+   *  R18版の表紙と購入リンクは下の dlsite で別に出す。 */
   commerce: boolean;
+  /** DLsite（成年コミック）を表紙と購入リンクの源にするか。R18版だけ。commerce とは別の経路で、
+   *  表紙は img.dlsite.jp への直リンク（/cover・R2・トリム・シェア画像は通さない。DLsite の
+   *  ガイドが商業コミックの画像のダウンロード利用と改変を禁じているため）。see src/dlsite.ts,
+   *  docs/dlsite.md */
+  dlsite: boolean;
   /** 問い合わせ窓口（info@ / abuse@）のドメイン。利用規約・プライバシー・運営者の mailto を
    *  applySiteIdentity がこれに差し替える。canonical と違って**配信オリジンから作れない**:
    *  dev のホストには受信箱が無く、メールは本番ドメインで受けるため。 */
@@ -56,6 +61,7 @@ const SITES: Record<SiteVariant, SiteConfig> = {
     allAgesRankings: true,
     adultOnlySearch: false,
     commerce: true,
+    dlsite: false,
     mailDomain: GENERAL_MAIL_DOMAIN,
   },
   // R18版（ドメインは wrangler.jsonc の env.r18 / env.r18dev）。サイトのドメインはここには持たない
@@ -69,6 +75,7 @@ const SITES: Record<SiteVariant, SiteConfig> = {
     allAgesRankings: false,
     adultOnlySearch: true,
     commerce: false,
+    dlsite: true,
     mailDomain: "my100shunga.com",
   },
 };

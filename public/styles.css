@@ -2576,6 +2576,7 @@ html:has(.modal-backdrop.open) .to-top { display: none; }
 .buy-btn.rakuten { background: #bf0000; }
 .buy-btn.mercari { background: #ff0211; }
 .buy-btn.yahoo { background: #ff0033; }
+.buy-btn.dlsite { background: #052a83; }
 .buy-note { font-size: 11px; color: var(--muted); margin: 4px 0 0; }
 
 /* correction page */

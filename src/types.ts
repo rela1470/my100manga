@@ -51,6 +51,9 @@ export interface Env {
   // ck.jp.ap.valuecommerce.com/servlet/referral?sid=…&pid=…&vc_url=<商品URL> で包む。
   YAHOO_VC_SID?: string;
   YAHOO_VC_PID?: string;
+  // DLsite アフィリエイトのパートナー ID（aid）。R18版だけ（src/site.ts dlsite）。購入リンク・
+  // 画像参考元を dlaf.jp/…/aid/<ID>/id/<作品ID>.html の紹介リンクにする。未設定なら素の作品ページ。
+  DLSITE_AFFILIATE_ID?: string;
   // 人気傾向の計測（Analytics Engine）。writeDataPoint はノンブロッキングで課金も安く、
   // サンプリングは AE 側が自動でやる。バインディング未設定でも落ちないよう optional。
   // 集計は Cloudflare の SQL API 経由（管理画面表示は後で実装）。see src/popularity.ts

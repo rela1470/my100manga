@@ -3,6 +3,7 @@ import { googleCover, isValidIsbn } from "./util";
 import { rakutenResolveFull, rakutenReady } from "./rakuten";
 import { yahooResolveCover, yahooReady } from "./yahoo";
 import { ichibaCovers } from "./ichiba";
+import { dlsiteReady, dlsiteResolve, dlsiteVolumes } from "./dlsite";
 import { bookMetaInsertFromRakuten } from "./book";
 import { PROBE_TIMEOUT_MS } from "./ratelimiter";
 
@@ -184,6 +185,26 @@ export async function resolveCovers(
     }
   } else {
     needGoogle.push(...needIchiba);
+  }
+
+  // R18版の表紙: DLsite 成年コミック（src/dlsite.ts）。R18版は外部ストア（Tier 1–3）を使わないので
+  // 全件がここに来る。成年向けの巻だけ引き、全年齢の巻と DLsite に無い巻は「表紙なし」で確定する。
+  // 書名だけ一致したものは楽天市場の非信頼店と同じく管理画面の候補に積む。締め切りは Tier 1–3 と共有。
+  if (needGoogle.length && dlsiteReady(env)) {
+    const vols = await dlsiteVolumes(env, needGoogle);
+    for (const isbn of needGoogle) {
+      const v = vols.get(isbn);
+      if (!v) {
+        determined.set(isbn, "");
+        continue;
+      }
+      if (deadline - Date.now() <= 0) continue; // out of time — leave uncached
+      const m = await dlsiteResolve(env, v, "low", Math.min(deadline, Date.now() + slotWait(deadline - Date.now())));
+      if (m === null) continue; // undetermined — don't cache, retry on a later POST
+      if (m.titleOnly) queued.push({ isbn, url: m.titleOnly });
+      determined.set(isbn, m.cover);
+    }
+    needGoogle.length = 0; // DLsite で確定した（または持ち越した）ので Google には回さない
   }
 
   // Tier 4: Google (parallel — no rate limit) for ISBNs neither Rakuten nor Yahoo

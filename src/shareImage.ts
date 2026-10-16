@@ -34,6 +34,7 @@ import { initWasm, Resvg } from "@resvg/resvg-wasm";
 import RESVG_WASM from "../node_modules/@resvg/resvg-wasm/index_bg.wasm";
 import { BRAND_GLYPHS, BRAND_UNITS_PER_EM } from "./brandGlyphs";
 import { getCoverBytes, sha256Hex } from "./coverBytes";
+import { isDlsiteCover } from "./dlsite";
 import { encodeRgba } from "./covertrim";
 import { escapeHtml } from "./util";
 import { site, SiteVariant, siteVariant } from "./site";
@@ -219,6 +220,8 @@ export function coverSource(url: string): CoverSource | null {
     return "各販売サイト";
   }
   const host = u.hostname;
+  // DLsite の表紙は画像に描かない（fetchCovers）ので出典にも載せない。
+  if (host === "img.dlsite.jp") return null;
   // 楽天ブックスの書影も /@0_mall/book/ 配下（楽天ブックス自体が楽天市場の 1 店舗）。それ以外の
   // /@0_mall/<店舗>/ が楽天市場の商品画像（src/ichiba.ts）。
   if (host === "thumbnail.image.rakuten.co.jp") {
@@ -469,7 +472,11 @@ export function shareCoverUrl(url: string, cellW: number): string {
 // Only the cells this image draws (a quarter fetches 25); the result is indexed by
 // list position like list.items.
 async function fetchCovers(env: Env, ctx: ExecutionContext, list: MangaList, first: number, count: number, cellW: number): Promise<(Uint8Array | null)[]> {
-  const urls = list.items.slice(0, first + count).map((it, i) => (i >= first && it.cover_url ? shareCoverUrl(it.cover_url, cellW) : ""));
+  // DLsite（R18版）の表紙は取得しない: 商業コミックの画像はダウンロード利用・改変（合成）が
+  // できない（DLsite のアフィリエイトガイド、src/dlsite.ts）。そのセルは表紙なしの枠になる。
+  const urls = list.items
+    .slice(0, first + count)
+    .map((it, i) => (i >= first && it.cover_url && !isDlsiteCover(it.cover_url) ? shareCoverUrl(it.cover_url, cellW) : ""));
   const out: (Uint8Array | null)[] = new Array(urls.length).fill(null);
   let next = first;
   async function worker() {

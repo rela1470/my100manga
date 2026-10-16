@@ -1,8 +1,8 @@
 # DLsite 成年コミック 調査記録（R18版の表紙・購入リンク源）
 
 2026-10-15 に DMM アフィリエイトの審査が本家・R18版とも落ち（理由非公開）、DMM は断念した（`docs/dmm.md` は PoC の記録として残す）。
-R18版（my100shunga）の表紙と購入リンクの代わりとして DLsite を実測した記録。**アフィリエイトは 2026-10-15 に承認された。
-まだ Worker には組み込んでいない**。
+R18版（my100shunga）の表紙と購入リンクの代わりとして DLsite を実測した記録。**アフィリエイトは 2026-10-15 に承認され、
+2026-10-16 に Worker へ組み込んだ（`src/dlsite.ts`、未デプロイ。7 節）**。DMM は 2026-10-16 に再申請の問い合わせもゼロ回答で断念した。
 
 計測ツールは `scripts/dlsite-probe.mjs`（使い捨て）。
 
@@ -108,3 +108,24 @@ R18 dev の D1 から 成年向けの巻を読み取り専用の SELECT でラ�
   検索ページの HTML 構造が変わると壊れる。
 - アフィリエイトリンクの正確な形式（作品 URL にパートナー ID を付ける形か）。管理画面のアフィタグ生成で確かめる。
 - 報酬率の正確な数値。
+
+## 7. 組み込み（2026-10-16、未デプロイ）
+
+- `src/site.ts` の `dlsite`（R18版だけ true）。`commerce: false` はそのまま（楽天・Yahoo 等は引き続き呼ばない）。
+- 表紙: `src/covers.ts` `resolveCovers` の Tier 1–3（R18版では無効）の後ろに DLsite の段を足した。成年向けの巻（`volumes.is_adult = 1`）だけ
+  `src/dlsite.ts` `dlsiteResolve` で引き、2 節の照合（`BJ` で始まる ID だけ）で確定したら img.dlsite.jp の URL を `covers` に入れる。
+  書名だけ一致は `cover_suggestion`（suggest_count 0。管理画面の「自動」）に積む。全年齢の巻と DLsite に無い巻は「表紙なし」で確定。
+- 速度: リミッタ DO の `"dlsite"` インスタンス（1.1 秒に 1 件）。検索ページと `product/info/ajax` は Cache API で 1 日持つので、
+  同じシリーズの 2 巻目以降は作品情報の 1 件だけで済む。1 巻で最大 3 リクエスト（書名検索・著者名検索・作品情報）。
+- 5 節の制約: `/cover` の許可ホストに img.dlsite.jp は無い（403）、`public/cover-fit.js` のトリム対象でもない。
+  X シェア画像は `src/shareImage.ts` が DLsite の表紙を取得せず、出典にも載せない（その枠は表紙なし）。
+- 購入リンク: `public/affiliate.js`。表紙が DLsite の巻だけ、表紙 URL の作品 ID から「DLsite（電子）」のリンクを作る。
+  画像参考元も DLsite の作品ページへ。紹介 ID は secret `DLSITE_AFFILIATE_ID`（`window.__AFF__.dlsite`）。
+  入っていれば PR 表記とフッターのアフィリエイト注記が出る。リンクの形は
+  `https://dlaf.jp/books/dlaf/=/t/s/link/work/aid/<ID>/id/<作品ID>.html`（**管理画面のアフィタグ生成と要突き合わせ**）。
+- R18版の利用規約第8条・about・privacy（外部送信に DLsite を追加）・books-guide を書き換えた（「アフィリエイト一切なし」を外した）。
+- デプロイ時: secret `DLSITE_AFFILIATE_ID` を r18 / r18dev に入れる → デプロイ → **直後に** `db/r18-reset-adult-empty-covers.sql` を
+  R18 の D1 に流す（今まで「表紙なし」で確定していた成年向けの巻を引き直すため）。
+- 未確認: Workers の送信元 IP から DLsite の検索ページが 403 にならないか（手元の curl では 200）。403 は未確定扱いで
+  キャッシュしないので、締め出されても誤った「表紙なし」は残らない。
+

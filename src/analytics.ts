@@ -13,7 +13,7 @@ import { escapeHtml } from "./util";
 // サイト種別（src/site.ts）も window.__SITE__ で渡す（public/share-x.js 等が読む）。
 export function analyticsTags(env: Env): string {
   const s = site(env);
-  let out = `<script>window.__SITE__=${JSON.stringify({ variant: s.variant, name: s.name, hashtag: s.hashtag, commerce: s.commerce, adultOnlySearch: s.adultOnlySearch }).replace(/</g, "\\u003c")};</script>`;
+  let out = `<script>window.__SITE__=${JSON.stringify({ variant: s.variant, name: s.name, hashtag: s.hashtag, commerce: s.commerce, dlsite: s.dlsite, adultOnlySearch: s.adultOnlySearch }).replace(/</g, "\\u003c")};</script>`;
   const sitekey = (env.TURNSTILE_SITE_KEY ?? "").trim();
   if (sitekey) {
     out += `<meta name="turnstile-sitekey" content="${escapeHtml(sitekey)}">`;
@@ -47,15 +47,19 @@ export function gtmBody(env: Env): string {
 // secret ではなく env の vars。view ページは renderViewPage 側で __AFF__ を注入するため
 // このプレースホルダを持たず、素通りする。
 export function affIds(env: Env) {
-  // R18版は購入リンクを出さない（src/site.ts commerce）。紹介 ID を渡さないだけでなく、
+  // R18版は外部ストアの購入リンクを出さない（src/site.ts commerce）。紹介 ID を渡さないだけでなく、
   // public/affiliate.js の buildBuyLinks が window.__SITE__.commerce を見てリンク自体を作らない。
-  if (!site(env).commerce) return { amazon: "", rakuten: "", mercari: "", yahooSid: "", yahooPid: "" };
+  // R18版の購入リンクは DLsite だけ（src/site.ts dlsite）。
+  const s = site(env);
+  const dlsite = s.dlsite ? (env.DLSITE_AFFILIATE_ID ?? "") : "";
+  if (!s.commerce) return { amazon: "", rakuten: "", mercari: "", yahooSid: "", yahooPid: "", dlsite };
   return {
     amazon: env.AMAZON_ASSOCIATE_TAG ?? "",
     rakuten: env.RAKUTEN_AFFILIATE_ID ?? "",
     mercari: env.MERCARI_AFID ?? "",
     yahooSid: env.YAHOO_VC_SID ?? "",
     yahooPid: env.YAHOO_VC_PID ?? "",
+    dlsite,
   };
 }
 

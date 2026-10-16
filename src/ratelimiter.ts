@@ -12,6 +12,9 @@ const INTERVAL_MS = 1100; // ~0.9 req/s, a small margin under Rakuten's ~1/s cap
 
 export type Priority = "high" | "low";
 
+/** リミッタのインスタンス名（API ごとに別の 1 req/s 枠）。 */
+export type LimiterInstance = "global" | "yahoo" | "dlsite";
+
 // How long a call waits for a rate-limit slot before giving up (returns false). Also
 // caps how deep each lane's queue grows. High = user-initiated (book popup, correction
 // picker, ISBN search): short, so a burst of junk high-priority requests can only book a
@@ -78,13 +81,14 @@ export function limiterStub(
 
 /** Wait for a 1 req/s slot on `instance`'s priority lane. Each API paces on its own DO
  *  instance: "global" = Rakuten (楽天ブックス・楽天市場 share one applicationId),
- *  "yahoo" = Yahoo!ショッピング (rate-limits aggressively, ~3 req/s observed). Returns
+ *  "yahoo" = Yahoo!ショッピング (rate-limits aggressively, ~3 req/s observed), "dlsite" =
+ *  DLsite の検索ページ（llms.txt が 2 req/s までと言っている。src/dlsite.ts）. Returns
  *  false when the caller should skip the API (slot past budget). `maxWaitMs` overrides
  *  the lane default so a caller with a shrinking wall-clock budget (resolveCovers) can
  *  refuse a slot that would land past its deadline. */
 export async function awaitSlot(
   env: Env,
-  instance: "global" | "yahoo",
+  instance: LimiterInstance,
   priority: Priority,
   maxWaitMs?: number
 ): Promise<boolean> {
@@ -203,7 +207,7 @@ export const PROBE_TIMEOUT_MS = 3000;
  */
 export async function pacedFetchJson(
   env: Env,
-  instance: "global" | "yahoo",
+  instance: LimiterInstance,
   priority: Priority,
   url: string,
   init: RequestInit = {},

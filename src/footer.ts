@@ -69,10 +69,11 @@ const ACCOUNT_SCRIPT = `<script src="/account.js"></script>`;
 export function footerHtml(env: Env, withAff = false): string {
   const s = site(env);
   const name = escapeHtml(s.name);
-  // アフィリエイト注記も楽天 / Yahoo のクレジットも、外部ストアを使っているサイトだけのもの。
-  // R18版（commerce: false）は購入リンクも API 呼び出しも無いので両方出さない。
+  // 楽天 / Yahoo のクレジットは、外部ストアを使っているサイトだけのもの。アフィリエイト注記は
+  // R18版でも DLsite の紹介 ID が入っていれば出す（購入リンクが広告になるため）。
+  const hasAff = s.commerce || (s.dlsite && !!env.DLSITE_AFFILIATE_ID);
   const aff =
-    withAff && s.commerce
+    withAff && hasAff
       ? `<p class="aff-disclosure">当サイトはアフィリエイト広告（PR）を利用しています（<a href="/about">詳細</a>）。</p>`
       : "";
   // MADB の利用規約は、出典に加えて「編集・加工した」旨の記載を求めている（当サイトはシリーズの
@@ -84,7 +85,10 @@ export function footerHtml(env: Env, withAff = false): string {
         `データ: メディア芸術データベース（国立アートリサーチセンター）を加工して作成`,
         `書影: 楽天ブックス・楽天市場・Yahoo!ショッピング`,
       ]
-    : [`データ: メディア芸術データベース（国立アートリサーチセンター）を加工して作成`];
+    : [
+        `データ: メディア芸術データベース（国立アートリサーチセンター）を加工して作成`,
+        ...(s.dlsite ? [`書影: DLsite`] : []),
+      ];
   const source = sourceLines.map((l) => `<span class="foot-line">${l}</span>`).join("");
   // 公式スニペットは改変できないので、外側を <span class="foot-line"> で包んで行を分ける。
   const credits = s.commerce

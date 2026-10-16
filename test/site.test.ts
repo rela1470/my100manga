@@ -113,7 +113,7 @@ describe("サイト種別", () => {
     const html = await (await SELF.fetch("https://example.com/about")).text();
     expect(html).toContain(`<html data-site="general"`);
     expect(html).toContain(
-      `window.__SITE__={"variant":"general","name":"My 100 Manga","hashtag":"my100manga","commerce":true,"adultOnlySearch":false}`
+      `window.__SITE__={"variant":"general","name":"My 100 Manga","hashtag":"my100manga","commerce":true,"dlsite":false,"adultOnlySearch":false}`
     );
   });
 });
@@ -155,12 +155,24 @@ describe("R18 版は外部ストアの API・アフィリエイトを使わな�
     expect(base).toContain("アフィリエイト広告（PR）");
     expect(r18).not.toContain("Rakuten");
     expect(r18).not.toContain("Yahoo");
+    // DLsite の紹介 ID が無ければ PR 注記は出さない。書影の出典は DLsite だけ。
     expect(r18).not.toContain("アフィリエイト");
-    expect(r18).not.toContain("書影");
+    expect(r18).toContain("書影: DLsite");
+    expect(r18).not.toContain("楽天ブックス");
     // MADB の利用規約が求める「加工して作成」は両方に出す。
     for (const html of [base, r18]) {
       expect(html).toContain("メディア芸術データベース（国立アートリサーチセンター）を加工して作成");
     }
+  });
+
+  it("DLsite の紹介 ID だけは配り、入っていればフッターに PR 注記を出す", () => {
+    const withAid = { ...adultKeys, DLSITE_AFFILIATE_ID: "my100shunga" } as Env;
+    const ids = affIds(withAid);
+    expect(ids.dlsite).toBe("my100shunga");
+    expect(ids.amazon).toBe("");
+    expect(footerHtml(withAid, true)).toContain("アフィリエイト広告（PR）");
+    // 本家には DLsite を使わないので、ID が入っていても配らない。
+    expect(affIds({ ...generalKeys, DLSITE_AFFILIATE_ID: "x" } as Env).dlsite).toBe("");
   });
 
   it("window.__SITE__ に commerce を載せる（public/affiliate.js が見る）", () => {

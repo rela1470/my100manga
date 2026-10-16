@@ -17,7 +17,23 @@
       mercari: a.mercari || "",
       yahooSid: a.yahooSid || "",
       yahooPid: a.yahooPid || "",
+      dlsite: a.dlsite || "",
     };
+  }
+
+  // DLsite（R18版の表紙・購入リンク、src/dlsite.ts）。表紙 URL
+  // （img.dlsite.jp/modpub/images2/work/books/BJ…/BJ…_img_main.jpg）から作品 ID を取り出し、
+  // 紹介リンク（パートナー ID あり）か作品ページへのリンクを作る。DLsite のガイドで a タグの
+  // href は変えないことになっているので、管理画面のアフィタグ生成と同じ形をそのまま組む。
+  function dlsiteId(coverUrl) {
+    var m = String(coverUrl || "").match(/^https:\/\/img\.dlsite\.jp\/.*\/(BJ\d+)_img_main\.jpg$/);
+    return m ? m[1] : "";
+  }
+  function dlsiteUrl(id) {
+    var aid = aff().dlsite;
+    return aid
+      ? "https://dlaf.jp/books/dlaf/=/t/s/link/work/aid/" + encodeURIComponent(aid) + "/id/" + id + ".html"
+      : "https://www.dlsite.com/books/work/=/product_id/" + id + ".html";
   }
 
   // "978-4-08-xxxxxx-x" → "9784080000000"; keeps a trailing X for ISBN-10.
@@ -151,7 +167,7 @@
   // と言っているので、ここで PR が出てしまうと規約と食い違う。
   window.prLabel = function () {
     var a = aff();
-    if (!a.amazon && !a.rakuten && !a.mercari && !a.yahooSid) return null;
+    if (!a.amazon && !a.rakuten && !a.mercari && !a.yahooSid && !a.dlsite) return null;
     var el = document.createElement("span");
     el.className = "pr-label";
     el.textContent = "PR";
@@ -237,6 +253,10 @@
           : page,
       };
     }
+    if (host === "img.dlsite.jp") {
+      var id2 = dlsiteId(coverUrl);
+      return { label: "DLsite", url: id2 ? dlsiteUrl(id2) : "" };
+    }
     if (/google/.test(host)) {
       return { label: "Google Books", url: s ? "https://books.google.com/books?vid=ISBN" + s : "" };
     }
@@ -246,10 +266,14 @@
   // Returns the buy links for an item, grouped by format. Print entries are
   // omitted when there's nothing to search (no isbn and no title).
   window.buildBuyLinks = function (item) {
-    // R18版（src/site.ts の commerce: false）は購入リンクを一切出さない。__SITE__ は
-    // src/analytics.ts の analyticsTags が全ページに差し込む。旧いキャッシュの HTML には
+    // R18版（src/site.ts の commerce: false）は外部ストアの購入リンクを出さず、表紙が DLsite の
+    // 巻だけ DLsite の作品ページへのリンクを出す（表紙と同じ作品なので、照合の確定もそちらと同じ）。
+    // __SITE__ は src/analytics.ts の analyticsTags が全ページに差し込む。旧いキャッシュの HTML には
     // commerce が無いことがあるので、明示的に false のときだけ止める（本家を巻き込まない）。
-    if (window.__SITE__ && window.__SITE__.commerce === false) return [];
+    if (window.__SITE__ && window.__SITE__.commerce === false) {
+      var did = dlsiteId(item && item.cover_url);
+      return did ? [{ format: "ebook", label: "DLsite（電子）", store: "dlsite", url: dlsiteUrl(did) }] : [];
+    }
     var hasQuery = Boolean(q(item) || cleanIsbn(item && item.isbn));
     if (!hasQuery) return [];
     var links = [

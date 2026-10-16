@@ -25,7 +25,7 @@ import {
 } from "./madbLive";
 import { findGapFillVolumes } from "./gapFill";
 import { findSiblingVolumes, SiblingVolume } from "./siblingVolumes";
-import { getCorrectionVolumes } from "./corrections";
+import { getCorrectionVolumes, ownersOfOtherSeries } from "./corrections";
 import { resolveMergeTarget, mergeMembers } from "./merge";
 import { attributeTitles, isCustomSeriesId, NAME_NORM_PREFIX } from "./groups";
 import { effectiveTagSql } from "./labels";
@@ -289,8 +289,11 @@ export async function getSeriesVolumes(
     // 1 回の押下で引けるのは数ページ）で 1 回では全部埋まらないので、押すたびに積み上がる
     // よう先に読んでおく。getSupplementVolumes は行ごと置き換えるため、後でここに合流する。
     const prior = await readCachedSupplement(env, meta.id);
+    const priorVols = await withoutOtherSeriesIsbns(env, meta.id, prior?.volumes ?? []);
+    // いま D1 に入っている補完（下で書き直すかの判定に使う）。
+    let stored = prior?.volumes ?? [];
     if (eligible) {
-      supplement = await getSupplementVolumes(
+      stored = await getSupplementVolumes(
         env,
         meta.id,
         meta.name,
@@ -300,6 +303,7 @@ export async function getSeriesVolumes(
         fmt!,
         true
       );
+      supplement = await withoutOtherSeriesIsbns(env, meta.id, stored);
     } else {
       await markSupplementProbed(env, meta.id);
     }
@@ -311,7 +315,7 @@ export async function getSeriesVolumes(
     // 前回ぶんを渡さないと、1 回では埋まりきらない穴埋め（Yahoo は 1 巻 1 リクエスト）が
     // 押すたびに同じ先頭の巻を引き直し、その先へ進まない。
     const filledSorts = new Set(masterSorts);
-    for (const v of prior?.volumes ?? []) if (v.vol_sort > 0) filledSorts.add(v.vol_sort);
+    for (const v of priorVols) if (v.vol_sort > 0) filledSorts.add(v.vol_sort);
     for (const v of supplement) if (v.vol_sort > 0) filledSorts.add(v.vol_sort);
     const { filled, noIsbn } = await findGapFillVolumes(env, {
       seriesId: meta.id,
@@ -329,12 +333,14 @@ export async function getSeriesVolumes(
     // 押すたびに同じ巻の ISBN が入れ替わってちらつくのを避けるため。
     const merged = new Map<string, SupplementVolume>();
     const key = (v: SupplementVolume) => (v.vol_sort > 0 ? `n${v.vol_sort}` : `i${v.isbn}`);
-    for (const v of prior?.volumes ?? []) merged.set(key(v), v);
+    for (const v of priorVols) merged.set(key(v), v);
     for (const v of supplement) merged.set(key(v), v);
     for (const v of filled) if (!merged.has(key(v))) merged.set(key(v), v);
     const next = [...merged.values()].sort((a, b) => a.vol_sort - b.vol_sort);
-    // 中身が変わったときだけ書く（押しても何も増えないシリーズで無駄に書かない）。
-    if (filled.length || next.length !== supplement.length) {
+    // 中身が変わったときだけ書く（押しても何も増えないシリーズで無駄に書かない）。他シリーズの
+    // ISBN を外しただけでも書き直す（外した巻が補完の逆引きに残ると、そのシリーズの手動追加を
+    // 弾いてしまう。src/corrections.ts ownersOfOtherSeries）。
+    if (filled.length || JSON.stringify(next) !== JSON.stringify(stored)) {
       await writeSupplement(env, meta.id, next);
     }
     supplement = next;
@@ -342,7 +348,8 @@ export async function getSeriesVolumes(
     checkedAt = Date.now();
   } else {
     const cached = await readCachedSupplement(env, meta.id);
-    supplement = cached?.volumes ?? [];
+    // この規則より前に貯まった補完にも効かせる（取得ボタンを押し直すまで残らないように）。
+    supplement = await withoutOtherSeriesIsbns(env, meta.id, cached?.volumes ?? []);
     probed = cached !== null;
     checkedAt = cached?.checkedAt ?? 0;
   }
@@ -858,4 +865,25 @@ export async function unlinkedVolumesOf(
     foldUnlinked((variants.results ?? []).filter((v) => baseTitle(v.title) === base));
   }
   return out;
+}
+
+/** 書名一致の補完（SPARQL）から、マスタが別のシリーズの巻としている ISBN（と、別のシリーズの
+ *  補完が既に持っている ISBN）を外す。巻は全ての ISBN が外れたときだけ落とす。補完は
+ *  「同じ書名・同じ作者」で引くだけで schema:isPartOf を見ないので、上流が別シリーズの巻に
+ *  シリーズと同じ書名を付けていると、その巻を新刊として拾ってしまう（C339943 ログ・ホライズン
+ *  に C339944 西風の旅団の 9〜11 巻。MADB は書名を「ログ・ホライズン」とし、作者に原作者を
+ *  含める）。穴埋め（src/gapFill.ts の MASTER-KNOWN）・手動追加と同じ規則。 */
+async function withoutOtherSeriesIsbns(
+  env: Env,
+  seriesId: string,
+  vols: SupplementVolume[]
+): Promise<SupplementVolume[]> {
+  if (!vols.length) return vols;
+  const owners = await ownersOfOtherSeries(env, seriesId, vols.flatMap((v) => v.isbns ?? [v.isbn]));
+  if (!owners.size) return vols;
+  return vols.flatMap((v) => {
+    const isbns = (v.isbns ?? [v.isbn]).filter((i) => !owners.has(i));
+    if (!isbns.length) return [];
+    return [{ ...v, isbn: isbns.includes(v.isbn) ? v.isbn : isbns[0], isbns }];
+  });
 }

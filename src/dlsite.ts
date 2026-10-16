@@ -97,7 +97,8 @@ export function parseResults(html: string): Item[] {
       const id = chunk.slice(0, chunk.indexOf('"'));
       const title = (chunk.match(/<dd class="work_name">[\s\S]*?title="([^"]*)"/) || [])[1] || "";
       const maker = (chunk.match(/alt="[^"]*\[([^\]]*)\]"/) || [])[1] || "";
-      const authorBlock = (chunk.match(/<span class="author">([\s\S]*?)<\/span>/) || [])[1] || "";
+      // 作者欄は class="author" のほか、長いと省略表示の class="author omit" になる。
+      const authorBlock = (chunk.match(/<span class="author(?: [^"]*)?">([\s\S]*?)<\/span>/) || [])[1] || "";
       const authors = [...authorBlock.matchAll(/>([^<]+)<\/a>/g)].map((m) => decode(m[1].trim()));
       const img = (chunk.match(/'(\/\/img\.dlsite\.jp\/modpub\/[^']*_img_main\.jpg)'/) || [])[1] || "";
       return { id, title: decode(title), maker: decode(maker), authors, img: img && `https:${img}` };
@@ -119,11 +120,13 @@ export function judge(v: DlsiteVolume, items: Item[]): { level: "strict" | "titl
     const rest = numbers(it.title.normalize("NFKC").slice(base.normalize("NFKC").length));
     return vol == null ? rest.length === 0 || rest[0] === 1 : rest[0] === vol;
   });
-  const who = (it: Item): boolean => {
-    if (authors.length) return it.authors.some((a) => authors.includes(normAuthor(a)));
+  const samePublisher = (it: Item): boolean => {
     const maker = normPub(it.maker);
     return !!pub && !!maker && (maker.includes(pub) || pub.includes(maker));
   };
+  // 著者で照合する。どちらかに著者が無ければ出版社で代える（DLsite の検索結果は作者欄が無い作品もある）。
+  const who = (it: Item): boolean =>
+    authors.length && it.authors.length ? it.authors.some((a) => authors.includes(normAuthor(a))) : samePublisher(it);
   const strict = titled.find(who);
   if (strict) return { level: "strict", hit: strict };
   if (titled.length) return { level: "titleOnly", hit: titled[0] };

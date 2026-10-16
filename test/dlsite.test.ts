@@ -46,6 +46,16 @@ describe("parseResults", () => {
   });
 });
 
+describe("parseResults の作者欄", () => {
+  it("省略表示（class=\"author omit\"）の作者も読む", () => {
+    const html =
+      `<tr data-list_item_product_id="BJ406549"><dd class="work_name"><a title="Samen Breeder">Samen Breeder</a></dd>` +
+      `<img alt="Samen Breeder [ティーアイネット]" data-src='//img.dlsite.jp/modpub/images2/work/books/BJ407000/BJ406549_img_main.jpg'>` +
+      `<span class="author omit"><a href="#">小峯つばさ</a></span></tr>`;
+    expect(parseResults(html)[0].authors).toEqual(["小峯つばさ"]);
+  });
+});
+
 describe("judge", () => {
   const items = parseResults(HTML);
 
@@ -63,6 +73,12 @@ describe("judge", () => {
   it("著者が違えば書名だけの一致（自動では使わない）", () => {
     const m = judge(vol({ series: "淫乱天使", creators_norm: "吉野志穂" }), items);
     expect(m?.level).toBe("titleOnly");
+  });
+
+  it("DLsite 側に作者が無ければ出版社で代える", () => {
+    const noAuthor = [{ id: "BJ1", title: "人妻と熟れた巨乳輪", maker: "ティーアイネット", authors: [], img: "https://img.dlsite.jp/x_img_main.jpg" }];
+    expect(judge(vol({ series: "人妻と熟れた巨乳輪", creators_norm: "青妬かげ", publisher: "ティーアイネット" }), noAuthor)?.level).toBe("strict");
+    expect(judge(vol({ series: "人妻と熟れた巨乳輪", creators_norm: "青妬かげ", publisher: "別の社" }), noAuthor)?.level).toBe("titleOnly");
   });
 
   it("著者が無ければ出版社で代える", () => {

@@ -809,6 +809,17 @@ export async function adminListHiddenVolumes(env: Env, opts: PageOpts): Promise<
   return json({ hidden, total, page: opts.page, per: opts.per }, 200, { "cache-control": "no-store" });
 }
 
+/** 非表示を戻す（volume_hidden の行を消す）。巻はまた全閲覧者の巻一覧に出る。確定のときに
+ *  消したユーザ投稿（series_correction）と通報（volume_report）は戻らない: マスター/補完の巻なら
+ *  そのまま出るが、ユーザ投稿の巻だった場合は手動追加し直さないと出ない。 */
+export async function adminUnhideVolume(env: Env, seriesId: string, isbn: string): Promise<Response> {
+  const res = await env.DB.prepare(`DELETE FROM volume_hidden WHERE series_id = ? AND isbn = ?`)
+    .bind(seriesId, isbn)
+    .run();
+  if (!(res.meta?.changes ?? 0)) return notFound("非表示の記録が見つかりません");
+  return json({ ok: true, series_id: seriesId, isbn });
+}
+
 interface AdminSeriesReportRow {
   series_id: string;
   reported_name: string;

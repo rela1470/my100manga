@@ -46,6 +46,7 @@ import {
   adminConfirmVolumeReport,
   adminDismissVolumeReport,
   adminListHiddenVolumes,
+  adminUnhideVolume,
   adminGetList,
   adminGetListHistory,
   adminListListHistory,
@@ -714,6 +715,11 @@ const worker = {
       // 確定して全体から非表示にした巻の履歴（volume_hidden）。
       if (path === "/api/admin/volume-hidden" && request.method === "GET") {
         return await adminListHiddenVolumes(env, parsePage(url));
+      }
+      // 非表示を戻す（volume_hidden の行を消す）。
+      const adminVolHiddenMatch = path.match(/^\/api\/admin\/volume-hidden\/([A-Za-z0-9]+)\/([0-9]+)$/);
+      if (adminVolHiddenMatch && request.method === "DELETE") {
+        return await adminUnhideVolume(env, adminVolHiddenMatch[1], adminVolHiddenMatch[2]);
       }
       const adminVolReportMatch = path.match(
         /^\/api\/admin\/volume-reports\/([A-Za-z0-9]+)\/([0-9]+)$/

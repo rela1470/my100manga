@@ -1553,7 +1553,8 @@ async function dismissVolumeTitleReport(isbn, btn) {
 // --- 確定済み（処理済み）履歴のビュー ----------------------------------------
 // 各 moderation ページは通常「未処理キュー」だけを出す。確定するとキューから消えて
 // 追跡できなくなるため、永続記録が残る 3 種（巻の通報→volume_hidden、シリーズへの手動追加→
-// reviewed_at、シリーズ名の修正→series_name_override）を後から振り返る読み取り専用の一覧。
+// reviewed_at、シリーズ名の修正→series_name_override）を後から振り返る一覧。非表示と名前の
+// 修正はここから戻せる。
 
 // 確定して全体から非表示にした巻（volume_hidden）。
 async function loadHiddenVolumes(page = pageState.volHidden) {
@@ -1600,6 +1601,9 @@ async function loadHiddenVolumes(page = pageState.volHidden) {
     });
     seriesLink.addEventListener("click", () => openSeriesVolumes(h.series_id, seriesLabel));
 
+    const unhide = el("button", { className: "danger", textContent: "非表示を戻す" });
+    unhide.addEventListener("click", () => unhideVolume(h, seriesName, unhide));
+
     body.append(
       el("tr", { dataset: { key: `${h.series_id}/${h.isbn}` } }, [
         el("td", null, [coverThumb(h.cover_url, "corr-thumb", "corr-noimg", seriesName)]),
@@ -1607,12 +1611,40 @@ async function loadHiddenVolumes(page = pageState.volHidden) {
         el("td", { textContent: h.volume_number || "-" }),
         el("td", { textContent: h.isbn }),
         el("td", { textContent: fmtDate(h.created_at) }),
+        el("td", {}, [unhide]),
       ])
     );
   }
 
   table.style.display = "";
   renderPager("volHiddenPager", page, total, loadHiddenVolumes);
+}
+
+/** 非表示を戻す（volume_hidden の行を消す）。確定のときに消したユーザ投稿は戻らないので、
+ *  ユーザ投稿の巻だった場合は手動追加し直す必要があることを確認ダイアログで伝える。 */
+async function unhideVolume(h, seriesName, btn) {
+  const vol = h.volume_number ? `${h.volume_number}巻` : "巻";
+  if (
+    !(await uiConfirm(
+      `「${seriesName}」の${vol}（${h.isbn}）の非表示を戻し、全閲覧者の巻一覧にまた出します。` +
+        `確定のときに消したユーザ投稿は戻らないので、ユーザ投稿の巻だった場合は手動追加し直してください。よろしいですか？`,
+      { okLabel: "戻す" }
+    ))
+  )
+    return;
+  btn.disabled = true;
+  try {
+    const res = await fetch(
+      `/api/admin/volume-hidden/${encodeURIComponent(h.series_id)}/${encodeURIComponent(h.isbn)}`,
+      { method: "DELETE" }
+    );
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
+    await loadHiddenVolumes(pageState.volHidden);
+  } catch (e) {
+    uiAlert("非表示を戻せませんでした: " + e.message);
+    btn.disabled = false;
+  }
 }
 
 // 確定(承認)済みのシリーズへの手動追加（series_correction.reviewed_at > 0）。

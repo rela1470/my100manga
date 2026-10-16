@@ -2,6 +2,9 @@ import { SELF } from "cloudflare:test";
 import { env } from "cloudflare:workers";
 import { describe, expect, it } from "vitest";
 import { BROWSER_UA, makeIsbns } from "./helpers";
+import { adminUnhideVolume } from "../src/admin";
+import { bumpsViewEpoch } from "../src/viewSnapshot";
+import type { Env } from "../src/types";
 
 // 管理者が確定で非表示にした巻（volume_hidden）は ISBN 単位で効く。巻一覧は同じ巻番号の ISBN を
 // 1 巻にまとめるが、隠した ISBN だけを外し、残りの ISBN があればその巻は出す。巻ごと消していた
@@ -65,5 +68,26 @@ describe("巻の非表示（volume_hidden）は ISBN 単位", () => {
     await hide(id, b);
     const vols = await volumes(id);
     expect(vols.map((v) => v.isbn)).toEqual([c]);
+  });
+});
+
+describe("非表示を戻す（管理画面）", () => {
+  it("volume_hidden の行を消すと巻がまた出る。記録が無ければ 404", async () => {
+    const { id, a, b } = await newSeries();
+    await hide(id, a);
+    await hide(id, b);
+    const res = await adminUnhideVolume(env as unknown as Env, id, a);
+    expect(res.status).toBe(200);
+    const left = await env.DB.prepare(`SELECT isbn FROM volume_hidden WHERE series_id = ?`).bind(id).all<{ isbn: string }>();
+    expect(left.results.map((r) => r.isbn)).toEqual([b]);
+    // 巻一覧（初めて読む ID なのでキャッシュは効いていない）に 1 巻が戻る。
+    const vols = await volumes(id);
+    expect(vols[0]).toMatchObject({ volume_number: "1", isbns: [a] });
+
+    expect((await adminUnhideVolume(env as unknown as Env, id, a)).status).toBe(404);
+  });
+
+  it("表示データの世代を上げる", () => {
+    expect(bumpsViewEpoch(new Request("https://example.com/api/admin/volume-hidden/C1/9784000000000", { method: "DELETE" }))).toBe(true);
   });
 });

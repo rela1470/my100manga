@@ -87,8 +87,9 @@ for (const l of links) {
 }
 // 独自シリーズを series に、紐付けを volumes に反映する（src/groups.ts APPLY_LINKS_SQL と同じ）。
 lines.push(
-  "INSERT OR REPLACE INTO series (id, name, name_norm, name_kana, name_kana_norm, creator, publisher, label, num_items)",
-  "  SELECT id, name, name_norm, NULL, NULL, creator, publisher, label, NULL FROM custom_series;",
+  "INSERT OR REPLACE INTO series (id, name, name_norm, name_kana, name_kana_norm, creator, publisher, label, num_items, is_adult)",
+  "  SELECT id, name, name_norm, NULL, NULL, creator, publisher, label, NULL,",
+  "    COALESCE((SELECT MAX(v.is_adult) FROM volumes v WHERE v.series_id = custom_series.id), 0) FROM custom_series;",
   "UPDATE volumes SET series_id = (SELECT l.series_id FROM volume_series_link l WHERE l.isbn = volumes.isbn)",
   "  WHERE isbn IN (SELECT isbn FROM volume_series_link)",
   "    AND series_id IS (SELECT l.from_series_id FROM volume_series_link l WHERE l.isbn = volumes.isbn);"

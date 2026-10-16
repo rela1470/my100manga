@@ -71,7 +71,7 @@ function nullable(s: string): string | null {
 /** 表示用の著者欄（creators、"原作：A、作画：B"）から検索用の creators_norm を作る。
  *  区切りは MADB の表記に合わせて 、/，/,/／/・、役割の "原作：" は落とす。creators が空なら
  *  NULL（検索は src/search.ts の creatorNormSql が creator 側へ落ちる）。 */
-function creatorsNormOf(creators: string, creator: string): string | null {
+export function creatorsNormOf(creators: string, creator: string): string | null {
   const src = creators || creator;
   if (!src) return null;
   const names = src

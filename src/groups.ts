@@ -54,8 +54,10 @@ const CHUNK = 90;
  *  分離（from_series_id = 分離元）はマスタがまだ分離元に入れている巻だけ。マスタが自分で
  *  付け替えた巻はそちらを優先する。scripts/ingest.mjs・scripts/dump-series-merge.mjs に同じ SQL がある。 */
 export const APPLY_LINKS_SQL = [
-  `INSERT OR REPLACE INTO series (id, name, name_norm, name_kana, name_kana_norm, creator, publisher, label, num_items)
-     SELECT id, name, name_norm, NULL, NULL, creator, publisher, label, NULL FROM custom_series`,
+  // is_adult は巻から取る（scripts/ingest.mjs の同じ文のコメント）。
+  `INSERT OR REPLACE INTO series (id, name, name_norm, name_kana, name_kana_norm, creator, publisher, label, num_items, is_adult)
+     SELECT id, name, name_norm, NULL, NULL, creator, publisher, label, NULL,
+            COALESCE((SELECT MAX(v.is_adult) FROM volumes v WHERE v.series_id = custom_series.id), 0) FROM custom_series`,
   `UPDATE volumes SET series_id = (SELECT l.series_id FROM volume_series_link l WHERE l.isbn = volumes.isbn)
     WHERE isbn IN (SELECT isbn FROM volume_series_link)
       AND series_id IS (SELECT l.from_series_id FROM volume_series_link l WHERE l.isbn = volumes.isbn)`,
@@ -478,8 +480,14 @@ export function moveGroupRowsStmts(env: Env, g: Pick<UnlinkedGroup, "isbns">, se
 }
 
 /** 次の独自シリーズ ID（U + 6 桁の連番）。 */
+// R18版の収録補完（scripts/import-extra-volumes.mjs）の独自シリーズは U500001 から振るので、管理画面が
+// 作る分はその下の続きから振る（番号帯を分ける。scripts/extra-volumes-sql.mjs IMPORT_ID_FLOOR）。
+const IMPORT_ID_FLOOR_KEY = "U500001";
+
 export async function nextCustomSeriesId(env: Env): Promise<string> {
-  const row = await env.DB.prepare(`SELECT id FROM custom_series ORDER BY id DESC LIMIT 1`).first<{ id: string }>();
+  const row = await env.DB.prepare(`SELECT id FROM custom_series WHERE id < ? ORDER BY id DESC LIMIT 1`)
+    .bind(IMPORT_ID_FLOOR_KEY)
+    .first<{ id: string }>();
   const n = row ? parseInt(row.id.slice(1), 10) + 1 : 1;
   return "U" + String(n).padStart(6, "0");
 }

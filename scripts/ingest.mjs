@@ -45,6 +45,7 @@ import { pick } from "stream-json/filters/pick.js";
 import { streamArray } from "stream-json/streamers/stream-array.js";
 import { chain } from "stream-chain";
 import { deleteStatements, diffRows, liveRowKey, sqlInt, sqlStr, suggestDiffSql, upsertClause } from "./ingest-diff.mjs";
+import { CLEANUP_IMPORTED_FIX_SQL, SERIES_ADULT_SQL } from "./extra-volumes-sql.mjs";
 
 const REPO = "mediaarts-db/dataset";
 const VOLUMES_ASSET = "metadata101_json.zip"; // マンガ単行本
@@ -92,11 +93,15 @@ const PRUNE_SUPPLEMENT_SQL =
 // custom series go back into `series`, linked ISBNs get their series_id again. Only
 // volumes still where they were when linked are rewritten — series-less (from_series_id
 // NULL) or still in the split source — so the new master's own re-filing wins.
-const APPLY_LINKS_SQL = [
+export const APPLY_LINKS_SQL = [
   "CREATE TABLE IF NOT EXISTS custom_series (id TEXT PRIMARY KEY, name TEXT NOT NULL, name_norm TEXT NOT NULL, creator TEXT, publisher TEXT, label TEXT, created_at INTEGER NOT NULL);",
   "CREATE TABLE IF NOT EXISTS volume_series_link (isbn TEXT PRIMARY KEY, series_id TEXT NOT NULL, created_at INTEGER NOT NULL, from_series_id TEXT);",
-  "INSERT OR REPLACE INTO series (id, name, name_norm, name_kana, name_kana_norm, creator, publisher, label, num_items) " +
-    "SELECT id, name, name_norm, NULL, NULL, creator, publisher, label, NULL FROM custom_series;",
+  // is_adult は巻から取る（custom_series は持たない）。REPLACE で行を作り直すので、ここで付けないと
+  // R18版の独自シリーズが毎回「全年齢」になり、既定の検索（成年向けだけ）から消える。巻がまだ
+  // 当たっていない取り込み直後は 0 になるが、APPLY_MASTER_FIX_SQL の後の SERIES_ADULT_SQL が付け直す。
+  "INSERT OR REPLACE INTO series (id, name, name_norm, name_kana, name_kana_norm, creator, publisher, label, num_items, is_adult) " +
+    "SELECT id, name, name_norm, NULL, NULL, creator, publisher, label, NULL, " +
+    "COALESCE((SELECT MAX(v.is_adult) FROM volumes v WHERE v.series_id = custom_series.id), 0) FROM custom_series;",
   "UPDATE volumes SET series_id = (SELECT l.series_id FROM volume_series_link l WHERE l.isbn = volumes.isbn) " +
     "WHERE isbn IN (SELECT isbn FROM volume_series_link) " +
     "AND series_id IS (SELECT l.from_series_id FROM volume_series_link l WHERE l.isbn = volumes.isbn);",
@@ -107,7 +112,7 @@ const APPLY_LINKS_SQL = [
 // 揃っている前提なので COALESCE で混ぜない。INSERT OR REPLACE なので、上流に無い ISBN（取り違えで
 // 消えた側の巻）は新しい行として入る。列の並びは VOLUMES_COLS と揃える。
 // 紐付け（APPLY_LINKS_SQL）より後に当てる: シリーズも含めてここが最終の値。
-const APPLY_MASTER_FIX_SQL = [
+export const APPLY_MASTER_FIX_SQL = [
   "CREATE TABLE IF NOT EXISTS volume_master_fix (isbn TEXT PRIMARY KEY, series_id TEXT, volume_number TEXT, " +
     "vol_sort INTEGER, title TEXT NOT NULL, subtitle TEXT, title_search TEXT, creator TEXT, creators TEXT, " +
     "creators_norm TEXT, publisher TEXT, label TEXT, pubdate TEXT, is_adult INTEGER NOT NULL DEFAULT 0, " +
@@ -138,6 +143,8 @@ const SUGGEST_COLS =
 // series_suggest_new に作ってから RENAME で入れ替えるので、途中で失敗しても今の表は残る。
 // SWAP_SQL とは別に、swap が終わったあとに流す（24.5 万行の書き込みを swap と同じ命令に
 // 相乗りさせない。失敗しても swap 済みの series / volumes は巻き添えにならない）。
+export { SERIES_ADULT_SQL };
+
 export const SUGGEST_SQL = [
   "DROP TABLE IF EXISTS series_suggest_new;",
   `CREATE TABLE series_suggest_new (${SUGGEST_COLS}) WITHOUT ROWID;`,
@@ -192,6 +199,7 @@ const POST_LOAD_SQL = [
   PRUNE_SUPPLEMENT_SQL,
   ...APPLY_LINKS_SQL,
   ...APPLY_MASTER_FIX_SQL,
+  SERIES_ADULT_SQL,
 ];
 
 // Blue-green cutover. RENAMEs are instant metadata ops, so the window where the live
@@ -214,6 +222,9 @@ const SWAP_SQL = [
   "DROP TABLE series_old;",
   "DROP TABLE volumes_old;",
   "DROP TABLE adult_volumes_old;",
+  // 表がまだ無い DB（R18版の収録補完をしたことが無い本家など）でも通るように先に作る。
+  APPLY_MASTER_FIX_SQL[0],
+  CLEANUP_IMPORTED_FIX_SQL,
   ...POST_LOAD_SQL,
 ].join(" ");
 
@@ -411,14 +422,14 @@ function cid(node, prop) {
   return "";
 }
 
-function normTitle(s) {
+export function normTitle(s) {
   return s.replace(/[\s　]+/g, "").toLowerCase();
 }
 
 // Search-only key (series.name_search / volumes.title_search): normTitle plus NFKC
 // width folding and punctuation/symbols dropped, so 「ぼっちざろっく」 finds
 // 「ぼっち・ざ・ろっく！」. Keep in sync with src/util.ts searchKey.
-function searchKey(s) {
+export function searchKey(s) {
   return s.normalize("NFKC").toLowerCase().replace(/[\s\p{P}\p{S}]+/gu, "");
 }
 
@@ -628,7 +639,7 @@ const KANJI_VOLUME_RE =
 // Arc-prefixed label ("24億脱出編4", "第2部[9]") → arc × 1000 + volume. See src/util.ts.
 const ARC_VOLUME_RE =
   /^[^／/]*?(\d+)[\p{sc=Han}\p{sc=Hiragana}\p{sc=Katakana}](?<![巻集])[^／/]*?(\d+)\]?$/u;
-function volSort(raw) {
+export function volSort(raw) {
   const s = String(raw ?? "").trim();
   const arc = ARC_VOLUME_RE.exec(s);
   if (arc) return parseInt(arc[1], 10) * 1000 + parseInt(arc[2], 10);

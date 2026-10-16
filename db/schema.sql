@@ -580,6 +580,9 @@ CREATE INDEX IF NOT EXISTS idx_volume_series_link_series ON volume_series_link (
 -- 注意:
 --   ・成年向けの巻は入れない。本家の DB には成年向けの行が 1 行も無い前提（ingest が
 --     adult_volumes へ落とす）で、この表は本家にもそのまま載せ直すため。
+--     例外は R18版の D1（本家とは別の DB）: 収録補完（scripts/import-extra-volumes.mjs）が MADB に無い
+--     成年コミックを is_adult = 1・note「r18-bookdb:…」で入れる。上流が同じ ISBN を持ったら全件の
+--     取り込み直しが外す（scripts/extra-volumes-sql.mjs CLEANUP_IMPORTED_FIX_SQL）。
 --   ・行は消さない方向の仕組み。巻を消す/隠すのは volume_hidden。
 --   ・volume_series_link より後に当てる（シリーズの紐付けも含めてここが最終の値）。
 --   ・DEV_RESET_TABLES（src/admin.ts の開発用リセット）には入れない。volume_series_link と同じく

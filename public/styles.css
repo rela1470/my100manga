@@ -603,8 +603,7 @@ button:disabled { opacity: .45; cursor: not-allowed; transform: none; box-shadow
 .shelf-cover-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; margin: 0 0 14px; }
 .shelf-cover-actions .cover-status { margin: 0; }
 /* 本棚の下（全削除の上）に置く。前後の行（.diff-bar / .clear-bar）と同じく中央に寄せる。 */
-.shelf-fill { display: flex; flex-wrap: wrap; justify-content: center; align-items: center; gap: 6px 12px; margin: 24px 0 0; }
-.shelf-fill .hint { margin: 0; text-align: center; }
+.shelf-fill { display: flex; justify-content: center; margin: 24px 0 0; }
 /* おまかせで埋めるモーダル（#fillModal）。シリーズごとに名前・巻数と、先頭の巻の表紙を横に並べる。 */
 .fill-list { display: flex; flex-direction: column; gap: 14px; margin: 4px 0 8px; }
 .fill-list.busy { opacity: .45; pointer-events: none; }

@@ -2271,6 +2271,16 @@ function coverStatusText(left) {
   return text;
 }
 
+// 取得し終えたあとに残す一文。表紙の見つからなかった巻があれば、取得が止まったのではなく
+// 「探したが無かった」と分かるようにする（R18版は DLsite に無い巻が多く、黙って消えると
+// 取れなかったのか終わったのか分からない）。全部見つかったときは何も出さない（""）。
+function coverMissText(missed, total) {
+  if (!missed) return "";
+  return missed === total
+    ? "表紙が見つかりませんでした。"
+    : `${missed}件は表紙が見つかりませんでした。`;
+}
+
 function firstCoverFrom(isbns, map) {
   for (const i of isbns || []) if (map[i]) return map[i];
   return "";
@@ -2342,6 +2352,7 @@ function mountCoverFetch(barEl, entries) {
     paint();
     let todo = entries.slice();
     let stalls = 0;
+    let missed = 0;
     for (let round = 0; round < COVER_RETRY_CAP && todo.length; round++) {
       if (round > 0) await new Promise((r) => setTimeout(r, coverRoundPauseMs(stalls)));
       const next = [];
@@ -2357,6 +2368,7 @@ function mountCoverFetch(barEl, entries) {
             done++;
           } else if (e.isbns.every((x) => x in map)) {
             done++; // determined "no cover" — final, don't retry
+            missed++;
           } else {
             next.push(e); // undetermined (budget-skipped) — retry next round
           }
@@ -2375,7 +2387,9 @@ function mountCoverFetch(barEl, entries) {
       btn.style.display = "";
       status.textContent = "混み合っています。少し待ってからもう一度お試しください。";
     } else {
-      status.style.display = "none";
+      const miss = coverMissText(missed, total);
+      status.textContent = miss;
+      status.style.display = miss ? "" : "none";
     }
   });
 }
@@ -4696,6 +4710,7 @@ async function fetchMissingCovers() {
   // coverTried に入れず残すので、進捗ゼロのラウンドが続いたら打ち切る（後で再クリック可能）。
   let todo = targets.slice();
   let stalls = 0;
+  let missed = 0;
   for (let round = 0; round < COVER_RETRY_CAP && todo.length; round++) {
     if (round > 0) await new Promise((r) => setTimeout(r, coverRoundPauseMs(stalls)));
     const next = [];
@@ -4713,6 +4728,7 @@ async function fetchMissingCovers() {
         } else if (it.isbn in map) {
           state.coverTried.add(it.isbn); // 確定「表紙なし」— 再試行しない
           done++;
+          missed++;
         } else {
           next.push(it); // 予算超過で未確定 — 次ラウンドで再試行（coverTried には入れない）
         }
@@ -4730,6 +4746,14 @@ async function fetchMissingCovers() {
   }
   leaveCoverQueue();
   state.fetchingCovers = false;
+  if (statusEl) {
+    // 止まったときは押し直せば続きから（coverTried に入れていない）。終わったときは見つからなかった数。
+    const msg = todo.length
+      ? `混み合っています。少し待ってから「表紙を取得」をもう一度押してください（残り${todo.length}件）。`
+      : coverMissText(missed, total);
+    statusEl.textContent = msg;
+    statusEl.style.display = msg ? "" : "none";
+  }
   render();
 }
 

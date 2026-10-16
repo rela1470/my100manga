@@ -447,8 +447,14 @@ async function withGroupCorrections(env: Env, g: UnlinkedGroup): Promise<GroupVo
       correction: true,
     });
   }
+  // 非表示は ISBN 単位（getSeriesVolumes と同じ）。巻は全ての ISBN が隠れたときだけ消す。
   return volumes
-    .filter((v) => !v.isbns.some((i) => hidden.has(i)))
+    .flatMap((v) => {
+      if (!hidden.size) return [v];
+      const isbns = v.isbns.filter((i) => !hidden.has(i));
+      if (!isbns.length) return [];
+      return [{ ...v, isbn: isbns.includes(v.isbn) ? v.isbn : isbns[0], isbns }];
+    })
     .sort((a, b) => a.vol_sort - b.vol_sort || a.pubdate.localeCompare(b.pubdate) || a.isbn.localeCompare(b.isbn));
 }
 

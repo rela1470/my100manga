@@ -191,10 +191,24 @@ export async function getSeriesVolumes(
     if (g) g.isbns.push(v.isbn);
     else list.push({ rep: v, isbns: [v.isbn], subtitle: sub, titleKey, work });
   };
-  for (const v of res.results ?? []) addToGroup(v);
+  // 管理者が「確定」した巻は volume_hidden に載る。source を問わず全閲覧者から除外する
+  // （マスター/補完は元データを消せないので、ここでのフィルタが唯一の全体非表示手段）。
+  // 非表示は ISBN 単位: 同じ巻番号にまとめた別の ISBN（通常版と新装版など）は残す。巻ごと
+  // 消すと、新装版だけを隠したつもりが元の版の巻まで消え、手動追加で足し直しても（マスタに
+  // ある ISBN なので）出てこない（C340152 魔法使いの嫁 10・15・19 巻）。代表の行（巻の
+  // レーベル・発売日）が隠した ISBN にならないよう、まとめる前に外す。
+  const hiddenRows = await env.DB.prepare(
+    `SELECT isbn FROM volume_hidden WHERE series_id IN (${inMembers})`
+  )
+    .bind(...members)
+    .all<{ isbn: string }>();
+  const hiddenIsbns = new Set((hiddenRows.results ?? []).map((r) => r.isbn));
+  const visible = (v: VolumeRow) => !hiddenIsbns.has(v.isbn);
+
+  for (const v of (res.results ?? []).filter(visible)) addToGroup(v);
 
   // シリーズ ID を失った迷子巻（series_id NULL）を寄せる。規則は unlinkedVolumesOf を参照。
-  for (const v of await unlinkedVolumesOf(env, members, res.results ?? [])) addToGroup(v);
+  for (const v of (await unlinkedVolumesOf(env, members, res.results ?? [])).filter(visible)) addToGroup(v);
 
   interface Entry {
     isbn: string;
@@ -391,16 +405,14 @@ export async function getSeriesVolumes(
     });
   }
 
-  // 管理者が「確定」した巻は volume_hidden に載る。source を問わず全閲覧者から除外する
-  // （マスター/補完は元データを消せないので、ここでのフィルタが唯一の全体非表示手段）。
-  const hiddenRows = await env.DB.prepare(
-    `SELECT isbn FROM volume_hidden WHERE series_id IN (${inMembers})`
-  )
-    .bind(...members)
-    .all<{ isbn: string }>();
-  const hiddenIsbns = new Set((hiddenRows.results ?? []).map((r) => r.isbn));
+  // 補完・穴埋めの巻にも非表示を効かせる（マスタの行はまとめる前に外してある）。ここも
+  // ISBN 単位で、巻は全ての ISBN が隠れたときだけ消す。
   const shown = hiddenIsbns.size
-    ? entries.filter((e) => !e.isbns.some((i) => hiddenIsbns.has(i)))
+    ? entries.flatMap((e) => {
+        const isbns = e.isbns.filter((i) => !hiddenIsbns.has(i));
+        if (!isbns.length) return [];
+        return [{ ...e, isbn: isbns.includes(e.isbn) ? e.isbn : isbns[0], isbns }];
+      })
     : entries;
 
   shown.sort(

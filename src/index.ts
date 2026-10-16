@@ -1227,8 +1227,12 @@ async function resolveCoversApi(request: Request, env: Env): Promise<Response> {
   // A finished fill sends no ISBNs and pending 0 to leave the count right away.
   if (isbns.length === 0) return json(queue ? { covers: {}, queue } : { covers: {} }, 200, { "cache-control": "no-store" });
   const map = body.cache_only === true ? await readCachedCovers(env, isbns) : await resolveCovers(env, isbns);
+  // 「表紙なし」で確定した巻も "" で返す。ブラウザの取得ループ（public/app.js mountCoverFetch・
+  // 本棚の表紙取得）は「応答に入っている ISBN ＝ 確定」で数えるので、"" を落とすと確定した巻を
+  // 未確定と見なして取り直し続け、5 回で「混み合っています」で止まる（表紙なしの多い R18版で常に起きた）。
+  // 応答に入らない ISBN は、予算切れ・枠が取れなかった未確定のものだけ。
   const covers: Record<string, string> = {};
-  for (const [isbn, url] of map) if (url) covers[isbn] = url;
+  for (const [isbn, url] of map) covers[isbn] = url;
   return json(queue ? { covers, queue } : { covers }, 200, { "cache-control": "no-store" });
 }
 

@@ -141,14 +141,18 @@ async function cachedGet(env: Env, url: string, priority: Priority, maxWaitMs?: 
   } catch {
     // キャッシュの障害は素通り（取りに行く）。
   }
-  if (!(await awaitSlot(env, "dlsite", priority, maxWaitMs))) return null;
+  if (!(await awaitSlot(env, "dlsite", priority, maxWaitMs))) {
+    console.log(`dlsite: no slot (wait cap ${maxWaitMs ?? "-"}ms) ${url}`);
+    return null;
+  }
   let res: Response;
   try {
     res = await fetch(url, {
       headers: { "user-agent": UA, cookie: "adultchecked=1" },
       signal: AbortSignal.timeout(API_TIMEOUT_MS),
     });
-  } catch {
+  } catch (e) {
+    console.log(`dlsite: fetch failed ${String(e)} ${url}`);
     return null;
   }
   // llms.txt: 400/401/403/404 は再試行しない。404（検索語が URL として不正など）は「無い」で確定、
@@ -158,7 +162,9 @@ async function cachedGet(env: Env, url: string, priority: Priority, maxWaitMs?: 
     return "";
   }
   if (!res.ok) {
-    await res.body?.cancel().catch(() => {});
+    // 締め出し（403）・混雑（429/5xx）を見分けられるよう、本文の頭も残す。
+    const head = (await res.text().catch(() => "")).slice(0, 120).replace(/\s+/g, " ");
+    console.log(`dlsite: HTTP ${res.status} ${url} ${head}`);
     return null;
   }
   const text = await res.text().catch(() => null);

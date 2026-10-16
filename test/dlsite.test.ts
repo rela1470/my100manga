@@ -104,3 +104,26 @@ describe("DLsite の表紙はシェア画像に載せない", () => {
     expect(coverSource(url)).toBeNull();
   });
 });
+
+describe("POST /api/covers", () => {
+  it("「表紙なし」で確定した巻も空文字で返す（取得ループが確定と数えられるように）", async () => {
+    const { SELF } = await import("cloudflare:test");
+    const { BROWSER_UA } = await import("./helpers");
+    await env.DB.batch([
+      env.DB.prepare(`INSERT OR REPLACE INTO covers (isbn, cover_url, checked_at) VALUES (?, '', 1)`).bind("9784000000031"),
+      env.DB.prepare(`INSERT OR REPLACE INTO covers (isbn, cover_url, checked_at) VALUES (?, ?, 1)`).bind(
+        "9784000000048",
+        "https://img.dlsite.jp/modpub/images2/work/books/BJ012000/BJ01234567_img_main.jpg",
+      ),
+    ]);
+    const res = await SELF.fetch("https://example.com/api/covers", {
+      method: "POST",
+      headers: { "content-type": "application/json", "user-agent": BROWSER_UA },
+      body: JSON.stringify({ isbns: ["9784000000031", "9784000000048"] }),
+    });
+    expect(res.status).toBe(200);
+    const data = (await res.json()) as { covers: Record<string, string> };
+    expect(data.covers["9784000000031"]).toBe("");
+    expect(data.covers["9784000000048"]).toContain("img.dlsite.jp");
+  });
+});

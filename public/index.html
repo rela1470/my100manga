@@ -127,12 +127,6 @@
       <p class="cover-status" id="coverStatus" style="display:none"></p>
     </div>
 
-    <!-- 残りの枠のおまかせ埋め（app.js randomFill）。100作品に満たないときだけ出す。 -->
-    <div class="shelf-fill" id="fillBar" style="display:none">
-      <button id="randomFill">残りをおまかせで埋める</button>
-      <p class="hint">1巻から最終巻までそろったシリーズを、残りがちょうど埋まるようにランダムに選びます。</p>
-    </div>
-
     <div class="shelf">
       <div class="shelf-tone" aria-hidden="true"></div>
       <div class="grid" id="grid" aria-label="100作品グリッド"></div>
@@ -142,6 +136,13 @@
     <div class="diff-bar" id="diffBar" style="display:none">
       <span class="diff-count" id="diffCount"></span>
       <button id="revertPublished" class="ghost">公開状態にもどす</button>
+    </div>
+
+    <!-- 残りの枠のおまかせ埋め（app.js randomFill）。100作品に満たないときだけ出す。
+         選ぶ作業の本筋ではない補助なので、本棚の上ではなく下（全削除の上）に置く。 -->
+    <div class="shelf-fill" id="fillBar" style="display:none">
+      <button id="randomFill">残りをおまかせで埋める</button>
+      <p class="hint">1巻から最終巻までそろったシリーズを、残りがちょうど埋まるようにランダムに選びます。</p>
     </div>
 
     <div class="clear-bar">

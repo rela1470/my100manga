@@ -151,3 +151,29 @@ export function applySql(note, ids, { APPLY_LINKS_SQL, SERIES_ADULT_SQL }) {
   if (ids) out.push(`-- この投入の独自シリーズ: ${ids[0]} 〜 ${ids[1]}`);
   return out;
 }
+
+/** 成年向けとして入れたが、実は一般向けだった巻（r18-bookdb の export-missing.mjs --non-adult）を
+ *  全年齢に直す文。この仕組みで入れた差し替え行だけを直す（管理者が手で直した行・上流の行は触らない）。
+ *  シリーズは成年向けの巻が残っていなければ全年齢に戻す（独自シリーズの番号帯だけ）。
+ *  巻の行は月次の取り込み直しで volume_master_fix から当て直されるので、そちらも直す。 */
+export function unadultSql(isbns) {
+  const out = [];
+  const imported = `SELECT isbn FROM volume_master_fix WHERE note LIKE '${IMPORTED_FIX_NOTE_PREFIX}%' AND prev_json IS NULL`;
+  for (let i = 0; i < isbns.length; i += 400) {
+    const list = isbns
+      .slice(i, i + 400)
+      .filter((s) => /^97[89]\d{10}$/.test(s))
+      .map((s) => `'${s}'`)
+      .join(",");
+    if (!list) continue;
+    out.push(`UPDATE volumes SET is_adult = 0 WHERE is_adult = 1 AND isbn IN (${list}) AND isbn IN (${imported});`);
+    out.push(
+      `UPDATE volume_master_fix SET is_adult = 0 WHERE is_adult = 1 AND note LIKE '${IMPORTED_FIX_NOTE_PREFIX}%' AND prev_json IS NULL AND isbn IN (${list});`
+    );
+  }
+  out.push(
+    `UPDATE series SET is_adult = 0 WHERE is_adult = 1 AND id >= 'U${IMPORT_ID_FLOOR}' AND id GLOB 'U[0-9]*' ` +
+      "AND id NOT IN (SELECT series_id FROM volumes WHERE is_adult = 1 AND series_id IS NOT NULL);"
+  );
+  return out;
+}

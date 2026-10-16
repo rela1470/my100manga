@@ -8,6 +8,9 @@
 //       公開リポに載せないため）
 //   npx wrangler d1 execute DB --env r18dev --remote --file backups/extra-volumes-r18dev-<日時>.sql
 //
+// 成年向けとして入れたが一般向けだった巻を全年齢に直す SQL（ISBN を 1 行ずつ並べたファイル）:
+//   node scripts/import-extra-volumes.mjs --env r18dev --unadult ../r18-bookdb/data/non-adult.txt
+//
 // リモートは読むだけ（今の独自シリーズの最大 ID と、入力の ISBN のうち既に volumes /
 // volume_master_fix にあるもの）。R18版（--env r18 / r18dev）だけ。本家に成年向けの巻は入れない。
 
@@ -15,7 +18,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { execFileSync } from "node:child_process";
 import { APPLY_LINKS_SQL, SERIES_ADULT_SQL, SUGGEST_SQL, normTitle, searchKey, volSort } from "./ingest.mjs";
-import { IMPORT_ID_FLOOR, IMPORTED_FIX_NOTE_PREFIX, applySql, buildImportSql } from "./extra-volumes-sql.mjs";
+import { IMPORT_ID_FLOOR, IMPORTED_FIX_NOTE_PREFIX, applySql, buildImportSql, unadultSql } from "./extra-volumes-sql.mjs";
 
 const args = process.argv.slice(2);
 const opt = (k) => {
@@ -24,9 +27,27 @@ const opt = (k) => {
 };
 const env = opt("--env");
 const file = opt("--file");
-if (!["r18", "r18dev"].includes(env) || !file) {
-  console.error("Usage: node scripts/import-extra-volumes.mjs --env r18dev|r18 --file missing.json [--out path.sql]");
+const unadult = opt("--unadult");
+if (!["r18", "r18dev"].includes(env) || !(file || unadult)) {
+  console.error("Usage: node scripts/import-extra-volumes.mjs --env r18dev|r18 (--file missing.json | --unadult isbns.txt) [--out path.sql]");
   process.exit(1);
+}
+
+if (unadult) {
+  const isbns = [...new Set(fs.readFileSync(unadult, "utf8").split(/\s+/).filter((s) => /^97[89]\d{10}$/.test(s)))];
+  const stamp = new Date().toISOString().replace(/[-:]/g, "").slice(0, 13);
+  const out = opt("--out") ?? path.join("backups", `extra-volumes-unadult-${env}-${stamp}.sql`);
+  const lines = [
+    `-- R18版の収録補完の直し: 一般向けだった ${isbns.length} 巻を全年齢に（scripts/import-extra-volumes.mjs --unadult）`,
+    ...unadultSql(isbns),
+    "-- 入力補完の索引を作り直す",
+    ...SUGGEST_SQL,
+  ];
+  fs.mkdirSync(path.dirname(out), { recursive: true });
+  fs.writeFileSync(out, lines.join("\n") + "\n");
+  console.error(`書き出し: ${out}（${isbns.length} 巻）`);
+  console.error(`流すには（全セッションに予告してから）: npx wrangler d1 execute DB --env ${env} --remote --file ${out}`);
+  process.exit(0);
 }
 
 function d1(sql) {

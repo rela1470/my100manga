@@ -9,6 +9,7 @@ import {
   applySql,
   buildImportSql,
   creatorsNormOf,
+  unadultSql,
 } from "../scripts/extra-volumes-sql.mjs";
 import { APPLY_LINKS_SQL, nextCustomSeriesId } from "../src/groups";
 import { creatorsNormOf as creatorsNormOfSrc } from "../src/masterFix";
@@ -126,6 +127,51 @@ describe("buildImportSql / applySql", () => {
       .bind(A1, A2, B1)
       .all();
     expect(left.results.map((r) => r.isbn)).toEqual(["9784000000994", A2, B1].sort());
+  });
+});
+
+describe("unadultSql", () => {
+  const NOTE2 = `${IMPORTED_FIX_NOTE_PREFIX}unadult.json 20261017T0000`;
+  const G1 = "9784862520579"; // 一般向け（芸能グルメストーカー）
+  const A3 = "9784862520630"; // 成年向け（蜜色幼夢淫）
+  const MANUAL = "9784000000987"; // 管理者が手で足した行（触らない）
+
+  beforeAll(async () => {
+    const built = buildImportSql(
+      {
+        items: [
+          { name: "芸能グルメストーカー", author: "泉昌之", label: "", publisher: "コアマガジン", volumes: [{ isbn: G1 }] },
+          { name: "蜜色幼夢淫", author: "智沢渚優", label: "ホットミルクC", publisher: "コアマガジン", volumes: [{ isbn: A3 }] },
+        ],
+      },
+      { nextId: 500101, existing: new Set(), note: NOTE2, now: 1, normTitle, searchKey, volSort }
+    );
+    await run(built.sql);
+    await run(applySql(NOTE2, built.ids, { APPLY_LINKS_SQL, SERIES_ADULT_SQL }));
+    await env.DB.batch([
+      env.DB.prepare(
+        `INSERT OR REPLACE INTO volume_master_fix (isbn, series_id, title, is_adult, note, created_at, prev_json) VALUES (?, NULL, '手', 1, 'openBD', 1, NULL)`
+      ).bind(MANUAL),
+      env.DB.prepare(`INSERT OR REPLACE INTO volumes (isbn, series_id, title, is_adult) VALUES (?, NULL, '手', 1)`).bind(MANUAL),
+    ]);
+    await run(unadultSql([G1, MANUAL, "bad"]));
+  });
+
+  it("この仕組みで入れた巻とシリーズだけ全年齢に戻し、成年向けの巻は残す", async () => {
+    const q = (sql: string, ...b: string[]) => env.DB.prepare(sql).bind(...b).first();
+    expect(await q(`SELECT is_adult FROM volumes WHERE isbn = ?`, G1)).toEqual({ is_adult: 0 });
+    expect(await q(`SELECT is_adult FROM volume_master_fix WHERE isbn = ?`, G1)).toEqual({ is_adult: 0 });
+    expect(await q(`SELECT is_adult FROM series WHERE id = 'U500101'`)).toEqual({ is_adult: 0 });
+    expect(await q(`SELECT is_adult FROM series WHERE id = 'U500102'`)).toEqual({ is_adult: 1 });
+    expect(await q(`SELECT is_adult FROM volumes WHERE isbn = ?`, MANUAL)).toEqual({ is_adult: 1 });
+    expect(await q(`SELECT is_adult FROM volume_master_fix WHERE isbn = ?`, MANUAL)).toEqual({ is_adult: 1 });
+  });
+
+  it("月次の取り込み直しの後も全年齢のまま", async () => {
+    await env.DB.prepare(`DELETE FROM series WHERE id GLOB 'U*'`).run();
+    await run([...APPLY_LINKS_SQL, APPLY_MASTER_FIX_SQL, SERIES_ADULT_SQL]);
+    expect(await env.DB.prepare(`SELECT is_adult FROM series WHERE id = 'U500101'`).first()).toEqual({ is_adult: 0 });
+    expect(await env.DB.prepare(`SELECT is_adult FROM series WHERE id = 'U500102'`).first()).toEqual({ is_adult: 1 });
   });
 });
 

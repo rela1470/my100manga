@@ -2,7 +2,7 @@ import { env } from "cloudflare:workers";
 import { beforeAll, describe, expect, it } from "vitest";
 import type { Env } from "../src/types";
 // @ts-expect-error -- 型定義の無い .mjs（scripts/import-extra-volumes.mjs の部品）
-import { CLEANUP_IMPORTED_FIX_SQL, IMPORT_ID_FLOOR, IMPORTED_FIX_NOTE_PREFIX, SERIES_ADULT_SQL, applySql, buildImportSql, creatorsNormOf, unadultSql } from "../scripts/extra-volumes-sql.mjs";
+import { CLEANUP_IMPORTED_FIX_SQL, IMPORT_ID_FLOOR, IMPORTED_FIX_NOTE_PREFIX, SERIES_ADULT_SQL, applySql, buildImportSql, creatorsNormOf, bumpViewEpochSql, unadultSql } from "../scripts/extra-volumes-sql.mjs";
 import { APPLY_LINKS_SQL, nextCustomSeriesId } from "../src/groups";
 import { creatorsNormOf as creatorsNormOfSrc } from "../src/masterFix";
 import { normTitle, searchKey, volSort } from "../src/util";
@@ -164,6 +164,14 @@ describe("unadultSql", () => {
     await run([...APPLY_LINKS_SQL, APPLY_MASTER_FIX_SQL, SERIES_ADULT_SQL]);
     expect(await env.DB.prepare(`SELECT is_adult FROM series WHERE id = 'U500101'`).first()).toEqual({ is_adult: 0 });
     expect(await env.DB.prepare(`SELECT is_adult FROM series WHERE id = 'U500102'`).first()).toEqual({ is_adult: 1 });
+  });
+});
+
+describe("bumpViewEpochSql", () => {
+  it("表示データの世代（meta.view_epoch）を書き換える（無ければ作る）", async () => {
+    await env.DB.prepare(bumpViewEpochSql(111)).run();
+    await env.DB.prepare(bumpViewEpochSql(222)).run();
+    expect(await env.DB.prepare(`SELECT value FROM meta WHERE key = 'view_epoch'`).first()).toEqual({ value: "222" });
   });
 });
 

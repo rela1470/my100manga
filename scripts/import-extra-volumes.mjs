@@ -18,7 +18,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { execFileSync } from "node:child_process";
 import { APPLY_LINKS_SQL, SERIES_ADULT_SQL, SUGGEST_SQL, normTitle, searchKey, volSort } from "./ingest.mjs";
-import { IMPORT_ID_FLOOR, IMPORTED_FIX_NOTE_PREFIX, applySql, buildImportSql, unadultSql } from "./extra-volumes-sql.mjs";
+import { IMPORT_ID_FLOOR, IMPORTED_FIX_NOTE_PREFIX, applySql, buildImportSql, bumpViewEpochSql, unadultSql } from "./extra-volumes-sql.mjs";
 
 const args = process.argv.slice(2);
 const opt = (k) => {
@@ -42,6 +42,8 @@ if (unadult) {
     ...unadultSql(isbns),
     "-- 入力補完の索引を作り直す",
     ...SUGGEST_SQL,
+    "-- 表示データの世代を進める（キャッシュされた検索結果を捨てる）",
+    bumpViewEpochSql(Date.now()),
   ];
   fs.mkdirSync(path.dirname(out), { recursive: true });
   fs.writeFileSync(out, lines.join("\n") + "\n");
@@ -96,6 +98,8 @@ const lines = [
   ...applySql(note, built.ids, { APPLY_LINKS_SQL, SERIES_ADULT_SQL }),
   "-- 入力補完の索引を作り直す（新しいシリーズが補完に出るように）",
   ...SUGGEST_SQL,
+  "-- 表示データの世代を進める（キャッシュされた検索結果を捨てる）",
+  bumpViewEpochSql(now),
 ];
 const out = opt("--out") ?? path.join("backups", `extra-volumes-${env}-${stamp}.sql`);
 fs.mkdirSync(path.dirname(out), { recursive: true });

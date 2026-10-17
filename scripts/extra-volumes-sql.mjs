@@ -177,3 +177,11 @@ export function unadultSql(isbns) {
   );
   return out;
 }
+
+/** 表示データの世代（src/viewSnapshot.ts の meta.view_epoch）を進める文。検索・おまかせ埋めの応答は
+ *  世代を鍵に混ぜて最大 1 時間エッジキャッシュされる（src/search.ts SEARCH_CACHE_SEC）。管理画面の更新は
+ *  API が世代を上げるが、この SQL は D1 に直接書くので、流した後も古い検索結果が残ってしまう。
+ *  値は bumpViewEpoch と同じ形（epoch ms の文字列）。 */
+export function bumpViewEpochSql(now) {
+  return `INSERT INTO meta (key, value) VALUES ('view_epoch', '${Number(now)}') ON CONFLICT(key) DO UPDATE SET value = excluded.value;`;
+}

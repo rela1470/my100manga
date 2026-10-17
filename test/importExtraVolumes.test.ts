@@ -1,16 +1,8 @@
 import { env } from "cloudflare:workers";
 import { beforeAll, describe, expect, it } from "vitest";
 import type { Env } from "../src/types";
-import {
-  CLEANUP_IMPORTED_FIX_SQL,
-  IMPORT_ID_FLOOR,
-  IMPORTED_FIX_NOTE_PREFIX,
-  SERIES_ADULT_SQL,
-  applySql,
-  buildImportSql,
-  creatorsNormOf,
-  unadultSql,
-} from "../scripts/extra-volumes-sql.mjs";
+// @ts-expect-error -- 型定義の無い .mjs（scripts/import-extra-volumes.mjs の部品）
+import { CLEANUP_IMPORTED_FIX_SQL, IMPORT_ID_FLOOR, IMPORTED_FIX_NOTE_PREFIX, SERIES_ADULT_SQL, applySql, buildImportSql, creatorsNormOf, unadultSql } from "../scripts/extra-volumes-sql.mjs";
 import { APPLY_LINKS_SQL, nextCustomSeriesId } from "../src/groups";
 import { creatorsNormOf as creatorsNormOfSrc } from "../src/masterFix";
 import { normTitle, searchKey, volSort } from "../src/util";

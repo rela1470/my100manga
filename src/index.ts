@@ -123,6 +123,7 @@ import {
   requestSeriesRegister,
 } from "./seriesRegister";
 import { handleSiteFile } from "./robots";
+import { renderSeriesPage, SERIES_PAGE_RE } from "./seriesPage";
 import { ageGate } from "./ageGate";
 import { fetchSiteAsset, isAdultAssetPath } from "./siteAssets";
 import { handleSiteStats } from "./siteStats";
@@ -342,7 +343,7 @@ const worker = {
       // robots.txt / sitemap.xml はドメインを含むので、静的ファイルではなく配信時のオリジンから
       // 組む（本家と R18版で同じコードを使うため。src/robots.ts）。
       {
-        const siteFile = handleSiteFile(path, request.method, url.origin, env);
+        const siteFile = await handleSiteFile(path, request.method, url.origin, env);
         if (siteFile) return siteFile;
       }
       // --- API ---
@@ -1001,6 +1002,12 @@ const worker = {
       const adminReportMatch = path.match(/^\/api\/admin\/reports\/([0-9]+)$/);
       if (adminReportMatch && request.method === "DELETE") {
         return await adminDismissReport(env, Number(adminReportMatch[1]));
+      }
+
+      // --- シリーズの個別ページ（「〇〇は全何巻？」を検索・AI に拾わせる。src/seriesPage.ts）---
+      const seriesPageMatch = path.match(SERIES_PAGE_RE);
+      if (seriesPageMatch && request.method === "GET") {
+        return await renderSeriesPage(env, seriesPageMatch[1], url.origin);
       }
 
       // --- Public view page with OGP meta ---

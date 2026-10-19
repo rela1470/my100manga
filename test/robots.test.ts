@@ -17,8 +17,8 @@ describe("robots.txt / sitemap.xml", () => {
     expect(body).not.toContain("my100manga.com");
   });
 
-  it("sitemap.xml は公開ページをリクエストのオリジンで並べる", async () => {
-    const res = await SELF.fetch("https://example.com/sitemap.xml");
+  it("sitemap-pages.xml は公開ページをリクエストのオリジンで並べる（sitemap.xml はその索引）", async () => {
+    const res = await SELF.fetch("https://example.com/sitemap-pages.xml");
     expect(res.status).toBe(200);
     expect(res.headers.get("content-type")).toContain("xml");
     const body = await res.text();
@@ -30,7 +30,7 @@ describe("robots.txt / sitemap.xml", () => {
   it("別のホストで引けばそのホストで返る（R18版は別ドメインの同じコード）", async () => {
     const [robots, sitemap] = await Promise.all([
       SELF.fetch("https://r18.example.com/robots.txt").then((r) => r.text()),
-      SELF.fetch("https://r18.example.com/sitemap.xml").then((r) => r.text()),
+      SELF.fetch("https://r18.example.com/sitemap-pages.xml").then((r) => r.text()),
     ]);
     expect(robots).toContain("Sitemap: https://r18.example.com/sitemap.xml");
     expect(sitemap).toContain("<loc>https://r18.example.com/</loc>");

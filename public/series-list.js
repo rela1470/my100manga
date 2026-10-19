@@ -3,7 +3,8 @@
 // src/seriesStats.ts）で、cron が巻数の多いシリーズから順に数えて埋める（src/seriesList.ts）。
 //
 // 表紙を押すとページに残ったまま巻一覧（series-volumes.js）を開き、そこから自分の100に足せる。
-// Ctrl/⌘ クリック等は通常のリンク（トップでシリーズを開く）。
+// Ctrl/⌘ クリック等は通常のリンク（シリーズの個別ページ /s/<id>、src/seriesPage.ts）。
+// リンク先を個別ページにしているのは、検索エンジンがこの一覧から個別ページをたどれるように。
 
 const $ = (id) => document.getElementById(id);
 let next = null;
@@ -11,6 +12,11 @@ let shown = 0;
 let loading = false;
 
 function seriesHref(e) {
+  return `/s/${encodeURIComponent(e.series_id)}`;
+}
+
+// 巻一覧の「トップで開く」の遷移先（エディタでシリーズを開く）。
+function editorHref(e) {
   return `/?series=${encodeURIComponent(e.series_id)}&st=${encodeURIComponent(e.title)}`;
 }
 
@@ -52,7 +58,7 @@ function render(entries) {
       if (ev.metaKey || ev.ctrlKey || ev.shiftKey || ev.button !== 0) return;
       if (!window.openSeriesVolumes) return;
       ev.preventDefault();
-      window.openSeriesVolumes(e.series_id, name, { editHref: slot.href });
+      window.openSeriesVolumes(e.series_id, name, { editHref: editorHref(e) });
     });
 
     const num = document.createElement("span");

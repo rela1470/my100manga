@@ -1,0 +1,42 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <!-- シリーズの個別ページ（/s/<id>）のテンプレート。src/seriesPage.ts が <title>・description・
+       canonical・OGP・構造化データ（JSON-LD）を SERIES_HEAD に、本文を SERIES_BODY に差し込む。 -->
+  <!--SERIES_HEAD-->
+  <link rel="icon" href="/favicon.ico" sizes="32x32">
+  <link rel="icon" href="/favicon.svg" type="image/svg+xml">
+  <link rel="apple-touch-icon" href="/apple-touch-icon.png">
+  <meta name="theme-color" content="#111111">
+  <!--ANALYTICS-->
+  <link rel="stylesheet" href="/styles.css">
+</head>
+<body>
+  <!--GTM_BODY-->
+  <header class="site">
+    <h1><a class="site-logo" href="/">My <span class="accent">100</span> Manga</a></h1>
+    <p class="tagline">シリーズの巻数と巻の一覧</p>
+    <!--HEADER_LINKS-->
+  </header>
+
+  <div class="wrap">
+    <!--SERIES_BODY-->
+  </div>
+
+  <!--FOOTER_AFF-->
+
+  <!--AFF_DATA-->
+  <script src="/ui-dialog.js"></script>
+  <script src="/api.js"></script>
+  <script src="/cover-fit.js"></script>
+  <script src="/cover-zoom.js"></script>
+  <script src="/author-link.js"></script>
+  <script src="/affiliate.js"></script>
+  <script src="/draft-add.js"></script>
+  <script src="/book-detail.js"></script>
+  <script src="/series-volumes.js"></script>
+  <script src="/series-page.js"></script>
+</body>
+</html>

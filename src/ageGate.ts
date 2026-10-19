@@ -46,7 +46,8 @@ function consentCookie(request: Request): string {
 function exempt(path: string): boolean {
   return (
     path === "/robots.txt" ||
-    path === "/sitemap.xml" ||
+    /^\/sitemap(-[a-z0-9-]+)?\.xml$/.test(path) ||
+    path === "/llms.txt" ||
     path === "/favicon.ico" ||
     path === "/favicon.svg" ||
     path === "/apple-touch-icon.png" ||

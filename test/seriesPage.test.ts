@@ -143,6 +143,19 @@ describe("GET /s/<id>", () => {
     expect(bunko).toContain(`<a href="/s/${ENDED}">おわったまんが（テストコミックス）</a>（3巻）`);
   });
 
+  it("シェアボタン: X は本文・URL・ハッシュタグを分けて、ほかは本文にまとめて渡す", async () => {
+    const html = await (await page(`/s/${ENDED}`)).text();
+    const x = /href="(https:\/\/twitter\.com\/intent\/tweet\?[^"]+)"/.exec(html);
+    expect(x).not.toBeNull();
+    const q = new URL(x![1].replace(/&amp;/g, "&")).searchParams;
+    expect(q.get("text")).toBe("『おわったまんが』は全3巻");
+    expect(q.get("url")).toBe(`https://example.com/s/${ENDED}`);
+    expect(q.get("hashtags")).toBe("my100manga");
+    const line = /href="https:\/\/line\.me\/R\/share\?text=([^"]+)"/.exec(html);
+    expect(decodeURIComponent(line![1])).toBe(`『おわったまんが』は全3巻 https://example.com/s/${ENDED} #my100manga`);
+    expect(html).toContain(`id="spCopy" data-url="https://example.com/s/${ENDED}"`);
+  });
+
   it("新刊が出ているシリーズは「既刊N巻」", async () => {
     const html = await (await page(`/s/${ONGOING}`)).text();
     expect(html).toContain("つづくまんがは全何巻？既刊2巻・最新刊は");

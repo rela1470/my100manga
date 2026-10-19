@@ -239,6 +239,8 @@ export interface PageParts {
 export interface PageContext {
   origin: string;
   siteName: string;
+  /** シェアの本文に付けるハッシュタグ（# 無し。src/site.ts hashtag）。 */
+  hashtag: string;
   label: string;
   publisher: string;
   siblings: PageSibling[];
@@ -396,6 +398,8 @@ export function buildSeriesPage(data: PageSeries, ctx: PageContext): PageParts {
 
       ${info.length ? `<dl class="sp-info">${info.map(([k, v]) => `<dt>${e(k)}</dt><dd>${e(v)}</dd>`).join("")}</dl>` : ""}
 
+      ${ans.count ? shareLinksHtml(`『${name}』は${ans.headline}`, pageUrl, ctx.hashtag) : ""}
+
       <div class="publish-bar">
         <button type="button" class="primary" id="spOpen"${ans.count ? "" : " hidden"}>巻を選んで自分の100に追加</button>
       </div>
@@ -425,6 +429,33 @@ export function buildSeriesPage(data: PageSeries, ctx: PageContext): PageParts {
     </div>`;
 
   return { head, body, indexable };
+}
+
+/** シェアボタン。JS 無しでも開けるよう、各 SNS の投稿画面へのリンクをサーバで組む（public/share-x.js
+ *  の intent と同じ形）。X だけは hashtags パラメータ、ほかは本文の末尾にハッシュタグを付ける。
+ *  「リンクをコピー」だけは public/series-page.js が動かす。 */
+export function shareLinksHtml(text: string, pageUrl: string, hashtag: string): string {
+  const enc = encodeURIComponent;
+  const tag = hashtag ? `#${hashtag}` : "";
+  const full = [text, pageUrl, tag].filter(Boolean).join(" ");
+  const x = new URLSearchParams({ text, url: pageUrl });
+  if (hashtag) x.set("hashtags", hashtag);
+  const links = [
+    // x.com/intent/post はスマホで X アプリに渡らない。アプリが拾うのは twitter.com/intent/tweet。
+    { label: "𝕏 でポスト", cls: "sns-x", href: `https://twitter.com/intent/tweet?${x}` },
+    { label: "Threads", cls: "sns-threads", href: `https://www.threads.com/intent/post?text=${enc(full)}` },
+    { label: "Bluesky", cls: "sns-bluesky", href: `https://bsky.app/intent/compose?text=${enc(full)}` },
+    { label: "LINE", cls: "sns-line", href: `https://line.me/R/share?text=${enc(full)}` },
+  ];
+  const e = escapeHtml;
+  return (
+    `<div class="sns-links sp-share" aria-label="このページをシェア">` +
+    links
+      .map((l) => `<a class="sns-link ${l.cls}" href="${e(l.href)}" target="_blank" rel="noopener noreferrer">${e(l.label)}</a>`)
+      .join("") +
+    `<button type="button" class="sp-copy" id="spCopy" data-url="${e(pageUrl)}" hidden>リンクをコピー</button>` +
+    `</div>`
+  );
 }
 
 function siblingName(s: PageSibling): string {
@@ -505,7 +536,7 @@ export async function renderSeriesPage(env: Env, id: string, origin: string): Pr
       }
       const { label, publisher, siblings } = await loadSiblingsAndLabel(env, id);
       const s = site(env);
-      const parts = buildSeriesPage(data, { origin, siteName: s.name, label, publisher, siblings, now: Date.now() });
+      const parts = buildSeriesPage(data, { origin, siteName: s.name, hashtag: s.hashtag, label, publisher, siblings, now: Date.now() });
 
       const template = await (await fetchSiteAsset(new Request(`${origin}/series-page.html`), env, "/series-page.html")).text();
       // テンプレートへの差し込み（バージョン印・サイト種別）はシリーズ名などを入れる前に済ませる。

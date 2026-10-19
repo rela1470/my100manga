@@ -19,6 +19,21 @@
   }
 
   document.getElementById("spOpen")?.addEventListener("click", open);
+
+  // 「リンクをコピー」。クリップボードが使えない環境（http・古いブラウザ）では出さない。
+  const copy = document.getElementById("spCopy");
+  if (copy && navigator.clipboard) {
+    copy.hidden = false;
+    copy.addEventListener("click", async () => {
+      try {
+        await navigator.clipboard.writeText(copy.dataset.url || location.href);
+        copy.textContent = "コピーしました";
+      } catch (e) {
+        copy.textContent = "コピーできませんでした";
+      }
+      setTimeout(() => (copy.textContent = "リンクをコピー"), 2000);
+    });
+  }
   for (const li of article.querySelectorAll(".sp-vol")) li.addEventListener("click", open);
 
   const missing = [...article.querySelectorAll(".sp-vol[data-cover-isbn]")];

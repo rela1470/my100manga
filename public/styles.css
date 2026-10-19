@@ -3078,3 +3078,10 @@ ol.sp-vols { list-style: none; padding: 0; margin: 0; }
 /* 作品を追加の巻一覧のシリーズ名（public/app.js renderVolumes）。シリーズの個別ページへのリンク。 */
 .search-subtitle a.st { color: inherit; text-decoration: underline; text-decoration-thickness: 1px; text-underline-offset: 3px; }
 .search-subtitle a.st:hover { color: var(--accent-2); }
+/* シリーズの個別ページのシェア（src/seriesPage.ts shareLinksHtml）。SNS のボタンは .sns-link を流用。 */
+.sp-share { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin: 12px 0 0; }
+.sp-share .sns-link, .sp-share .sp-copy {
+  padding: 7px 14px; border-radius: var(--radius-pill); font-size: 13px; line-height: 1.3; white-space: nowrap;
+}
+.sp-share .sp-copy { font-weight: 700; }
+.sp-share .sp-copy[hidden] { display: none; }

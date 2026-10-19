@@ -123,7 +123,7 @@ import {
   requestSeriesRegister,
 } from "./seriesRegister";
 import { handleSiteFile } from "./robots";
-import { renderSeriesPage, SERIES_PAGE_RE } from "./seriesPage";
+import { renderSeriesPage, renderVolumePage, SERIES_PAGE_RE, VOLUME_PAGE_RE } from "./seriesPage";
 import { ageGate } from "./ageGate";
 import { fetchSiteAsset, isAdultAssetPath } from "./siteAssets";
 import { handleSiteStats } from "./siteStats";
@@ -1008,6 +1008,11 @@ const worker = {
       const seriesPageMatch = path.match(SERIES_PAGE_RE);
       if (seriesPageMatch && request.method === "GET") {
         return await renderSeriesPage(env, seriesPageMatch[1], url.origin);
+      }
+      // 巻のページ（1 巻ずつのシェア用。canonical はシリーズのページ）。
+      const volumePageMatch = path.match(VOLUME_PAGE_RE);
+      if (volumePageMatch && request.method === "GET") {
+        return await renderVolumePage(env, volumePageMatch[1], url.origin);
       }
 
       // --- Public view page with OGP meta ---

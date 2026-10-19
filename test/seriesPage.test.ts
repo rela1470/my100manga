@@ -153,7 +153,7 @@ describe("GET /s/<id>", () => {
     expect(q.get("hashtags")).toBe("my100manga");
     const line = /href="https:\/\/line\.me\/R\/share\?text=([^"]+)"/.exec(html);
     expect(decodeURIComponent(line![1])).toBe(`『おわったまんが』は全3巻 https://example.com/s/${ENDED} #my100manga`);
-    expect(html).toContain(`id="spCopy" data-url="https://example.com/s/${ENDED}"`);
+    expect(html).toContain(`class="sp-copy" data-url="https://example.com/s/${ENDED}"`);
   });
 
   it("新刊が出ているシリーズは「既刊N巻」", async () => {
@@ -190,6 +190,49 @@ describe("GET /s/<id>", () => {
     expect(html).toContain("&lt;b&gt;&quot;あぶない&quot;&lt;/b&gt;");
     // JSON-LD の中でも </script> にならない
     expect(ldJson(html)["@graph"][0].name).toBe(`<b>"あぶない"</b>`);
+  });
+});
+
+describe("GET /b/<isbn>（巻のページ）", () => {
+  it("その巻を見出しにし、canonical はシリーズのページ、og:url と共有は巻のページ", async () => {
+    const res = await page(`/b/${ISBNS[1]}`);
+    expect(res.status).toBe(200);
+    const html = await res.text();
+    expect(html).toContain("<title>おわったまんが 第2巻（2015年2月発売） | My 100 Manga</title>");
+    expect(html).toContain(`<link rel="canonical" href="https://example.com/s/${ENDED}">`);
+    expect(html).toContain(`<meta property="og:url" content="https://example.com/b/${ISBNS[1]}">`);
+    expect(html).toContain(`<h1 class="sp-focus-title">第2巻</h1>`);
+    expect(html).toContain(`<h2 class="sp-q">『おわったまんが』は全何巻？</h2>`);
+    expect(html).not.toContain(`<meta name="robots" content="noindex">`);
+    const x = /href="(https:\/\/twitter\.com\/intent\/tweet\?[^"]+)"/.exec(html);
+    const q = new URL(x![1].replace(/&amp;/g, "&")).searchParams;
+    expect(q.get("text")).toBe("『おわったまんが』第2巻");
+    expect(q.get("url")).toBe(`https://example.com/b/${ISBNS[1]}`);
+    expect(html).toContain(`class="slot view sp-vol sp-vol-focus" data-isbn="${ISBNS[1]}"`);
+  });
+
+  it("シリーズのページの巻のタイルは巻のページへリンクする", async () => {
+    const html = await (await page(`/s/${ENDED}`)).text();
+    expect(html).toContain(`<a class="sp-vol-link" href="/b/${ISBNS[0]}">`);
+  });
+
+  it("ISBN-10・ハイフン付きは ISBN13 の URL へ 301", async () => {
+    const isbn10 = ISBNS[1].slice(3, 12) + "0"; // チェックディジットは toIsbn13 が付け直す
+    const res = await page(`/b/${isbn10}`);
+    expect(res.status).toBe(301);
+    expect(res.headers.get("location")).toBe(`https://example.com/b/${ISBNS[1]}`);
+    const hy = await page(`/b/${ISBNS[1].slice(0, 3)}-${ISBNS[1].slice(3)}`);
+    expect(hy.status).toBe(301);
+  });
+
+  it("知らない ISBN・ISBN でないものは 404", async () => {
+    expect((await page("/b/9784000000000")).status).toBe(404);
+    expect((await page("/b/12345678901")).status).toBe(404);
+  });
+
+  it("巻のページは sitemap に載せない", async () => {
+    const series = await (await page("/sitemap-series-1.xml")).text();
+    expect(series).not.toContain("/b/");
   });
 });
 

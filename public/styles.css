@@ -3085,3 +3085,24 @@ ol.sp-vols { list-style: none; padding: 0; margin: 0; }
 }
 .sp-share .sp-copy { font-weight: 700; }
 .sp-share .sp-copy[hidden] { display: none; }
+/* 巻のタイルは巻のページ（/b/<isbn>）へのリンク。.slot の縦並びをリンクの中でも保つ。 */
+.sp-vol-link { display: flex; flex-direction: column; flex: 1; min-height: 0; color: inherit; text-decoration: none; }
+.sp-vol-focus { border-color: var(--accent); box-shadow: 0 0 0 2px var(--accent); }
+/* 巻のページの冒頭（src/seriesPage.ts focusHtml）。表紙を大きく、その横に巻・発売日・シェア・追加。 */
+.sp-focus { display: flex; gap: 20px; align-items: flex-start; margin: 0 0 28px; }
+.sp-focus-cover {
+  width: 180px; flex: none; aspect-ratio: 2 / 3; object-fit: contain;
+  background: var(--panel-2); border: var(--bw) solid var(--ink); border-radius: 6px;
+}
+.sp-focus-cover.placeholder { display: flex; align-items: center; justify-content: center; color: var(--muted); }
+.sp-focus-body { min-width: 0; flex: 1; }
+.sp-focus-series { margin: 0 0 4px; font-size: 14px; font-weight: 700; }
+.sp-focus-series a { color: inherit; }
+.sp-focus-title { margin: 0 0 6px; font-size: 26px; line-height: 1.3; }
+.sp-focus-facts { margin: 0; color: var(--muted); font-size: 13px; }
+.sp-focus-actions { margin-top: 14px; }
+@media (max-width: 600px) {
+  .sp-focus { gap: 14px; }
+  .sp-focus-cover { width: 120px; }
+  .sp-focus-title { font-size: 20px; }
+}

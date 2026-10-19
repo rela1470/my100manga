@@ -3,11 +3,12 @@ import { edgeCacheKey, withEdgeCache } from "./edgeCache";
 import { footerHtml } from "./footer";
 import { headerLinksHtml } from "./header";
 import { cachedSeriesVolumes, getSeriesVolumes } from "./series";
+import { resolveBooks } from "./listItems";
 import { isCompleteRun } from "./seriesStats";
 import { site } from "./site";
 import { fetchSiteAsset } from "./siteAssets";
 import { Env } from "./types";
-import { escapeHtml, plainVolumeNumber, replaceLiteral } from "./util";
+import { escapeHtml, plainVolumeNumber, replaceLiteral, toIsbn13 } from "./util";
 import { getViewEpoch } from "./viewSnapshot";
 
 // シリーズの個別ページ（GET /s/<id>）。検索エンジンと AI に「〇〇は全何巻？」の答えを拾わせるため、
@@ -45,6 +46,13 @@ export function seriesPagePath(id: string): string {
   return `/s/${id}`;
 }
 
+/** 巻のページ（/b/<ISBN13>）。シェア用の入口で、canonical はシリーズのページ。 */
+export const VOLUME_PAGE_RE = /^\/b\/([0-9Xx-]{10,17})$/;
+
+export function volumePagePath(isbn: string): string {
+  return `/b/${isbn}`;
+}
+
 export interface PageVolume {
   isbn: string;
   volume_number: string;
@@ -53,6 +61,9 @@ export interface PageVolume {
   subtitle: string;
   pubdate: string;
   cover_url: string;
+  /** 同じ巻の別の ISBN（ISBN-10 由来など）。巻のページ（/b/<isbn>）でどの巻か探すのに使う。 */
+  isbns?: string[];
+  author?: string;
 }
 
 export interface PageSeries {
@@ -245,6 +256,8 @@ export interface PageContext {
   publisher: string;
   siblings: PageSibling[];
   now: number;
+  /** 巻のページ（/b/<isbn>）のときの、その巻。 */
+  focus?: PageVolume;
 }
 
 /** <head> の差し込みと本文。純粋関数（テストから直接呼ぶ）。 */
@@ -258,14 +271,23 @@ export function buildSeriesPage(data: PageSeries, ctx: PageContext): PageParts {
   const edition = editionOf(ctx.label, ctx.publisher);
   const lastWord = ans.ended ? "最終巻" : "最新刊";
   const lastDate = ans.last ? formatPubdate(ans.last.pubdate) : "";
+  const focus = ctx.focus;
+  const focusLabel = focus ? volumeLabel(focus) : "";
+  const focusDate = focus ? formatPubdate(focus.pubdate) : "";
+  // 巻のページは canonical をシリーズのページに向け、og:url（シェアされる URL）だけ巻のページにする。
+  const shareUrl = focus ? `${ctx.origin}${volumePagePath(focus.isbn)}` : pageUrl;
 
-  const title = `${name}は全何巻？${ans.count ? `${ans.headline}${lastDate ? `・${lastWord}は${lastDate}発売` : ""}` : ""}`;
-  const desc =
+  const seriesTitle = `${name}は全何巻？${ans.count ? `${ans.headline}${lastDate ? `・${lastWord}は${lastDate}発売` : ""}` : ""}`;
+  const title = focus ? `${name} ${focusLabel}${focusDate ? `（${focusDate}発売）` : ""}` : seriesTitle;
+  const seriesDesc =
     ans.sentence +
     (names.length ? `作者は${names.join("、")}。` : "") +
     (edition ? `${edition}。` : "") +
     (ans.count ? `第1巻から最新の巻まで、各巻の発売日と表紙を一覧にしています。` : "");
-  const cover = vols.find((v) => v.cover_url)?.cover_url ?? "";
+  const desc = focus
+    ? `『${name}』${focusLabel}${focusDate ? `は${focusDate}発売` : ""}${focus.isbn ? `（ISBN ${focus.isbn}）` : ""}。` + seriesDesc
+    : seriesDesc;
+  const cover = (focus?.cover_url || vols.find((v) => v.cover_url)?.cover_url) ?? "";
   const ogImage = pageCoverSrc(cover).startsWith("/") ? `${ctx.origin}${pageCoverSrc(cover)}` : pageCoverSrc(cover);
 
   // ── よくある質問（本文と FAQPage で同じ文を使う）──
@@ -345,7 +367,7 @@ export function buildSeriesPage(data: PageSeries, ctx: PageContext): PageParts {
     `<meta property="og:site_name" content="${e(ctx.siteName)}">`,
     `<meta property="og:title" content="${e(fullTitle)}">`,
     `<meta property="og:description" content="${e(desc)}">`,
-    `<meta property="og:url" content="${e(pageUrl)}">`,
+    `<meta property="og:url" content="${e(shareUrl)}">`,
     `<meta property="og:image" content="${e(ogImage || `${ctx.origin}/og-default.png`)}">`,
     `<meta name="twitter:card" content="${ogImage ? "summary" : "summary_large_image"}">`,
     `<script type="application/ld+json">${ldJson({ "@context": "https://schema.org", "@graph": graph })}</script>`,
@@ -373,10 +395,15 @@ export function buildSeriesPage(data: PageSeries, ctx: PageContext): PageParts {
         ? `<img class="cover" src="${e(src)}" alt="${e(alt)}" loading="lazy" decoding="async">`
         : `<div class="cover placeholder">${e(label)}</div>`;
       const date = formatPubdate(v.pubdate);
-      return (
-        `<li class="slot view sp-vol" data-isbn="${e(v.isbn)}"${src ? "" : ` data-cover-isbn="${e(v.isbn)}"`}>` +
+      // 巻のページ（/b/<isbn>）へのリンク。巻のページは canonical がこのページなので、検索の評価は
+      // こちらに集まる（巻ごとのページが検索結果に並ぶことはない）。
+      const cls = `slot view sp-vol${focus && v.isbn === focus.isbn ? " sp-vol-focus" : ""}`;
+      const inner =
         cover +
-        `<div class="meta"><div class="t">${e(label)}</div>${date ? `<div class="c">${e(date)}</div>` : ""}</div>` +
+        `<div class="meta"><div class="t">${e(label)}</div>${date ? `<div class="c">${e(date)}</div>` : ""}</div>`;
+      return (
+        `<li class="${cls}" data-isbn="${e(v.isbn)}"${src ? "" : ` data-cover-isbn="${e(v.isbn)}"`}>` +
+        (v.isbn ? `<a class="sp-vol-link" href="${e(volumePagePath(v.isbn))}">${inner}</a>` : inner) +
         `</li>`
       );
     })
@@ -389,10 +416,35 @@ export function buildSeriesPage(data: PageSeries, ctx: PageContext): PageParts {
     )
     .join("\n        ");
 
-  const body = `<nav class="sp-crumbs" aria-label="パンくずリスト"><a href="/">トップ</a> › <a href="/series">シリーズ一覧</a> › <span>${e(name)}</span></nav>
+  // 巻のページの冒頭: その巻の表紙・発売日・シェア・追加。見出し（h1）はこの巻にして、シリーズの
+  // 「全何巻？」は h2 に下げる。
+  const qTag = focus ? "h2" : "h1";
+  let focusHtml = "";
+  if (focus) {
+    const src = pageCoverSrc(focus.cover_url);
+    const alt = `${data.title} ${focusLabel}`.trim();
+    const facts = [focusDate ? `${focusDate}発売` : "", focus.isbn ? `ISBN ${focus.isbn}` : ""].filter(Boolean).join(" ・ ");
+    focusHtml = `<section class="sp-focus" data-isbn="${e(focus.isbn)}" data-title="${e(alt)}" data-author="${e(focus.author || data.creator || "")}" data-cover="${e(focus.cover_url)}">
+        ${src ? `<img class="sp-focus-cover" src="${e(src)}" alt="${e(alt)}">` : `<div class="sp-focus-cover placeholder">${e(focusLabel)}</div>`}
+        <div class="sp-focus-body">
+          <p class="sp-focus-series"><a href="${e(seriesPagePath(data.series_id))}">${e(name)}</a></p>
+          <h1 class="sp-focus-title">${e(focusLabel)}</h1>
+          ${facts ? `<p class="sp-focus-facts">${e(facts)}</p>` : ""}
+          ${shareLinksHtml(`『${name}』${focusLabel}`, shareUrl, ctx.hashtag)}
+          <div class="sp-focus-actions"><button type="button" class="primary" id="spAddVol">この巻を自分の100に追加</button></div>
+        </div>
+      </section>
+
+      `;
+  }
+  const crumbs = focus
+    ? `<a href="/">トップ</a> › <a href="/series">シリーズ一覧</a> › <a href="${e(seriesPagePath(data.series_id))}">${e(name)}</a> › <span>${e(focusLabel)}</span>`
+    : `<a href="/">トップ</a> › <a href="/series">シリーズ一覧</a> › <span>${e(name)}</span>`;
+
+  const body = `<nav class="sp-crumbs" aria-label="パンくずリスト">${crumbs}</nav>
 
     <article class="sp" data-series-id="${e(data.series_id)}" data-series-title="${e(name)}">
-      <h1 class="sp-q">『${e(name)}』は全何巻？</h1>
+      ${focusHtml}<${qTag} class="sp-q">『${e(name)}』は全何巻？</${qTag}>
       <p class="sp-answer"><strong>${e(ans.headline)}</strong></p>
       <p class="lead">${e(ans.sentence)}</p>
 
@@ -453,7 +505,7 @@ export function shareLinksHtml(text: string, pageUrl: string, hashtag: string): 
     links
       .map((l) => `<a class="sns-link ${l.cls}" href="${e(l.href)}" target="_blank" rel="noopener noreferrer">${e(l.label)}</a>`)
       .join("") +
-    `<button type="button" class="sp-copy" id="spCopy" data-url="${e(pageUrl)}" hidden>リンクをコピー</button>` +
+    `<button type="button" class="sp-copy" data-url="${e(pageUrl)}" hidden>リンクをコピー</button>` +
     `</div>`
   );
 }
@@ -517,6 +569,58 @@ async function notFoundPage(env: Env, origin: string): Promise<Response> {
   );
 }
 
+function redirect(location: string, status: 301 | 302): Response {
+  return new Response(null, { status, headers: { location, "cache-control": "public, max-age=3600" } });
+}
+
+/** 巻一覧のデータからページの HTML を組む（シリーズのページと巻のページで共通）。 */
+async function pageResponse(env: Env, origin: string, data: PageSeries, focus?: PageVolume): Promise<Response> {
+  const { label, publisher, siblings } = await loadSiblingsAndLabel(env, data.series_id);
+  const s = site(env);
+  const parts = buildSeriesPage(data, {
+    origin,
+    siteName: s.name,
+    hashtag: s.hashtag,
+    label,
+    publisher,
+    siblings,
+    now: Date.now(),
+    focus,
+  });
+
+  const template = await (await fetchSiteAsset(new Request(`${origin}/series-page.html`), env, "/series-page.html")).text();
+  // テンプレートへの差し込み（バージョン印・サイト種別）はシリーズ名などを入れる前に済ませる。
+  let html = injectVersion(
+    applySiteIdentity(template, env, origin)
+      .replace("<!--HEADER_LINKS-->", headerLinksHtml(env))
+      .replace("<!--FOOTER_AFF-->", footerHtml(env, true)),
+    appVersion(env)
+  );
+  const fill: [string, string][] = [
+    ["<!--SERIES_HEAD-->", parts.head],
+    ["<!--SERIES_BODY-->", parts.body],
+    ["<!--ANALYTICS-->", analyticsTags(env)],
+    ["<!--GTM_BODY-->", gtmBody(env)],
+    ["<!--AFF_DATA-->", affData(env)],
+  ];
+  for (const [ph, value] of fill) html = replaceLiteral(html, ph, value);
+  const headers: Record<string, string> = {
+    "content-type": "text/html; charset=utf-8",
+    "cache-control": PAGE_CACHE_CONTROL,
+  };
+  if (!parts.indexable) headers["x-robots-tag"] = "noindex";
+  return new Response(html, { headers });
+}
+
+async function loadSeries(env: Env, id: string): Promise<PageSeries | null> {
+  const res = await cachedSeriesVolumes(env, id, () => getSeriesVolumes(env, id));
+  if (res.status === 404) return null;
+  if (!res.ok) throw new Error(`series volumes ${res.status}`);
+  return (await res.json()) as PageSeries;
+}
+
+const cacheable = (r: Response) => r.status === 200 || r.status === 301 || r.status === 302;
+
 /** GET /s/<id>。結合で吸収された側は残す側へ 301。見つからなければ 404。 */
 export async function renderSeriesPage(env: Env, id: string, origin: string): Promise<Response> {
   const key = edgeCacheKey(env, "/s", { id, e: await getViewEpoch(env), v: appVersion(env), o: origin });
@@ -524,43 +628,36 @@ export async function renderSeriesPage(env: Env, id: string, origin: string): Pr
     key,
     PAGE_EDGE_TTL_SEC,
     async () => {
-      const res = await cachedSeriesVolumes(env, id, () => getSeriesVolumes(env, id));
-      if (res.status === 404) return notFoundPage(env, origin);
-      if (!res.ok) throw new Error(`series volumes ${res.status}`);
-      const data = (await res.json()) as PageSeries;
-      if (data.series_id !== id) {
-        return new Response(null, {
-          status: 301,
-          headers: { location: `${origin}${seriesPagePath(data.series_id)}`, "cache-control": "public, max-age=3600" },
-        });
-      }
-      const { label, publisher, siblings } = await loadSiblingsAndLabel(env, id);
-      const s = site(env);
-      const parts = buildSeriesPage(data, { origin, siteName: s.name, hashtag: s.hashtag, label, publisher, siblings, now: Date.now() });
-
-      const template = await (await fetchSiteAsset(new Request(`${origin}/series-page.html`), env, "/series-page.html")).text();
-      // テンプレートへの差し込み（バージョン印・サイト種別）はシリーズ名などを入れる前に済ませる。
-      let html = injectVersion(
-        applySiteIdentity(template, env, origin)
-          .replace("<!--HEADER_LINKS-->", headerLinksHtml(env))
-          .replace("<!--FOOTER_AFF-->", footerHtml(env, true)),
-        appVersion(env)
-      );
-      const fill: [string, string][] = [
-        ["<!--SERIES_HEAD-->", parts.head],
-        ["<!--SERIES_BODY-->", parts.body],
-        ["<!--ANALYTICS-->", analyticsTags(env)],
-        ["<!--GTM_BODY-->", gtmBody(env)],
-        ["<!--AFF_DATA-->", affData(env)],
-      ];
-      for (const [ph, value] of fill) html = replaceLiteral(html, ph, value);
-      const headers: Record<string, string> = {
-        "content-type": "text/html; charset=utf-8",
-        "cache-control": PAGE_CACHE_CONTROL,
-      };
-      if (!parts.indexable) headers["x-robots-tag"] = "noindex";
-      return new Response(html, { headers });
+      const data = await loadSeries(env, id);
+      if (!data) return notFoundPage(env, origin);
+      if (data.series_id !== id) return redirect(`${origin}${seriesPagePath(data.series_id)}`, 301);
+      return pageResponse(env, origin, data);
     },
-    (r) => r.status === 200 || r.status === 301
+    cacheable
+  );
+}
+
+/** GET /b/<isbn>。1 巻ずつシェアするための巻のページ。中身はシリーズのページの冒頭にその巻を出した
+ *  もので、canonical はシリーズのページに向ける（巻ごとのほぼ同じページを検索に並べないため）。
+ *  sitemap にも載せない。ISBN-10・ハイフン付きは ISBN13 の URL へ 301。シリーズの巻一覧に無い巻は
+ *  シリーズのページへ 302、シリーズの分からない本は 404。 */
+export async function renderVolumePage(env: Env, raw: string, origin: string): Promise<Response> {
+  const isbn = toIsbn13(raw);
+  if (!isbn) return notFoundPage(env, origin);
+  if (isbn !== raw) return redirect(`${origin}${volumePagePath(isbn)}`, 301);
+  const key = edgeCacheKey(env, "/b", { isbn, e: await getViewEpoch(env), v: appVersion(env), o: origin });
+  return withEdgeCache(
+    key,
+    PAGE_EDGE_TTL_SEC,
+    async () => {
+      const sid = (await resolveBooks(env, [isbn])).get(isbn)?.series_id ?? "";
+      if (!/^[CU][0-9A-Za-z]+$/.test(sid)) return notFoundPage(env, origin);
+      const data = await loadSeries(env, sid);
+      if (!data) return notFoundPage(env, origin);
+      const focus = (data.volumes ?? []).find((v) => v.isbn === isbn || (v.isbns ?? []).includes(isbn));
+      if (!focus) return redirect(`${origin}${seriesPagePath(data.series_id)}`, 302);
+      return pageResponse(env, origin, data, focus);
+    },
+    cacheable
   );
 }

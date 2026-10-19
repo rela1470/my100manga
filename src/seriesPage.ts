@@ -5,6 +5,8 @@ import { headerLinksHtml } from "./header";
 import { cachedSeriesVolumes, getSeriesVolumes } from "./series";
 import { resolveBooks } from "./listItems";
 import { isCompleteRun } from "./seriesStats";
+import { circulationSeriesIds } from "./circulation";
+import { salesSeriesIds } from "./salesRanking";
 import { site } from "./site";
 import { fetchSiteAsset } from "./siteAssets";
 import { Env } from "./types";
@@ -23,13 +25,15 @@ import { getViewEpoch } from "./viewSnapshot";
 //
 // 巻数は巻一覧に並ぶ冊数で、シリーズ一覧（/series）・series_stats と同じ数え方。
 //
-// 2 巻以上のシリーズだけを検索に載せる（sitemap にも 2 巻以上だけを出す。src/robots.ts）。1 巻物は
-// 約 9 万本あり、中身の薄いページを大量に載せると、サイト全体の評価を下げかねないため。
+// 検索に載せるのは 10 巻以上のシリーズと、売上・発行部数ランキングに出ている作品（巻数を問わない）
+// だけ（sitemap も同じ。src/robots.ts）。2 巻以上の約 3.7 万本をすべて載せていたが、データベースから
+// 作った似た形のページを大量に載せるとサイト全体が「有用性の低いコンテンツ」と見られる（AdSense の
+// 審査で実際にそう判定された）。巻数の多い作品と、いま読まれている作品に絞る。
 
 /** この月数より新刊が無ければ「全N巻」と書く。 */
 export const STALE_MONTHS = 36;
-/** 検索に載せる下限の巻数。 */
-export const INDEX_MIN_VOLUMES = 2;
+/** 検索に載せる下限の巻数（ランキングに出ている作品はこれ未満でも載せる。featuredSeriesIds）。 */
+export const INDEX_MIN_VOLUMES = 10;
 /** エッジキャッシュの秒数。表示データの世代（view_epoch）とデプロイ版をキーに入れているので、
  *  管理者の変更・デプロイでは外れる。月次の取り込みと補完・手動追加の反映がこの分だけ遅れる。 */
 const PAGE_EDGE_TTL_SEC = 6 * 60 * 60;
@@ -258,6 +262,8 @@ export interface PageContext {
   now: number;
   /** 巻のページ（/b/<isbn>）のときの、その巻。 */
   focus?: PageVolume;
+  /** 売上・発行部数ランキングに出ている（巻数が少なくても検索に載せる）。 */
+  featured?: boolean;
 }
 
 /** <head> の差し込みと本文。純粋関数（テストから直接呼ぶ）。 */
@@ -265,7 +271,7 @@ export function buildSeriesPage(data: PageSeries, ctx: PageContext): PageParts {
   const vols = data.volumes ?? [];
   const name = pageDisplayName(data, ctx.label, ctx.publisher, vols.length, ctx.siblings);
   const ans = seriesAnswer(name, vols, ctx.now, data.master_updated_at);
-  const indexable = ans.count >= INDEX_MIN_VOLUMES;
+  const indexable = ans.count >= INDEX_MIN_VOLUMES || (ans.count > 0 && !!ctx.featured);
   const pageUrl = `${ctx.origin}${seriesPagePath(data.series_id)}`;
   const names = creatorNames(data.creators, data.creator);
   const edition = editionOf(ctx.label, ctx.publisher);
@@ -553,6 +559,13 @@ async function loadSiblingsAndLabel(
   };
 }
 
+/** 売上・発行部数ランキングに出ている作品の寄せ先。巻数が少なくても検索に載せる（sitemap にも
+ *  出す、src/robots.ts）。どちらも meta に保存済みの集計を読むだけ。R18版は両ランキングが無いので空。 */
+export async function featuredSeriesIds(env: Env): Promise<Set<string>> {
+  const [sales, circulation] = await Promise.all([salesSeriesIds(env), circulationSeriesIds(env)]);
+  return new Set([...sales, ...circulation].filter((id) => /^[CU][0-9A-Za-z]{1,20}$/.test(id)));
+}
+
 async function notFoundPage(env: Env, origin: string): Promise<Response> {
   const res = await fetchSiteAsset(new Request(`${origin}/404`), env, "/404");
   const html = res.ok ? await res.text() : "<!doctype html><title>Not Found</title><p>シリーズが見つかりません。</p>";
@@ -575,7 +588,10 @@ function redirect(location: string, status: 301 | 302): Response {
 
 /** 巻一覧のデータからページの HTML を組む（シリーズのページと巻のページで共通）。 */
 async function pageResponse(env: Env, origin: string, data: PageSeries, focus?: PageVolume): Promise<Response> {
-  const { label, publisher, siblings } = await loadSiblingsAndLabel(env, data.series_id);
+  const [{ label, publisher, siblings }, featured] = await Promise.all([
+    loadSiblingsAndLabel(env, data.series_id),
+    featuredSeriesIds(env),
+  ]);
   const s = site(env);
   const parts = buildSeriesPage(data, {
     origin,
@@ -586,6 +602,7 @@ async function pageResponse(env: Env, origin: string, data: PageSeries, focus?: 
     siblings,
     now: Date.now(),
     focus,
+    featured: featured.has(data.series_id),
   });
 
   const template = await (await fetchSiteAsset(new Request(`${origin}/series-page.html`), env, "/series-page.html")).text();

@@ -1,7 +1,7 @@
 import { SELF } from "cloudflare:test";
 import { env } from "cloudflare:workers";
 import { beforeAll, describe, expect, it } from "vitest";
-import { formatPubdate, PageVolume, seriesAnswer, volumeLabel } from "../src/seriesPage";
+import { formatPubdate, INDEX_MIN_VOLUMES, PageVolume, seriesAnswer, volumeLabel } from "../src/seriesPage";
 import { BROWSER_UA, makeIsbns } from "./helpers";
 
 // シリーズの個別ページ（/s/<id>）。「〇〇は全何巻？」の答えを <title>・本文・JSON-LD に書く。
@@ -12,7 +12,9 @@ const ONGOING = "C840002"; // 1〜2 巻、最後の巻は今月（「既刊2巻�
 const BUNKO = "C840003"; // ENDED と同名の文庫版（2 巻）
 const SINGLE = "C840004"; // 1 巻物（検索に載せない）
 const ABSORBED = "C840005"; // ENDED に結合された側
-const ISBNS = makeIsbns(12, 340000);
+const LONG = "C840006"; // INDEX_MIN_VOLUMES 巻（検索に載せる）
+const FEATURED = "C840007"; // 2 巻だが発行部数ランキングに出ている（検索に載せる）
+const ISBNS = makeIsbns(40, 340000);
 
 const thisMonth = new Date().toISOString().slice(0, 7);
 
@@ -55,8 +57,16 @@ beforeAll(async () => {
   await env.DB.prepare(`INSERT OR REPLACE INTO series_merge (absorbed_id, target_id, created_at) VALUES (?, ?, ?)`)
     .bind(ABSORBED, ENDED, Date.now())
     .run();
+  await seedSeries(LONG, "ながいまんが", "テストコミックス", INDEX_MIN_VOLUMES);
+  for (let i = 1; i <= INDEX_MIN_VOLUMES; i++) await seedVolume(ISBNS[11 + i], LONG, i, "ながいまんが", "2012-01");
+  await seedSeries(FEATURED, "うれてるまんが", "テストコミックス", 2);
+  for (let i = 1; i <= 2; i++) await seedVolume(ISBNS[29 + i], FEATURED, i, "うれてるまんが", "2025-01");
+  // 発行部数ランキングの集計（src/circulation.ts の meta。v は PAYLOAD_VERSION）に FEATURED を出す。
+  await env.DB.prepare(`INSERT OR REPLACE INTO meta (key, value) VALUES ('circulation_ranking_json', ?)`)
+    .bind(JSON.stringify({ entries: [{ rank: 1, title: "うれてるまんが", series_id: FEATURED }], source: null, computed_at: Date.now(), v: 2 }))
+    .run();
   // 同じ作品の別の版は series_stats から引くので、巻一覧を一度組んで埋めておく。
-  for (const id of [ENDED, ONGOING, BUNKO, SINGLE]) {
+  for (const id of [ENDED, ONGOING, BUNKO, SINGLE, LONG, FEATURED]) {
     await (await page(`/api/series/${id}/volumes`)).arrayBuffer();
   }
 });
@@ -116,7 +126,6 @@ describe("GET /s/<id>", () => {
   it("<title>・本文・JSON-LD に「全N巻」が入る", async () => {
     const res = await page(`/s/${ENDED}`);
     expect(res.status).toBe(200);
-    expect(res.headers.get("x-robots-tag")).toBeNull();
     const html = await res.text();
     expect(html).toContain("<title>おわったまんがは全何巻？全3巻・最終巻は2015年3月発売 | My 100 Manga</title>");
     expect(html).toContain(`<h1 class="sp-q">『おわったまんが』は全何巻？</h1>`);
@@ -163,11 +172,22 @@ describe("GET /s/<id>", () => {
     expect(html).not.toContain("全2巻");
   });
 
-  it("1 巻物は検索に載せない", async () => {
-    const res = await page(`/s/${SINGLE}`);
-    expect(res.status).toBe(200);
-    expect(res.headers.get("x-robots-tag")).toBe("noindex");
-    expect(await res.text()).toContain(`<meta name="robots" content="noindex">`);
+  it(`${INDEX_MIN_VOLUMES} 巻未満は検索に載せない`, async () => {
+    for (const id of [SINGLE, ENDED]) {
+      const res = await page(`/s/${id}`);
+      expect(res.status).toBe(200);
+      expect(res.headers.get("x-robots-tag")).toBe("noindex");
+      expect(await res.text()).toContain(`<meta name="robots" content="noindex">`);
+    }
+  });
+
+  it(`${INDEX_MIN_VOLUMES} 巻以上と、ランキングに出ている作品は検索に載せる`, async () => {
+    for (const id of [LONG, FEATURED]) {
+      const res = await page(`/s/${id}`);
+      expect(res.status).toBe(200);
+      expect(res.headers.get("x-robots-tag")).toBeNull();
+      expect(await res.text()).not.toContain(`<meta name="robots" content="noindex">`);
+    }
   });
 
   it("結合で吸収された側は残す側へ 301", async () => {
@@ -203,7 +223,6 @@ describe("GET /b/<isbn>（巻のページ）", () => {
     expect(html).toContain(`<meta property="og:url" content="https://example.com/b/${ISBNS[1]}">`);
     expect(html).toContain(`<h1 class="sp-focus-title">第2巻</h1>`);
     expect(html).toContain(`<h2 class="sp-q">『おわったまんが』は全何巻？</h2>`);
-    expect(html).not.toContain(`<meta name="robots" content="noindex">`);
     const x = /href="(https:\/\/twitter\.com\/intent\/tweet\?[^"]+)"/.exec(html);
     const q = new URL(x![1].replace(/&amp;/g, "&")).searchParams;
     expect(q.get("text")).toBe("『おわったまんが』第2巻");
@@ -237,17 +256,23 @@ describe("GET /b/<isbn>（巻のページ）", () => {
 });
 
 describe("シリーズの sitemap", () => {
-  it("sitemap.xml は索引で、シリーズの分は 2 巻以上・結合で吸収された側を除く", async () => {
+  it(`sitemap.xml は索引で、シリーズの分は ${INDEX_MIN_VOLUMES} 巻以上・結合で吸収された側を除く`, async () => {
     const index = await (await page("/sitemap.xml")).text();
     expect(index).toContain("<sitemapindex");
     expect(index).toContain("<loc>https://example.com/sitemap-pages.xml</loc>");
     expect(index).toContain("<loc>https://example.com/sitemap-series-1.xml</loc>");
+    expect(index).toContain("<loc>https://example.com/sitemap-featured.xml</loc>");
     const series = await (await page("/sitemap-series-1.xml")).text();
-    expect(series).toContain(`<loc>https://example.com/s/${ENDED}</loc>`);
-    expect(series).toContain(`<loc>https://example.com/s/${BUNKO}</loc>`);
-    expect(series).not.toContain(SINGLE);
-    expect(series).not.toContain(ABSORBED);
+    expect(series).toContain(`<loc>https://example.com/s/${LONG}</loc>`);
+    for (const id of [ENDED, BUNKO, SINGLE, ABSORBED, FEATURED]) expect(series).not.toContain(id);
     expect((await page("/sitemap-series-99.xml")).status).toBe(404);
+  });
+
+  it("ランキングに出ている巻数の少ない作品は sitemap-featured.xml に載せる", async () => {
+    const featured = await (await page("/sitemap-featured.xml")).text();
+    expect(featured).toContain(`<loc>https://example.com/s/${FEATURED}</loc>`);
+    expect(featured).not.toContain(LONG);
+    expect(featured).not.toContain(ENDED);
   });
 
   it("llms.txt にシリーズの個別ページの形を書く", async () => {

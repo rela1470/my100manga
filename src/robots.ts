@@ -1,6 +1,6 @@
 import { AGE_GATE_PATH } from "./ageGate";
 import { edgeCacheKey, withEdgeCache } from "./edgeCache";
-import { INDEX_MIN_VOLUMES, seriesPagePath } from "./seriesPage";
+import { featuredSeriesIds, INDEX_MIN_VOLUMES, seriesPagePath } from "./seriesPage";
 import { site, siteVariant } from "./site";
 import { Env } from "./types";
 
@@ -34,7 +34,7 @@ const CACHE_CONTROL = "public, max-age=3600";
 
 // sitemap.xml はサイトマップの索引にして、静的ページ（sitemap-pages.xml）とシリーズの個別ページ
 // （sitemap-series-<n>.xml、src/seriesPage.ts）を分けて載せる。1 ファイル 5 万 URL の上限より
-// 十分小さく切る（2 巻以上のシリーズは約 3.7 万本）。シリーズの分は series_stats（巻一覧と同じ
+// 十分小さく切る（10 巻以上のシリーズは約 5,300 本）。シリーズの分は series_stats（巻一覧と同じ
 // 数え方の巻数。cron が埋める、src/seriesList.ts）から引き、結合で吸収された側は出さない。
 /** シリーズの sitemap 1 ファイルあたりの URL 数。 */
 export const SERIES_SITEMAP_SIZE = 10000;
@@ -66,8 +66,33 @@ async function seriesSitemapIds(env: Env, page: number): Promise<string[]> {
   return rows.map((r) => r.id);
 }
 
-export function sitemapIndexXml(origin: string, seriesFiles: number): string {
-  const files = ["/sitemap-pages.xml", ...Array.from({ length: seriesFiles }, (_, i) => `/sitemap-series-${i + 1}.xml`)];
+/** ランキングに出ている作品のうち、巻数が INDEX_MIN_VOLUMES 未満で sitemap-series に載らないもの
+ *  （src/seriesPage.ts featuredSeriesIds。巻数が足りなくてもページは検索に載せている）。 */
+async function featuredSitemapIds(env: Env): Promise<string[]> {
+  const ids = [...(await featuredSeriesIds(env))];
+  if (!ids.length) return [];
+  const rows =
+    (
+      await env.DB.prepare(
+        `SELECT st.series_id AS id FROM series_stats st
+          WHERE st.series_id IN (SELECT value FROM json_each(?1))
+            AND st.vol_count > 0 AND st.vol_count < ?2
+            AND EXISTS (SELECT 1 FROM series s WHERE s.id = st.series_id)
+            AND NOT EXISTS (SELECT 1 FROM series_merge m WHERE m.absorbed_id = st.series_id)
+          ORDER BY st.series_id`
+      )
+        .bind(JSON.stringify(ids), INDEX_MIN_VOLUMES)
+        .all<{ id: string }>()
+    ).results ?? [];
+  return rows.map((r) => r.id);
+}
+
+export function sitemapIndexXml(origin: string, seriesFiles: number, featured = false): string {
+  const files = [
+    "/sitemap-pages.xml",
+    ...Array.from({ length: seriesFiles }, (_, i) => `/sitemap-series-${i + 1}.xml`),
+    ...(featured ? ["/sitemap-featured.xml"] : []),
+  ];
   const items = files.map((f) => `  <sitemap><loc>${origin}${f}</loc></sitemap>`).join("\n");
   return `<?xml version="1.0" encoding="UTF-8"?>\n<sitemapindex xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">\n${items}\n</sitemapindex>`;
 }
@@ -129,7 +154,8 @@ export function llmsTxt(origin: string, env: Pick<Env, "SITE_VARIANT">): string 
   ].join("\n");
 }
 
-/** GET /robots.txt・/sitemap.xml（索引）・/sitemap-pages.xml・/sitemap-series-<n>.xml・/llms.txt。
+/** GET /robots.txt・/sitemap.xml（索引）・/sitemap-pages.xml・/sitemap-series-<n>.xml・
+ *  /sitemap-featured.xml・/llms.txt。
  *  該当しなければ null（呼び出し側が先へ流す）。 */
 export async function handleSiteFile(path: string, method: string, origin: string, env: Env): Promise<Response | null> {
   if (method !== "GET") return null;
@@ -140,8 +166,18 @@ export async function handleSiteFile(path: string, method: string, origin: strin
   if (path === "/sitemap-pages.xml") return text(sitemapXml(origin, env), "application/xml");
   if (path === "/sitemap.xml") {
     return withEdgeCache(edgeCacheKey(env, "/sitemap.xml", { o: origin }), SERIES_SITEMAP_TTL_SEC, async () =>
-      text(sitemapIndexXml(origin, await seriesSitemapCount(env)), "application/xml")
+      text(
+        sitemapIndexXml(origin, await seriesSitemapCount(env), (await featuredSitemapIds(env)).length > 0),
+        "application/xml"
+      )
     );
+  }
+  if (path === "/sitemap-featured.xml") {
+    return withEdgeCache(edgeCacheKey(env, "/sitemap-featured", { o: origin }), SERIES_SITEMAP_TTL_SEC, async () => {
+      const ids = await featuredSitemapIds(env);
+      if (!ids.length) return new Response("Not Found", { status: 404, headers: { "cache-control": "no-store" } });
+      return text(urlsetXml(origin, ids.map(seriesPagePath)), "application/xml");
+    });
   }
   const m = SERIES_SITEMAP_RE.exec(path);
   if (m) {

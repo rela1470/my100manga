@@ -3075,3 +3075,6 @@ ol.sp-vols { list-style: none; padding: 0; margin: 0; }
   .sp-q { font-size: 17px; }
   .sp-answer strong { font-size: 26px; }
 }
+/* 作品を追加の巻一覧のシリーズ名（public/app.js renderVolumes）。シリーズの個別ページへのリンク。 */
+.search-subtitle a.st { color: inherit; text-decoration: underline; text-decoration-thickness: 1px; text-underline-offset: 3px; }
+.search-subtitle a.st:hover { color: var(--accent-2); }

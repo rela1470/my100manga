@@ -2634,9 +2634,17 @@ function renderVolumes(series, volumes, opts) {
   if (hidden.length) box.appendChild(buildHiddenRestore(series, volumes, hidden, opts));
 
   const head = $("searchSubtitle");
-  const titleEl = document.createElement("span");
+  // シリーズ名はシリーズの個別ページ（/s/<id>、src/seriesPage.ts）へのリンクにする。個別ページが
+  // あるのはシリーズ（C-id）と運営が作ったシリーズ（U-id）だけで、まとまり（G-id）と MADB を
+  // その場で引いた live シリーズには無いので素の文字のまま。
+  const hasPage = !opts.live && /^[CU][0-9A-Za-z]+$/.test(series.series_id || "");
+  const titleEl = document.createElement(hasPage ? "a" : "span");
   titleEl.className = "st";
   titleEl.textContent = editionTitle(series);
+  if (hasPage) {
+    titleEl.href = `/s/${encodeURIComponent(series.series_id)}`;
+    titleEl.title = "このシリーズのページを開く（全何巻か・巻の一覧）";
+  }
   head.appendChild(titleEl);
   const headTag = labelTagBadge(series.label_tag);
   if (headTag) head.appendChild(headTag);

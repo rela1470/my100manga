@@ -35,6 +35,8 @@ async function load() {
     return;
   }
   const entries = data.entries || [];
+  // 最初のページはサーバが HTML に埋めて返している（src/listPagesSsr.ts）。描き直すので空にする。
+  if (!shown) $("list").textContent = "";
   render(entries);
   next = data.next || null;
   more.hidden = !next;

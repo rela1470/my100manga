@@ -123,6 +123,7 @@ import {
   requestSeriesRegister,
 } from "./seriesRegister";
 import { handleSiteFile } from "./robots";
+import { renderListPage } from "./listPagesSsr";
 import { renderSeriesPage, renderVolumePage, SERIES_PAGE_RE, VOLUME_PAGE_RE } from "./seriesPage";
 import { ageGate } from "./ageGate";
 import { fetchSiteAsset, isAdultAssetPath } from "./siteAssets";
@@ -1014,6 +1015,11 @@ const worker = {
       if (volumePageMatch && request.method === "GET") {
         return await renderVolumePage(env, volumePageMatch[1], url.origin);
       }
+
+      // 一覧系のページ（ランキング・シリーズ一覧・公開リスト一覧）は中身をサーバで埋める
+      // （JS を動かさないクローラにも見えるように。src/listPagesSsr.ts）。
+      const listPage = await renderListPage(env, ctx, url, request.method);
+      if (listPage) return listPage;
 
       // --- Public view page with OGP meta ---
       const viewMatch = path.match(/^\/l\/([A-Za-z0-9_-]+)$/);

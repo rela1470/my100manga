@@ -93,6 +93,14 @@ describe("答えの文（seriesAnswer）", () => {
     expect(a.sentence).toBe("『X』は全2巻です。第3巻（2011年1月発売）を最後に新刊は出ていません。");
   });
 
+  it("発売日の無い新しい巻が後ろにあれば、その巻を最新刊にして「全」と言い切らない", () => {
+    const a = seriesAnswer("X", [vol(1, "2015-01"), vol(2, "2016-01"), vol(3, "")], now, Date.UTC(2026, 8, 1));
+    expect(a.ended).toBe(false);
+    expect(a.headline).toBe("既刊3巻");
+    expect(a.last?.volume_number).toBe("3");
+    expect(a.sentence).toBe("『X』は既刊3巻です（2026年9月時点）。最新刊は第3巻です。");
+  });
+
   it("発売日と巻の見出しの整形", () => {
     expect(formatPubdate("2021-10")).toBe("2021年10月");
     expect(formatPubdate("2000-08-16")).toBe("2000年8月");

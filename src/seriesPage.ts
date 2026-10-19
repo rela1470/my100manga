@@ -109,14 +109,24 @@ export interface SeriesAnswer {
   sentence: string;
 }
 
-/** 発売日のいちばん新しい巻（同じ月なら巻番号の大きい方）。発売日の無い巻しか無ければ末尾の巻。 */
-function latestVolume(vols: PageVolume[]): PageVolume | null {
+/** 最新の巻。発売日のいちばん新しい巻（同じ月なら巻番号の大きい方）。ただし、それより巻番号の
+ *  大きい発売日の無い巻があれば、その中で巻番号の最も大きい巻にする（補完・手動追加で入った新しい巻は
+ *  発売日が空のことが多い。こち亀の第202・203巻）。dated = 発売日で決めたか。 */
+function latestVolume(vols: PageVolume[]): { vol: PageVolume; dated: boolean } | null {
   let best: PageVolume | null = null;
   for (const v of vols) {
     if (!v.pubdate) continue;
     if (!best || v.pubdate > best.pubdate || (v.pubdate === best.pubdate && v.vol_sort > best.vol_sort)) best = v;
   }
-  return best ?? vols[vols.length - 1] ?? null;
+  let undated: PageVolume | null = null;
+  for (const v of vols) {
+    if (v.pubdate || v.vol_sort <= (best?.vol_sort ?? -1)) continue;
+    if (!undated || v.vol_sort > undated.vol_sort) undated = v;
+  }
+  if (undated) return { vol: undated, dated: false };
+  if (best) return { vol: best, dated: true };
+  const tail = vols[vols.length - 1];
+  return tail ? { vol: tail, dated: false } : null;
 }
 
 function earliestVolume(vols: PageVolume[]): PageVolume | null {
@@ -138,10 +148,12 @@ export function seriesAnswer(name: string, vols: PageVolume[], now: number, asOf
   const count = vols.length;
   const complete = count > 0 && isCompleteRun(vols, count);
   const first = earliestVolume(vols);
-  const last = latestVolume(vols);
+  const latest = latestVolume(vols);
+  const last = latest?.vol ?? null;
   const nowDate = new Date(now);
   const nowIdx = nowDate.getUTCFullYear() * 12 + nowDate.getUTCMonth();
-  const lastIdx = last ? monthIndex(last.pubdate) : null;
+  // 最新の巻の発売日が分からないときは「全」と言い切らない（発売日の無い新しい巻は最近の巻のことが多い）。
+  const lastIdx = latest?.dated ? monthIndex(latest.vol.pubdate) : null;
   const ended = lastIdx !== null && nowIdx - lastIdx >= STALE_MONTHS;
   const headline = ended ? `全${count}巻` : `既刊${count}巻`;
   const q = `『${name}』`;

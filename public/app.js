@@ -36,6 +36,10 @@ const state = {
   reorder: false, // true while in reorder mode (tap = select, not edit)
   placing: false, // reorder mode phase 2: selection is fixed, now tap where it goes
   selected: new Set(), // indices of cards picked to move; valid only between renders
+  // はじめての人の空の本棚に並べるお手本（売上ランキング。loadDemoShelf）。state.items とは
+  // 別に持つので保存・公開には乗らず、1 作品目を追加した時点で render() が出さなくなる。
+  demo: [],
+  firstVisit: false, // この端末に新規作成の下書きが無かった（loadDraft）
 };
 
 const $ = (id) => document.getElementById(id);
@@ -51,6 +55,7 @@ async function init() {
     loadDraft();
   }
   render();
+  loadDemoShelf();
   syncCovers();
   renderMyLists();
   syncServerDraft();
@@ -639,7 +644,10 @@ function clearEditDraft(slug) {
 function loadDraft() {
   try {
     const raw = localStorage.getItem(DRAFT_KEY);
-    if (!raw) return;
+    if (!raw) {
+      state.firstVisit = true;
+      return;
+    }
     const d = JSON.parse(raw);
     state.owner = d.owner || "";
     state.bio = d.bio || "";
@@ -648,6 +656,61 @@ function loadDraft() {
   } catch (e) {}
   // 保存済みの下書きを開いただけの日も「この端末に本棚がある」と数える（public/api.js）。
   if (window.draftPing) window.draftPing(state.items.length);
+}
+
+// この端末に下書きが一度も無い（はじめて開いた）ときだけ、空の 100 枠の代わりに売上ランキング
+// （src/salesRanking.ts）の上位で埋めたお手本を見せる。下書きは全削除しても空のまま残るので、
+// 2 回目以降は出ない。ランキングが空（dev / R18版は集計しない）なら今までどおり空き枠。
+async function loadDemoShelf() {
+  if (!state.firstVisit || state.editSlug) return;
+  let data;
+  try {
+    data = await apiFetch("/api/sales-ranking");
+  } catch (e) {
+    return;
+  }
+  const w = data.windows || {};
+  const entries = [w.d7, w.d30, w.day, w.year].find((x) => x && x.length) || [];
+  state.demo = entries.slice(0, TARGET);
+  if (!state.demo.length) return;
+  render();
+  // 表紙の無い作品は寄せ先の最新巻（cover_isbn）の表紙で補う（public/sales-ranking.js と同じ）。
+  const covers = await lookupCovers(state.demo.filter((e) => !e.cover_url && e.cover_isbn).map((e) => e.cover_isbn), { cacheOnly: true });
+  let changed = false;
+  for (const e of state.demo) {
+    if (!e.cover_url && covers[e.cover_isbn]) {
+      e.cover_url = covers[e.cover_isbn];
+      changed = true;
+    }
+  }
+  if (changed) render();
+}
+
+// お手本の 1 枠。タップでその作品の巻一覧（寄せ先が無ければ検索結果）を開き、追加すれば
+// お手本が消えて自分の本棚になる。行き先は売上ランキングのページ（public/sales-ranking.js）と同じ。
+function demoSlot(e, i) {
+  const slot = document.createElement("button");
+  slot.type = "button";
+  slot.className = "slot demo";
+  slot.appendChild(numBadge(i));
+  slot.appendChild(coverNode(e.cover_url, e.work));
+  const meta = document.createElement("div");
+  meta.className = "meta";
+  const t = document.createElement("div");
+  t.className = "t";
+  t.textContent = e.work;
+  meta.appendChild(t);
+  slot.appendChild(meta);
+  slot.setAttribute("aria-label", `お手本「${e.work}」を開く`);
+  slot.addEventListener("click", () => {
+    if (e.series_id) return openSeriesFromBook(e.series_id, e.work);
+    const q = e.search_q || e.work;
+    $("topSearch").value = q;
+    syncTopSearchClear();
+    openAdd();
+    doSearch(q);
+  });
+  return slot;
 }
 
 /* ---------- grid ---------- */
@@ -659,6 +722,15 @@ function render() {
   // 固定の操作バーの下にカードが隠れないよう、並べ替え中だけ下に余白を足す。
   document.body.classList.toggle("reordering", state.reorder);
   state.items.forEach((it, i) => grid.appendChild(filledSlot(it, i)));
+  // お手本は 1 作品目が入った時点で捨てる（あとで全部消しても戻さない）。
+  if (state.items.length) state.demo = [];
+  const demo = state.items.length === 0 && !state.editSlug && !state.reorder ? state.demo : [];
+  const note = $("demoNote");
+  if (note) note.hidden = demo.length === 0;
+  if (demo.length) {
+    demo.forEach((e, i) => grid.appendChild(demoSlot(e, i)));
+    return renderControls(0);
+  }
   // No adding while reordering — the add slot would confuse the "tap = select" mode.
   if (!state.reorder && state.items.length < MAX_ITEMS) grid.appendChild(addSlot(state.items.length));
   // 残りの空き枠（No.00x）。100 冊そろう本棚の形を最初から見せる。並べ替え中は出さない
@@ -666,8 +738,11 @@ function render() {
   if (!state.reorder) {
     for (let i = state.items.length + 1; i < TARGET; i++) grid.appendChild(placeholderSlot(i));
   }
+  renderControls(state.items.length);
+}
 
-  const filled = state.items.length;
+// グリッド以外（ガイド・公開ボタン・表紙の取得・おまかせ埋め・全削除）の出し分け。
+function renderControls(filled) {
   // はじめての人向けの説明は、リストが空のときだけ（公開済みリストの編集中は出さない）。
   const guide = $("emptyGuide");
   if (guide) guide.hidden = filled > 0 || !!state.editSlug;

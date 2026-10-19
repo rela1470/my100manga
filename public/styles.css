@@ -632,6 +632,21 @@ button:disabled { opacity: .45; cursor: not-allowed; transform: none; box-shadow
   .shelf-actions #publish { padding: 8px 10px; }
 }
 
+/* はじめて開いた人向けのお手本の説明（app.js loadDemoShelf）。お手本が出ている間だけ。 */
+.demo-note {
+  margin: 0 0 14px; padding: 10px 14px;
+  border: var(--bw) solid var(--ink); border-radius: var(--radius-sm);
+  background: var(--accent-4); font-size: 14px; line-height: 1.6;
+}
+.demo-note[hidden] { display: none; }
+.demo-note b {
+  display: inline-block; margin-right: 8px; padding: 0 8px; border-radius: 999px;
+  background: var(--accent-3-strong); color: #fff; font-size: 12px;
+}
+/* お手本の枠。自分の本ではないことが分かるよう、少し薄くする。 */
+.slot.demo { opacity: .82; }
+@media (hover: hover) { .slot.demo:hover { opacity: 1; } }
+
 .shelf {
   position: relative;
   background: var(--panel);

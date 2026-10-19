@@ -559,11 +559,28 @@ async function loadSiblingsAndLabel(
   };
 }
 
+/** featuredSeriesIds を isolate に持つ時間。集計は 1 日 1 回（売上）か取り込み時（部数）にしか
+ *  変わらないので、数分古くてよい。 */
+const FEATURED_TTL_MS = 5 * 60 * 1000;
+let featuredMemo: { at: number; ids: Promise<Set<string>> } | null = null;
+
 /** 売上・発行部数ランキングに出ている作品の寄せ先。巻数が少なくても検索に載せる（sitemap にも
- *  出す、src/robots.ts）。どちらも meta に保存済みの集計を読むだけ。R18版は両ランキングが無いので空。 */
-export async function featuredSeriesIds(env: Env): Promise<Set<string>> {
-  const [sales, circulation] = await Promise.all([salesSeriesIds(env), circulationSeriesIds(env)]);
-  return new Set([...sales, ...circulation].filter((id) => /^[CU][0-9A-Za-z]{1,20}$/.test(id)));
+ *  出す、src/robots.ts）。どちらも meta に保存済みの集計（合わせて 200KB 超の JSON）を読むので、
+ *  ページを組むたびに読まないよう isolate に持つ。同時に来た要求は同じ読み込みを待つ。
+ *  R18版は両ランキングが無いので空。 */
+export function featuredSeriesIds(env: Env): Promise<Set<string>> {
+  const now = Date.now();
+  if (featuredMemo && now - featuredMemo.at < FEATURED_TTL_MS) return featuredMemo.ids;
+  const ids = Promise.all([salesSeriesIds(env), circulationSeriesIds(env)]).then(
+    ([sales, circulation]) => new Set([...sales, ...circulation].filter((id) => /^[CU][0-9A-Za-z]{1,20}$/.test(id)))
+  );
+  const memo = { at: now, ids };
+  featuredMemo = memo;
+  // 失敗した読み込みは持たない（次の要求で読み直す）。
+  ids.catch(() => {
+    if (featuredMemo === memo) featuredMemo = null;
+  });
+  return ids;
 }
 
 async function notFoundPage(env: Env, origin: string): Promise<Response> {

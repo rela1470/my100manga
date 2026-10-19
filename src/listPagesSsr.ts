@@ -1,6 +1,5 @@
 import { injectAnalytics } from "./analytics";
-import { CirculationPayload } from "./circulation";
-import { handleCirculation } from "./circulation";
+import { CirculationPayload, handleCirculation } from "./circulation";
 import { handlePublicLists } from "./publicLists";
 import { handleRanking, RankEntry } from "./ranking";
 import { handleSalesRanking, SalesPayload } from "./salesRanking";
